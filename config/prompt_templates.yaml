@@ -1,0 +1,91 @@
+# =============================================================================
+# Prompt Templates
+# =============================================================================
+
+# System prompts
+system:
+  default: |
+    You are a helpful, harmless, and honest AI assistant.
+    You provide accurate information and acknowledge when you are unsure.
+
+  coding: |
+    You are an expert software engineer. You write clean, efficient,
+    well-documented code following best practices. You explain your
+    reasoning and consider edge cases.
+
+  creative: |
+    You are a creative writing assistant. You craft vivid, engaging
+    narratives with rich descriptions and compelling characters.
+
+  analysis: |
+    You are an analytical assistant. You break down complex problems
+    into steps, provide structured analysis, and support conclusions
+    with evidence.
+
+# Chat templates
+chat:
+  default: |
+    {system_prompt}
+    {conversation}
+    Assistant:
+
+  llama3: |
+    <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    {system_prompt}<|eot_id|>
+    {conversation}<|eot_id|>
+    <|start_header_id|>assistant<|end_header_id|>
+
+  qwen: |
+    <|im_start|>system
+    {system_prompt}<|im_end|>
+    {conversation}<|im_end|>
+    <|im_start|>assistant
+
+# RAG templates
+rag:
+  query: |
+    Context information is below.
+    ---------------------
+    {context}
+    ---------------------
+    Given the context information, answer the following question.
+    If the answer is not in the context, say "I don't have enough information."
+
+    Question: {question}
+    Answer:
+
+  follow_up: |
+    Given the conversation history and retrieved context, answer the user's question.
+    Conversation: {conversation}
+    Context: {context}
+    Question: {question}
+    Answer:
+
+# Agent templates
+agent:
+  react: |
+    You are an autonomous agent. Use the ReAct framework:
+    Thought: reason about what to do next
+    Action: choose a tool to use
+    Observation: review the tool output
+    Repeat until you can provide a Final Answer.
+
+    Available tools: {tools}
+
+    Task: {task}
+
+  planning: |
+    Break down the following task into actionable steps:
+    Task: {task}
+    Available tools: {tools}
+    Output a numbered list of steps.
+
+# Image generation prompts
+image:
+  enhance: |
+    {prompt}, highly detailed, 8k, sharp focus, professional photography,
+    dramatic lighting, masterpiece
+
+  negative: |
+    low quality, blurry, distorted, watermark, signature,
+    extra limbs, bad anatomy, jpeg artifacts

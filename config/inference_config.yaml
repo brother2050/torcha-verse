@@ -1,0 +1,55 @@
+# =============================================================================
+# Inference Configuration
+# =============================================================================
+
+# Batch processing
+batch:
+  max_batch_size: 32
+  enable_continuous_batching: true
+  max_waiting_time: 0.1            # seconds before flushing partial batch
+
+# Sampling strategies
+sampling:
+  default:
+    temperature: 0.7
+    top_k: 50
+    top_p: 0.9
+    repetition_penalty: 1.1
+  creative:
+    temperature: 0.9
+    top_k: 100
+    top_p: 0.95
+    repetition_penalty: 1.05
+  precise:
+    temperature: 0.1
+    top_k: 10
+    top_p: 0.5
+    repetition_penalty: 1.2
+
+# KV Cache
+kv_cache:
+  enabled: true
+  strategy: "paged"                # static | paged
+  page_size: 16
+  max_pages: 1024
+  cpu_offload: true
+  offload_threshold: 0.85          # GPU memory usage threshold
+
+# Diffusion
+diffusion:
+  default_steps: 30
+  default_guidance_scale: 7.5
+  scheduler: "dpm_solver"          # ddpm | ddim | euler | dpm_solver | consistency
+  eta: 0.0
+
+# Streaming
+streaming:
+  enabled: true
+  chunk_size: 4                    # tokens per chunk for text
+  frame_batch: 1                   # frames per chunk for video
+
+# Memory management
+memory:
+  auto_offload: true
+  gpu_memory_fraction: 0.9
+  enable_peak_prediction: true

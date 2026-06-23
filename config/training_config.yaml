@@ -1,0 +1,66 @@
+# =============================================================================
+# Training Configuration
+# =============================================================================
+
+# Optimizer
+optimizer:
+  type: "adamw"                     # adamw | sgd | lion
+  lr: 2.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# Learning rate scheduler
+lr_scheduler:
+  type: "cosine"                   # cosine | linear | constant | cosine_with_restarts
+  warmup_steps: 100
+  warmup_ratio: 0.03
+  min_lr: 1.0e-6
+
+# Training loop
+training:
+  epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"          # no | fp16 | bf16
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+
+# Checkpoint
+checkpoint:
+  save_dir: "data/checkpoints"
+  save_steps: 500
+  save_total_limit: 3
+  save_only_weights: false          # false = save optimizer state too
+  resume_from: null
+
+# LoRA / QLoRA
+lora:
+  enabled: false
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  qlora: false                     # 4-bit quantization
+
+# RLHF
+rlhf:
+  method: "dpo"                    # ppo | dpo | grpo
+  beta: 0.1                        # DPO beta
+  clip_range: 0.2                  # PPO clip range
+  reward_model: null
+
+# Evaluation
+evaluation:
+  eval_steps: 500
+  metric: "loss"                   # loss | accuracy | f1
+  benchmark: null                  # opencompass | lm-eval-harness
+
+# Logging
+logging:
+  log_steps: 10
+  eval_strategy: "steps"
+  save_strategy: "steps"
+  report_to: ["console"]           # console | wandb | tensorboard
