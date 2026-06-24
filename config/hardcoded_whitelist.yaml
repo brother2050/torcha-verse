@@ -1,0 +1,32 @@
+# =============================================================================
+# Hardcoding scanner exemption list
+# =============================================================================
+# Used by `scripts/check_hardcoding.py --whitelist config/hardcoded_whitelist.yaml`.
+#
+# Each entry under `exemptions` suppresses matching violations. A violation
+# is exempt when ALL of its specified fields match; omitted fields match
+# anything.
+#
+# Fields:
+#   file:             glob pattern matched against the violation's relative
+#                     path. Examples: "core/model_registry.py", "core/*.py".
+#   type:             violation type to exempt. One of:
+#                       - string_literal
+#                       - numeric_literal
+#                       - path_literal
+#                       - list_literal
+#                       - "*" or "all"   (exempt every type)
+#   line:             (optional) exact line number to exempt.
+#   content_contains: (optional) substring that must appear in the
+#                     violation content (matched case-sensitively).
+#
+# Example (uncomment to use):
+#
+# exemptions:
+#   - file: "core/model_registry.py"
+#     type: "string_literal"
+#   - file: "scripts/check_hardcoding.py"
+#     type: "all"
+# =============================================================================
+
+exemptions: []

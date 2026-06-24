@@ -1,0 +1,47 @@
+# =============================================================================
+# System-level defaults for TorchaVerse v0.3.0
+# =============================================================================
+# These values are framework-wide defaults. They are owned by the framework
+# and MUST NOT be overridden by user configuration. User configs may extend
+# or add keys under other top-level sections, but the values below are the
+# authoritative baseline used when no runtime override is supplied.
+# =============================================================================
+
+system:
+  version: "0.3.0"
+  framework_name: "TorchaVerse"
+
+paths:
+  data_root: "~/.local/share/torcha-verse"
+  cache_dir: "~/.cache/torcha-verse"
+  config_dir: "~/.config/torcha-verse"
+  assets_dir: "~/.local/share/torcha-verse/assets"
+  audit_dir: "~/.local/share/torcha-verse/audit"
+  logs_dir: "~/.local/share/torcha-verse/logs"
+  incomplete_dir: "~/.cache/torcha-verse/incomplete"
+
+resource_budget:
+  default_vram_gb: 24
+  default_ram_gb: 64
+  default_disk_gb: 200
+  default_max_concurrent_models: 2
+  default_max_concurrent_requests: 4
+
+download:
+  default_source: "auto"
+  max_bandwidth_mb: 0  # 0 = unlimited
+  parallel_chunks: 8
+  chunk_size_mb: 512
+  retry_attempts: 3
+  retry_delay_seconds: 5
+
+security:
+  input_sanitizer:
+    max_field_length: 16384
+    max_request_size: 1048576
+  python_executor:
+    enabled: false
+    sandbox: "restricted"
+  output_filter:
+    nsfw_detection: true
+    toxicity_detection: true
