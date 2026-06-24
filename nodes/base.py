@@ -1,0 +1,679 @@
+"""L4 capability-layer node base classes and registry for TorchaVerse v0.3.0.
+
+This module is the foundation of the node system that replaces the v0.1.0
+"god-class" engines (``text_engine.py`` 999 lines, ``image_engine.py`` 915
+lines, ...) with small, single-responsibility, composable nodes.
+
+A *node* is the smallest unit of generative capability: it accepts a set of
+typed inputs, executes one well-defined operation against a
+:class:`NodeContext`, and returns a set of typed outputs.  Nodes are wired
+together by the (future) L5 pipeline layer; the contract defined here is
+what makes that composition possible.
+
+Public surface
+--------------
+
+* :class:`NodeSpec` -- declarative description of a node (type, name,
+  inputs, outputs, tags).  Attached to every node class as the ``spec``
+  class attribute.
+* :class:`NodeContext` -- the runtime context handed to every node
+  ``execute`` call (module bus, asset store, resource budget, logger,
+  audit logger, run config, run id).
+* :class:`BaseNode` -- the abstract base class every node derives from.
+  Provides real implementations of :meth:`BaseNode.validate_inputs` and
+  :meth:`BaseNode.estimate_resources` plus an abstract
+  :meth:`BaseNode.execute`.
+* :class:`NodeRegistry` -- a thin facade over :class:`ModuleBus` that
+  discovers, instantiates and searches nodes by type.
+* :func:`register_node` -- class decorator that registers a node with the
+  global :class:`ModuleBus` so it is discoverable by every
+  :class:`NodeRegistry`.
+
+Design notes
+------------
+The registry deliberately delegates storage to :class:`ModuleBus`
+(the v0.3.0 single assembly point) so that nodes, models, tokenizers and
+tools all live in one namespace-aware registry.  A small module-level
+index (``_NODE_CLASSES``) is kept only so that :class:`NodeSpec` objects
+can be retrieved without instantiating the node.
+
+This module has **no third-party dependencies** -- it only imports from
+the dependency-free L1/L2/L3 layers (``ModuleBus``, ``AssetStore``,
+``ResourceBudget``, ``AuditLogger``), so it is importable in any
+environment, including minimal CI sandboxes.
+"""
+
+from __future__ import annotations
+
+import abc
+import logging
+import types
+import typing
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Union
+from uuid import uuid4
+
+from core.module_bus import ModuleBus, ModuleNotFoundError as _BusNotFoundError
+from assets.base import AssetRef
+from assets.store import AssetStore
+from infrastructure.audit_log import AuditLogger
+from infrastructure.logger import get_logger
+from infrastructure.resource_budget import ResourceBudget
+
+__all__ = [
+    "NodeSpec",
+    "NodeContext",
+    "BaseNode",
+    "NodeRegistry",
+    "register_node",
+]
+
+#: ModuleBus ``kind`` namespace under which every node is registered.
+_NODE_KIND: str = "node"
+
+#: Module-level index of ``node_type -> node class``.  Populated by
+#: :func:`register_node` and :meth:`NodeRegistry.register`; used so that
+#: :class:`NodeSpec` objects can be returned by :meth:`NodeRegistry.list`
+#: without instantiating the node.  The :class:`ModuleBus` remains the
+#: authoritative discovery surface.
+_NODE_CLASSES: Dict[str, type[BaseNode]] = {}
+
+#: Module-level logger for the node system (stdlib only -- no torch).
+_logger: logging.Logger = get_logger("nodes")
+
+
+# ---------------------------------------------------------------------------
+# Type-checking helpers
+# ---------------------------------------------------------------------------
+_NoneType: type = type(None)
+
+
+def _type_origin(tp: Any) -> Any:
+    """Return the ``typing`` origin of ``tp`` or ``None`` for plain types.
+
+    Handles both :class:`typing.Union` / :data:`typing.Optional` and the
+    PEP 604 ``X | Y`` syntax (``types.UnionType``), as well as
+    parameterised generics such as ``list[int]``.
+    """
+    origin = typing.get_origin(tp)
+    if origin is None and isinstance(tp, types.UnionType):  # pragma: no cover
+        return types.UnionType
+    return origin
+
+
+def _is_optional(tp: Any) -> bool:
+    """Return ``True`` when ``None`` is an accepted value for ``tp``.
+
+    A type is considered optional when it is a union (``typing.Optional`` /
+    ``X | Y``) that explicitly includes ``NoneType`` among its arguments.
+    """
+    origin = _type_origin(tp)
+    if origin is Union or origin is types.UnionType:
+        return _NoneType in typing.get_args(tp)
+    return False
+
+
+def _type_matches(value: Any, expected: Any) -> bool:
+    """Best-effort ``isinstance`` check that understands type hints.
+
+    Supports:
+
+    * :data:`typing.Any` -- always matches.
+    * :class:`typing.Union` / :data:`typing.Optional` / PEP 604 unions --
+      matches when the value satisfies *any* arm.
+    * Parameterised generics (``list[int]``, ``dict[str, int]`` ...) --
+      matches against the *origin* (``list`` / ``dict``) only, ignoring the
+      parameters, mirroring the runtime behaviour of ``isinstance``.
+    * Plain classes -- plain ``isinstance``.
+
+    Two numeric-widening rules are applied so that user-friendly values are
+    not spuriously rejected:
+
+    * An ``int`` is accepted wherever a ``float`` is expected (e.g.
+      ``guidance_scale=7`` for a ``float`` input).
+    * :class:`bool` is *rejected* for both ``int`` and ``float`` inputs --
+      ``bool`` is a subclass of ``int`` in Python, so without this guard
+      ``steps=True`` would silently validate.
+
+    Any type that cannot be evaluated at runtime (e.g. a forward
+    reference) is treated as a match so that validation never raises on
+    exotic annotations.
+    """
+    if expected is Any:
+        return True
+
+    origin = _type_origin(expected)
+    if origin is Union or origin is types.UnionType:
+        return any(_type_matches(value, arm) for arm in typing.get_args(expected))
+
+    if origin is not None:
+        # Parameterised generic -- check against the origin only.
+        try:
+            return isinstance(value, origin)
+        except TypeError:
+            return True
+
+    # bool is a subclass of int -- reject it for numeric types to avoid
+    # silently accepting True/False where a number is expected.
+    if expected is float:
+        return isinstance(value, float) or (
+            isinstance(value, int) and not isinstance(value, bool)
+        )
+    if expected is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    try:
+        return isinstance(value, expected)
+    except TypeError:
+        # Non-runtime-evaluable annotation (e.g. a string forward ref):
+        # be permissive rather than raising.
+        return True
+
+
+# ---------------------------------------------------------------------------
+# NodeSpec
+# ---------------------------------------------------------------------------
+@dataclass
+class NodeSpec:
+    """Declarative description of a node.
+
+    A :class:`NodeSpec` is attached to every :class:`BaseNode` subclass
+    as the ``spec`` class attribute.  It is the single source of truth for
+    a node's identity, its typed input/output contract and its tags, and
+    is what the pipeline layer (L5) and the web canvas use to validate
+    and render a node.
+
+    Attributes:
+        type: Stable, unique node type identifier, e.g.
+            ``"image_txt2img"`` or ``"text_chat"``.  Used as the
+            :class:`ModuleBus` name under the ``"node"`` kind.
+        name: Human-readable display name.
+        description: One-line description of what the node does.
+        inputs: Mapping of input name to its declared type.  Optional
+            inputs are expressed with ``Optional[T]`` (or ``T | None``).
+        outputs: Mapping of output name to its declared type.
+        tags: Free-form tags used for discovery / filtering.
+    """
+
+    type: str
+    name: str
+    description: str = ""
+    inputs: Dict[str, type] = field(default_factory=dict)
+    outputs: Dict[str, type] = field(default_factory=dict)
+    tags: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Validate the spec fields after dataclass initialisation."""
+        if not isinstance(self.type, str) or not self.type.strip():
+            raise ValueError("NodeSpec.type must be a non-empty string.")
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("NodeSpec.name must be a non-empty string.")
+        if not isinstance(self.description, str):
+            raise ValueError("NodeSpec.description must be a string.")
+        if not isinstance(self.inputs, dict):
+            raise ValueError("NodeSpec.inputs must be a dict[str, type].")
+        if not isinstance(self.outputs, dict):
+            raise ValueError("NodeSpec.outputs must be a dict[str, type].")
+        if not isinstance(self.tags, list):
+            raise ValueError("NodeSpec.tags must be a list[str].")
+
+    def __repr__(self) -> str:
+        return (
+            "NodeSpec(type={!r}, name={!r}, "
+            "inputs={}, outputs={}, tags={!r})".format(
+                self.type,
+                self.name,
+                list(self.inputs.keys()),
+                list(self.outputs.keys()),
+                self.tags,
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# NodeContext
+# ---------------------------------------------------------------------------
+@dataclass
+class NodeContext:
+    """Runtime context handed to every node ``execute`` call.
+
+    A :class:`NodeContext` bundles the cross-cutting services a node needs
+    at execution time: the :class:`ModuleBus` for resolving models /
+    tokenizers / peer nodes, the :class:`AssetStore` for reading /
+    writing versioned artefacts, the :class:`ResourceBudget` declaring the
+    hard resource limits, a logger, an :class:`AuditLogger`, the run
+    configuration dictionary and a unique run id.
+
+    All fields have sensible defaults so that a context can be constructed
+    with no arguments (useful for tests and dry-runs).  The
+    :class:`ModuleBus` default is the process-wide singleton; the
+    :class:`AssetStore` and :class:`AuditLogger` default to ``None`` so
+    that constructing a context never performs disk I/O.
+
+    Attributes:
+        bus: The module assembly bus used to resolve dependencies.
+        assets: The tiered asset store (may be ``None`` in dry-runs).
+        budget: The hard resource budget for this run.
+        logger: Logger used by the node for diagnostics.
+        audit: Audit logger for security/operational events.
+        config: Free-form run configuration dictionary.  Nodes read
+            defaults (e.g. ``"default_text_model"``) from here.
+        run_id: Unique identifier of the current run.
+    """
+
+    bus: ModuleBus = field(default_factory=ModuleBus)
+    assets: Optional[AssetStore] = None
+    budget: ResourceBudget = field(default_factory=ResourceBudget)
+    logger: logging.Logger = field(
+        default_factory=lambda: get_logger("nodes.context")
+    )
+    audit: Optional[AuditLogger] = None
+    config: Dict[str, Any] = field(default_factory=dict)
+    run_id: str = field(default_factory=lambda: uuid4().hex)
+
+    def __repr__(self) -> str:
+        return (
+            "NodeContext(run_id={!r}, bus={!r}, assets={!r}, "
+            "budget={!r})".format(
+                self.run_id,
+                self.bus,
+                "set" if self.assets is not None else "None",
+                self.budget,
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# BaseNode
+# ---------------------------------------------------------------------------
+class BaseNode(abc.ABC):
+    """Abstract base class for every TorchaVerse capability node.
+
+    A node is the smallest unit of generative capability.  Subclasses
+    declare their contract through the ``spec`` class attribute (a
+    :class:`NodeSpec`) and implement :meth:`execute`.  The base class
+    provides real, reusable implementations of :meth:`validate_inputs`
+    and :meth:`estimate_resources` that operate on ``spec.inputs``;
+    subclasses typically extend them with domain-specific checks.
+
+    Class attributes:
+        spec: The :class:`NodeSpec` describing this node.  Subclasses
+            *must* assign a :class:`NodeSpec` instance.
+    """
+
+    #: Declarative node contract.  Subclasses assign a :class:`NodeSpec`.
+    spec: ClassVar[NodeSpec]
+
+    # ------------------------------------------------------------------
+    # Abstract API
+    # ------------------------------------------------------------------
+    @abc.abstractmethod
+    def execute(self, ctx: NodeContext, **inputs: Any) -> Dict[str, Any]:
+        """Run the node and return its outputs.
+
+        Args:
+            ctx: The runtime :class:`NodeContext`.
+            **inputs: Keyword inputs matching ``spec.inputs``.
+
+        Returns:
+            A dictionary mapping output names (per ``spec.outputs``) to
+            their produced values.
+        """
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Reusable validation
+    # ------------------------------------------------------------------
+    def validate_inputs(self, inputs: Dict[str, Any]) -> List[str]:
+        """Validate ``inputs`` against :attr:`spec`.
+
+        The base implementation checks that every *required* input
+        (one whose declared type does not accept ``None``) is present,
+        and that every present input matches its declared type.  Unknown
+        inputs are ignored (lenient) so that pipelines can pass extra
+        metadata through a node without erroring.
+
+        Subclasses are expected to call ``super().validate_inputs(inputs)``
+        first and then append any domain-specific errors.
+
+        Args:
+            inputs: The input dictionary to validate.
+
+        Returns:
+            A list of human-readable error strings; empty when valid.
+        """
+        errors: List[str] = []
+        spec = self.spec
+        for name, expected_type in spec.inputs.items():
+            if name not in inputs:
+                if not _is_optional(expected_type):
+                    errors.append(
+                        "Missing required input {!r} for node {!r}.".format(
+                            name, spec.type
+                        )
+                    )
+                continue
+            value = inputs[name]
+            if not _type_matches(value, expected_type):
+                errors.append(
+                    "Input {!r} for node {!r} expected {}, got {!r}.".format(
+                        name,
+                        spec.type,
+                        expected_type,
+                        type(value).__name__,
+                    )
+                )
+        return errors
+
+    # ------------------------------------------------------------------
+    # Reusable resource estimation
+    # ------------------------------------------------------------------
+    def estimate_resources(self, inputs: Dict[str, Any]) -> Dict[str, float]:
+        """Estimate the resources this node would consume for ``inputs``.
+
+        Returns a dictionary with three keys:
+
+        * ``vram_gb`` -- estimated GPU memory in gigabytes.
+        * ``ram_gb`` -- estimated host memory in gigabytes.
+        * ``time_s`` -- estimated wall-clock time in seconds.
+
+        The base implementation applies a generic heuristic: a small
+        base overhead plus, when the inputs carry spatial dimensions
+        (``width`` / ``height``) and a step count (``steps``), a
+        pixel-and-step scaling term.  Subclasses override with
+        domain-specific formulas (see e.g. :class:`nodes.image.ImageTxt2ImgNode`).
+
+        Args:
+            inputs: The input dictionary the node would be executed with.
+
+        Returns:
+            A ``{"vram_gb", "ram_gb", "time_s"}`` dictionary.
+        """
+        vram_gb: float = _BASE_VRAM_GB
+        ram_gb: float = _BASE_RAM_GB
+        time_s: float = _BASE_TIME_S
+
+        width = inputs.get("width")
+        height = inputs.get("height")
+        steps = inputs.get("steps")
+        if isinstance(width, (int, float)) and isinstance(height, (int, float)):
+            pixels = float(width) * float(height)
+            megapixels = pixels / (_MEGAPIXEL_PIXELS)
+            vram_gb += megapixels * _VRAM_PER_MEGAPIXEL_GB
+            ram_gb += megapixels * _RAM_PER_MEGAPIXEL_GB
+            if isinstance(steps, (int, float)) and steps > 0:
+                time_s += float(steps) * _TIME_PER_STEP_S * (
+                    pixels / (_REFERENCE_PIXELS)
+                )
+
+        return {
+            "vram_gb": round(vram_gb, 4),
+            "ram_gb": round(ram_gb, 4),
+            "time_s": round(time_s, 4),
+        }
+
+    # ------------------------------------------------------------------
+    def __repr__(self) -> str:
+        return "<{cls} type={type!r} name={name!r}>".format(
+            cls=self.__class__.__name__,
+            type=self.spec.type,
+            name=self.spec.name,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Estimation coefficients (module-level, overridable by subclasses)
+# ---------------------------------------------------------------------------
+#: Base VRAM overhead (GB) assumed for any node before scaling.
+_BASE_VRAM_GB: float = 0.5
+#: Base host-RAM overhead (GB) assumed for any node before scaling.
+_BASE_RAM_GB: float = 0.25
+#: Base wall-clock time (s) assumed for any node before scaling.
+_BASE_TIME_S: float = 1.0
+#: Number of pixels in one megapixel (used to normalise spatial estimates).
+_MEGAPIXEL_PIXELS: float = 1_000_000.0
+#: Additional VRAM (GB) per megapixel of output resolution.
+_VRAM_PER_MEGAPIXEL_GB: float = 0.25
+#: Additional host RAM (GB) per megapixel of output resolution.
+_RAM_PER_MEGAPIXEL_GB: float = 0.10
+#: Reference resolution (512x512) used to normalise per-step time.
+_REFERENCE_PIXELS: float = 512.0 * 512.0
+#: Wall-clock seconds per denoising step at the reference resolution.
+_TIME_PER_STEP_S: float = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Registration helpers
+# ---------------------------------------------------------------------------
+def _register_node_class(
+    cls: type[BaseNode],
+    bus: Optional[ModuleBus] = None,
+) -> type[BaseNode]:
+    """Register a node class with the bus and the module-level index.
+
+    Args:
+        cls: The :class:`BaseNode` subclass to register.
+        bus: Optional explicit :class:`ModuleBus`.  When ``None`` the
+            process-wide singleton is used.
+
+    Returns:
+        The class unchanged (so it can be used as a decorator return).
+
+    Raises:
+        TypeError: If ``cls.spec`` is not a :class:`NodeSpec`.
+        ValueError: If ``cls.spec.type`` is empty.
+    """
+    spec = getattr(cls, "spec", None)
+    if not isinstance(spec, NodeSpec):
+        raise TypeError(
+            "{}.spec must be a NodeSpec instance, got {!r}.".format(
+                cls.__name__, spec
+            )
+        )
+    if not spec.type:
+        raise ValueError(
+            "{}.spec.type must be a non-empty string.".format(cls.__name__)
+        )
+
+    registry_bus = bus if bus is not None else ModuleBus()
+    _NODE_CLASSES[spec.type] = cls
+    registry_bus.register(
+        kind=_NODE_KIND,
+        name=spec.type,
+        factory=cls,
+        description=spec.description,
+        tags=list(spec.tags),
+    )
+    _logger.debug(
+        "Registered node type=%s class=%s.", spec.type, cls.__name__
+    )
+    return cls
+
+
+def register_node(node_type: str) -> Callable[[type[BaseNode]], type[BaseNode]]:
+    """Class decorator that registers a :class:`BaseNode` subclass.
+
+    The decorated class must define a ``spec`` :class:`NodeSpec`.  The
+    ``node_type`` argument is authoritative: it is written back into
+    ``cls.spec.type`` (via :func:`dataclasses.replace`) so the spec and
+    the registration key can never drift apart.
+
+    Example::
+
+        @register_node("text_chat")
+        class TextNode(BaseNode):
+            spec = NodeSpec(type="text_chat", name="Text Chat", ...)
+
+    Args:
+        node_type: The unique node type identifier to register under.
+
+    Returns:
+        A decorator that registers the class and returns it unchanged.
+
+    Raises:
+        TypeError: If the decorated object has no valid ``spec``.
+        ValueError: If ``node_type`` is empty.
+    """
+    if not isinstance(node_type, str) or not node_type.strip():
+        raise ValueError("node_type must be a non-empty string.")
+
+    def decorator(cls: type[BaseNode]) -> type[BaseNode]:
+        spec = getattr(cls, "spec", None)
+        if not isinstance(spec, NodeSpec):
+            raise TypeError(
+                "@register_node can only decorate classes with a NodeSpec "
+                "'spec' attribute; {} has {!r}.".format(cls.__name__, spec)
+            )
+        if spec.type != node_type:
+            cls.spec = replace(spec, type=node_type)
+        _register_node_class(cls)
+        return cls
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# NodeRegistry
+# ---------------------------------------------------------------------------
+class NodeRegistry:
+    """Discovery and instantiation facade for nodes, backed by ModuleBus.
+
+    :class:`NodeRegistry` is a thin wrapper over :class:`ModuleBus` (the
+    v0.3.0 single assembly point).  Nodes are registered under the
+    ``"node"`` kind; this class exposes node-centric operations --
+    ``register``, ``get``, ``list`` and ``search`` -- on top of the bus.
+
+    Because :class:`ModuleBus` is a process-wide singleton, a freshly
+    constructed :class:`NodeRegistry` immediately sees every node that
+    was registered via the :func:`register_node` decorator at import
+    time.  A custom bus may be supplied (e.g. for an isolated test bus).
+
+    Example::
+
+        @register_node("text_chat")
+        class TextNode(BaseNode): ...
+
+        registry = NodeRegistry()
+        specs = registry.list()                 # all registered nodes
+        node = registry.get("text_chat")        # a TextNode instance
+        hits = registry.search("image")         # nodes mentioning "image"
+    """
+
+    def __init__(self, bus: Optional[ModuleBus] = None) -> None:
+        self._bus: ModuleBus = bus if bus is not None else ModuleBus()
+
+    @property
+    def bus(self) -> ModuleBus:
+        """The underlying :class:`ModuleBus` used for resolution."""
+        return self._bus
+
+    # ------------------------------------------------------------------
+    def register(self, node_class: type[BaseNode]) -> None:
+        """Register a node class with this registry's bus.
+
+        Args:
+            node_class: A :class:`BaseNode` subclass with a valid
+                ``spec``.
+        """
+        _register_node_class(node_class, bus=self._bus)
+
+    # ------------------------------------------------------------------
+    def get(self, node_type: str) -> BaseNode:
+        """Return a (cached) instance of the node registered as ``node_type``.
+
+        Resolution delegates to :class:`ModuleBus`; the factory (the node
+        class itself) is invoked at most once per type and the instance is
+        cached by the bus.  When the node is not on the bus the
+        module-level index is consulted as a fallback so that nodes
+        registered only in-memory are still reachable.
+
+        Args:
+            node_type: The node type identifier (e.g. ``"image_txt2img"``).
+
+        Returns:
+            A :class:`BaseNode` instance.
+
+        Raises:
+            KeyError: If no node is registered for ``node_type``.
+        """
+        try:
+            instance = self._bus.resolve(_NODE_KIND, node_type)
+            return instance  # type: ignore[return-value]
+        except _BusNotFoundError:
+            cls = _NODE_CLASSES.get(node_type)
+            if cls is None:
+                raise KeyError(
+                    "No node registered for type {!r}.".format(node_type)
+                )
+            return cls()
+
+    # ------------------------------------------------------------------
+    def list(self) -> List[NodeSpec]:
+        """Return the :class:`NodeSpec` of every registered node.
+
+        The :class:`ModuleBus` is the authoritative discovery surface;
+        the module-level index is consulted only to retrieve the
+        :class:`NodeSpec` without instantiating the node, and as a
+        defensive fallback for nodes registered in-memory only.
+
+        Returns:
+            A list of :class:`NodeSpec` sorted by ``type``.
+        """
+        specs: List[NodeSpec] = []
+        seen: set[str] = set()
+
+        for module_spec in self._bus.list(_NODE_KIND):
+            if module_spec.kind != _NODE_KIND:
+                # Skip nested "node.*" namespaces -- only exact "node".
+                continue
+            cls = _NODE_CLASSES.get(module_spec.name)
+            if cls is not None:
+                specs.append(cls.spec)
+                seen.add(module_spec.name)
+
+        # Defensive: include any in-memory-only registrations.
+        for node_type, cls in _NODE_CLASSES.items():
+            if node_type not in seen:
+                specs.append(cls.spec)
+                seen.add(node_type)
+
+        specs.sort(key=lambda s: s.type)
+        return specs
+
+    # ------------------------------------------------------------------
+    def search(self, query: str) -> List[NodeSpec]:
+        """Fuzzy-search nodes by type, name, description or tags.
+
+        The match is case-insensitive and matches any node whose type,
+        name, description or any tag *contains* the query substring.
+        An empty query returns every node (same as :meth:`list`).
+
+        Args:
+            query: Substring to search for.
+
+        Returns:
+            A list of matching :class:`NodeSpec` sorted by ``type``.
+        """
+        needle = (query or "").strip().lower()
+        if not needle:
+            return self.list()
+
+        results: List[NodeSpec] = []
+        for spec in self.list():
+            haystack = " ".join(
+                [
+                    spec.type,
+                    spec.name,
+                    spec.description,
+                    " ".join(spec.tags),
+                ]
+            ).lower()
+            if needle in haystack:
+                results.append(spec)
+        return results
+
+    # ------------------------------------------------------------------
+    def __repr__(self) -> str:
+        return "NodeRegistry(bus={!r}, nodes={})".format(
+            self._bus, len(self.list())
+        )
