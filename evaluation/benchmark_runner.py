@@ -513,7 +513,7 @@ class BenchmarkRunner:
     def get_text_engine(self) -> Any:
         """Return a :class:`TextEngine` (lazily created)."""
         if self._text_engine is None:
-            from engines.text_engine import TextEngine
+            # engines removed
 
             self._text_engine = TextEngine(self.model_name)
         return self._text_engine
@@ -521,7 +521,7 @@ class BenchmarkRunner:
     def get_image_engine(self) -> Any:
         """Return an :class:`ImageEngine` (lazily created)."""
         if self._image_engine is None:
-            from engines.image_engine import ImageEngine
+            # engines removed
 
             self._image_engine = ImageEngine(self.model_name)
         return self._image_engine
@@ -529,7 +529,7 @@ class BenchmarkRunner:
     def get_rag_engine(self) -> Any:
         """Return a :class:`RAGEngine` (lazily created)."""
         if self._rag_engine is None:
-            from engines.rag_engine import RAGEngine
+            # engines removed
 
             self._rag_engine = RAGEngine()
         return self._rag_engine
@@ -537,7 +537,7 @@ class BenchmarkRunner:
     def get_agent_engine(self) -> Any:
         """Return an :class:`AgentEngine` (lazily created)."""
         if self._agent_engine is None:
-            from engines.agent_engine import AgentEngine
+            # engines removed
 
             self._agent_engine = AgentEngine()
         return self._agent_engine
@@ -722,7 +722,7 @@ class BenchmarkRunner:
         # Add environment metadata.
         output = {
             "framework": "TorchaVerse",
-            "version": "0.1.0",
+            "version": "0.3.1",
             "device": str(self._device_manager.get_device()),
             "saved_at": time.time(),
             **results,

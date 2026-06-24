@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="torcha_verse",
-    version="0.1.0",
+    version="0.3.1",
     description="TorchaVerse: A pure PyTorch all-modal generative AI framework",
     author="TorchaVerse Team",
     license="Apache-2.0",

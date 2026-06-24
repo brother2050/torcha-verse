@@ -29,7 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from core.model_registry import BaseModel
+from models.base import BaseModel
 from infrastructure.config_manager import ConfigManager
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger

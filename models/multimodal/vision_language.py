@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.model_registry import BaseModel
+from models.base import BaseModel
 from models.text.transformer import TransformerDecoder, _top_p_filter
 
 __all__ = ["VisionEncoder", "Projector", "VisionLanguageModel"]

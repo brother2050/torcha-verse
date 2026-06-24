@@ -21,19 +21,17 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 import click
 
-from engines.agent_engine import AgentEngine
-from engines.audio_engine import AudioEngine
-from engines.image_engine import ImageEngine
-from engines.rag_engine import RAGEngine
-from engines.text_engine import Message, TextEngine
-from engines.video_engine import VideoEngine
 from infrastructure.config_manager import ConfigManager
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
+
+# Reuse the PipelineService from the API server so the CLI shares the
+# same Pipeline/Node back-end as the REST API and Web UI.
+from serving.api_server import PipelineService
 
 try:
     from rich.console import Console
@@ -60,36 +58,17 @@ logger = get_logger("cli")
 
 
 # ===========================================================================
-# Shared helpers
+# Pipeline service holder (lazy singleton)
 # ===========================================================================
-def _get_text_engine(model: str) -> TextEngine:
-    """Create or retrieve a :class:`TextEngine` for ``model``."""
-    return TextEngine(model)
+_service: Optional[PipelineService] = None
 
 
-def _get_image_engine(model: str) -> ImageEngine:
-    """Create or retrieve an :class:`ImageEngine` for ``model``."""
-    return ImageEngine(model)
-
-
-def _get_audio_engine() -> AudioEngine:
-    """Create or retrieve an :class:`AudioEngine`."""
-    return AudioEngine()
-
-
-def _get_video_engine(model: str) -> VideoEngine:
-    """Create or retrieve a :class:`VideoEngine` for ``model``."""
-    return VideoEngine(model)
-
-
-def _get_rag_engine() -> RAGEngine:
-    """Create or retrieve a :class:`RAGEngine`."""
-    return RAGEngine()
-
-
-def _get_agent_engine() -> AgentEngine:
-    """Create or retrieve an :class:`AgentEngine`."""
-    return AgentEngine()
+def _get_service() -> PipelineService:
+    """Return a lazily-created :class:`PipelineService` singleton."""
+    global _service
+    if _service is None:
+        _service = PipelineService()
+    return _service
 
 
 def _print_engine_info(engine_name: str, model: str) -> None:
@@ -97,9 +76,9 @@ def _print_engine_info(engine_name: str, model: str) -> None:
     device = DeviceManager().get_device()
     console.print(
         Panel(
-            f"[bold cyan]Engine:[/bold cyan] {engine_name}\n"
-            f"[bold cyan]Model:[/bold cyan]  {model}\n"
-            f"[bold cyan]Device:[/bold cyan] {device}",
+            f"[bold cyan]Pipeline:[/bold cyan] {engine_name}\n"
+            f"[bold cyan]Model:[/bold cyan]    {model}\n"
+            f"[bold cyan]Device:[/bold cyan]   {device}",
             title="TorchaVerse",
             border_style="cyan",
             expand=False,
@@ -114,42 +93,76 @@ def _save_image(image: Any, output: str) -> None:
 
 
 def _save_audio(audio: Any, output: str) -> None:
-    """Save an :class:`AudioTensor` to ``output`` as a WAV file."""
+    """Save an audio object to ``output`` as a WAV file.
+
+    Accepts either a real audio object exposing ``numpy`` / ``waveform``
+    / ``sample_rate`` attributes or a placeholder dict returned by the
+    node system (in which case nothing is written).
+    """
     import numpy as np
     import wave
 
-    waveform = audio.numpy()
+    waveform = getattr(audio, "numpy", None)
+    if waveform is None:
+        waveform = getattr(audio, "waveform", None)
+    if waveform is None:
+        console.print(
+            "[yellow]Audio node returned placeholder data; "
+            "no file written.[/yellow]"
+        )
+        return
+    waveform = np.asarray(waveform)
     if waveform.ndim == 2:
         waveform = waveform[0]
     waveform = np.clip(waveform, -1.0, 1.0)
     pcm = (waveform * 32767).astype(np.int16)
 
+    sample_rate = getattr(audio, "sample_rate", 22050)
     with wave.open(output, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
-        wf.setframerate(audio.sample_rate)
+        wf.setframerate(int(sample_rate))
         wf.writeframes(pcm.tobytes())
     console.print(f"[green]Audio saved to[/green] [bold]{output}[/bold]")
 
 
 def _save_video(video: Any, output: str) -> None:
-    """Save a :class:`VideoTensor` to ``output`` as a GIF."""
+    """Save a video object to ``output`` as a GIF.
+
+    Accepts either a real video object exposing ``frames`` / ``fps``
+    attributes or a placeholder dict returned by the node system (in
+    which case nothing is written).
+    """
     from PIL import Image as PILImage
     import numpy as np
 
-    frames = video.frames
-    if frames.dim() == 5:
-        frames = frames[0]
-    frames_np = (frames.clamp(0, 1).permute(0, 2, 3, 1).cpu().numpy() * 255).astype(
-        "uint8"
-    )
+    frames = getattr(video, "frames", None)
+    if frames is None:
+        console.print(
+            "[yellow]Video node returned placeholder data; "
+            "no file written.[/yellow]"
+        )
+        return
+    frames_np = np.asarray(frames)
+    if frames_np.ndim == 5:
+        frames_np = frames_np[0]
+    if frames_np.ndim == 4 and frames_np.shape[-1] not in (1, 3, 4):
+        frames_np = np.transpose(frames_np, (0, 2, 3, 1))
+    frames_np = (np.clip(frames_np, 0, 1) * 255).astype("uint8") \
+        if frames_np.dtype.kind == "f" else frames_np.astype("uint8")
     pil_frames = [PILImage.fromarray(f) for f in frames_np]
+    if not pil_frames:
+        console.print(
+            "[yellow]Video node returned no frames; no file written.[/yellow]"
+        )
+        return
+    fps = getattr(video, "fps", 8)
     pil_frames[0].save(
         output,
         format="GIF",
         save_all=True,
         append_images=pil_frames[1:],
-        duration=int(1000 / video.fps),
+        duration=int(1000 / max(1, fps)),
         loop=0,
     )
     console.print(f"[green]Video saved to[/green] [bold]{output}[/bold]")
@@ -159,7 +172,7 @@ def _save_video(video: Any, output: str) -> None:
 # CLI group: torcha
 # ===========================================================================
 @click.group()
-@click.version_option(version="0.1.0", prog_name="torcha")
+@click.version_option(version="0.3.1", prog_name="torcha")
 def cli() -> None:
     """TorchaVerse -- a pure PyTorch all-modal generative AI framework.
 
@@ -195,26 +208,24 @@ def generate(
     stream: bool,
 ) -> None:
     """Generate text from a prompt."""
-    _print_engine_info("TextEngine", model)
-    engine = _get_text_engine(model)
+    _print_engine_info("text_completion", model)
+    service = _get_service()
 
     start = time.time()
 
     if stream:
         console.print("[dim]Streaming output...[/dim]\n")
-        result = engine.generate(
+        result = service.text_completion(
             prompt=prompt,
+            model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            stream=True,
         )
-        assert isinstance(result, Iterator)
-        full_text = ""
-        for chunk in result:
-            console.print(chunk, end="", style="white")
-            full_text += chunk
+        if "error" in result:
+            console.print(f"[red]Error: {result['error']}[/red]")
+            return
+        full_text = result.get("text", "")
+        console.print(full_text, style="white")
         console.print()
     else:
         with Progress(
@@ -225,18 +236,20 @@ def generate(
             console=console,
         ) as progress:
             task = progress.add_task("Generating text...", total=1)
-            result = engine.generate(
+            result = service.text_completion(
                 prompt=prompt,
+                model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
             )
             progress.update(task, completed=1)
 
+        if "error" in result:
+            console.print(f"[red]Error: {result['error']}[/red]")
+            return
+        full_text = result.get("text", "")
         console.print()
-        console.print(Panel(result, title="Generated Text", border_style="green"))
-        full_text = result
+        console.print(Panel(full_text, title="Generated Text", border_style="green"))
 
     elapsed = time.time() - start
     console.print(
@@ -251,12 +264,12 @@ def generate(
 @click.option("--max-tokens", default=512, type=int, help="Max tokens per reply.")
 def chat(model: str, system: str, max_tokens: int) -> None:
     """Interactive multi-turn chat."""
-    _print_engine_info("TextEngine", model)
-    engine = _get_text_engine(model)
+    _print_engine_info("text_chat", model)
+    service = _get_service()
 
-    messages: List[Message] = []
+    messages: List[Dict[str, str]] = []
     if system:
-        messages.append(Message(role="system", content=system))
+        messages.append({"role": "system", "content": system})
 
     console.print(
         Panel(
@@ -280,19 +293,28 @@ def chat(model: str, system: str, max_tokens: int) -> None:
             break
         if user_input.strip().lower() == "clear":
             messages.clear()
-            engine.reset_history()
             if system:
-                messages.append(Message(role="system", content=system))
+                messages.append({"role": "system", "content": system})
             console.print("[dim]History cleared.[/dim]")
             continue
 
-        messages.append(Message(role="user", content=user_input))
+        messages.append({"role": "user", "content": user_input})
+
+        # Flatten the conversation into a single prompt for the node.
+        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
 
         with console.status("[bold cyan]Assistant is thinking...[/bold cyan]"):
-            reply = engine.chat(messages, max_tokens=max_tokens)
+            result = service.text_chat(
+                prompt=prompt,
+                model=model,
+                max_tokens=max_tokens,
+            )
 
-        reply_text = reply.content if isinstance(reply, Message) else str(reply)
-        messages.append(Message(role="assistant", content=reply_text))
+        if "error" in result:
+            reply_text = f"[Error] {result['error']}"
+        else:
+            reply_text = result.get("text", "")
+        messages.append({"role": "assistant", "content": reply_text})
 
         console.print()
         console.print(
@@ -335,8 +357,8 @@ def txt2img(
     seed: Optional[int],
 ) -> None:
     """Generate an image from a text prompt."""
-    _print_engine_info("ImageEngine", model)
-    engine = _get_image_engine(model)
+    _print_engine_info("image_txt2img", model)
+    service = _get_service()
 
     with Progress(
         SpinnerColumn(),
@@ -348,7 +370,7 @@ def txt2img(
         task = progress.add_task(
             f"Generating {width}x{height} image ({steps} steps)...", total=1
         )
-        image = engine.txt2img(
+        result = service.image_txt2img(
             prompt=prompt,
             negative_prompt=negative_prompt,
             width=width,
@@ -356,9 +378,23 @@ def txt2img(
             steps=steps,
             guidance_scale=guidance_scale,
             seed=seed,
+            model=model,
         )
         progress.update(task, completed=1)
 
+    if "error" in result:
+        console.print(f"[red]Error: {result['error']}[/red]")
+        return
+
+    image = result.get("image", result)
+    from PIL import Image as PILImage
+
+    if not isinstance(image, PILImage.Image):
+        console.print(
+            "[yellow]Image node returned placeholder data; "
+            "no file written.[/yellow]"
+        )
+        return
     _save_image(image, output)
 
 
@@ -384,8 +420,8 @@ def img2img(
     """Transform an existing image using a text prompt."""
     from PIL import Image as PILImage
 
-    _print_engine_info("ImageEngine", model)
-    engine = _get_image_engine(model)
+    _print_engine_info("image_img2img", model)
+    service = _get_service()
 
     input_image = PILImage.open(input_path).convert("RGB")
     console.print(f"[dim]Loaded input image: {input_path}[/dim]")
@@ -398,17 +434,29 @@ def img2img(
         console=console,
     ) as progress:
         task = progress.add_task("Transforming image...", total=1)
-        result = engine.img2img(
+        result = service.image_img2img(
             image=input_image,
             prompt=prompt,
             strength=strength,
             steps=steps,
             guidance_scale=guidance_scale,
             seed=seed,
+            model=model,
         )
         progress.update(task, completed=1)
 
-    _save_image(result, output)
+    if "error" in result:
+        console.print(f"[red]Error: {result['error']}[/red]")
+        return
+
+    out_image = result.get("image", result)
+    if not isinstance(out_image, PILImage.Image):
+        console.print(
+            "[yellow]Image node returned placeholder data; "
+            "no file written.[/yellow]"
+        )
+        return
+    _save_image(out_image, output)
 
 
 # ===========================================================================
@@ -435,8 +483,8 @@ def tts(
     speed: float,
 ) -> None:
     """Synthesize speech from text."""
-    _print_engine_info("AudioEngine", model)
-    engine = _get_audio_engine()
+    _print_engine_info("audio_tts", model)
+    service = _get_service()
 
     with Progress(
         SpinnerColumn(),
@@ -446,14 +494,20 @@ def tts(
         console=console,
     ) as progress:
         task = progress.add_task("Synthesising speech...", total=1)
-        audio = engine.synthesize(
+        result = service.audio_tts(
             text=text_input,
-            speaker_id=speaker_id,
-            emotion=emotion,
+            voice=str(speaker_id),
             speed=speed,
+            emotion=emotion,
+            model=model,
         )
         progress.update(task, completed=1)
 
+    if "error" in result:
+        console.print(f"[red]Error: {result['error']}[/red]")
+        return
+
+    audio = result.get("audio", result)
     _save_audio(audio, output)
 
 
@@ -489,8 +543,8 @@ def txt2vid(
     seed: Optional[int],
 ) -> None:
     """Generate a video from a text prompt."""
-    _print_engine_info("VideoEngine", model)
-    engine = _get_video_engine(model)
+    _print_engine_info("video_txt2vid", model)
+    service = _get_service()
 
     with Progress(
         SpinnerColumn(),
@@ -502,7 +556,7 @@ def txt2vid(
         task = progress.add_task(
             f"Generating {num_frames} frames ({steps} steps)...", total=1
         )
-        video = engine.txt2video(
+        result = service.video_txt2vid(
             prompt=prompt,
             width=width,
             height=height,
@@ -511,9 +565,15 @@ def txt2vid(
             steps=steps,
             guidance_scale=guidance_scale,
             seed=seed,
+            model=model,
         )
         progress.update(task, completed=1)
 
+    if "error" in result:
+        console.print(f"[red]Error: {result['error']}[/red]")
+        return
+
+    video = result.get("video", result)
     _save_video(video, output)
 
 
@@ -537,30 +597,19 @@ def rag() -> None:
     "--chunk-overlap", default=64, type=int, help="Chunk overlap in characters."
 )
 def ingest(docs_path: str, chunk_size: int, chunk_overlap: int) -> None:
-    """Ingest documents into the RAG vector store."""
-    engine = RAGEngine(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    """Ingest documents into the RAG vector store.
 
-    console.print(f"[cyan]Ingesting documents from[/cyan] [bold]{docs_path}[/bold]")
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Loading, chunking, and embedding...", total=1)
-        engine.ingest(docs_path)
-        progress.update(task, completed=1)
-
-    table = Table(title="Ingestion Summary", border_style="green")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="white")
-    table.add_row("Source", docs_path)
-    table.add_row("Chunk size", str(chunk_size))
-    table.add_row("Chunk overlap", str(chunk_overlap))
-    table.add_row("Total chunks indexed", str(engine.index_size))
-    console.print(table)
+    RAG ingestion is not yet backed by a node; a descriptive message is
+    printed while the command structure is preserved.
+    """
+    service = _get_service()
+    result = service.rag_query()
+    msg = result.get("error", "RAG ingestion is not yet available via the Pipeline/Node system.")
+    console.print(f"[yellow]{msg}[/yellow]")
+    console.print(
+        f"[dim]Requested source: {docs_path} "
+        f"(chunk_size={chunk_size}, overlap={chunk_overlap})[/dim]"
+    )
 
 
 @rag.command()
@@ -568,45 +617,18 @@ def ingest(docs_path: str, chunk_size: int, chunk_overlap: int) -> None:
 @click.option("--top-k", default=5, type=int, help="Number of chunks to retrieve.")
 @click.option("--rerank", is_flag=True, help="Apply keyword reranking.")
 def query(question: str, top_k: int, rerank: bool) -> None:
-    """Query the RAG engine with a question."""
-    engine = _get_rag_engine()
+    """Query the RAG engine with a question.
 
-    if engine.index_size == 0:
-        console.print(
-            "[yellow]Warning: The index is empty. "
-            "Run 'torcha rag ingest' first.[/yellow]"
-        )
-
-    with console.status("[bold cyan]Retrieving and generating answer...[/bold cyan]"):
-        answer, sources = engine.query(question, top_k=top_k, rerank=rerank)
-
-    console.print()
+    RAG query is not yet backed by a node; a ``not_implemented`` message
+    is printed while the command structure is preserved.
+    """
+    service = _get_service()
+    result = service.rag_query()
+    msg = result.get("error", "RAG query is not yet available via the Pipeline/Node system.")
+    console.print(f"[yellow]{msg}[/yellow]")
     console.print(
-        Panel(
-            Markdown(answer.text),
-            title="[bold green]Answer[/bold green]",
-            border_style="green",
-        )
+        f"[dim]Question: {question} (top_k={top_k}, rerank={rerank})[/dim]"
     )
-
-    if sources.chunks:
-        table = Table(title="Retrieved Sources", border_style="blue")
-        table.add_column("#", style="dim", width=4)
-        table.add_column("Score", style="cyan", width=8)
-        table.add_column("Source", style="white")
-        table.add_column("Excerpt", style="dim")
-
-        for i, chunk in enumerate(sources.chunks, 1):
-            excerpt = chunk.text[:80].replace("\n", " ") + "..."
-            table.add_row(
-                str(i),
-                f"{chunk.score:.3f}",
-                chunk.metadata.get("source", "unknown"),
-                excerpt,
-            )
-        console.print(table)
-
-    console.print(f"\n[dim]Confidence: {answer.confidence:.3f}[/dim]")
 
 
 # ===========================================================================
@@ -628,64 +650,24 @@ def agent() -> None:
 @click.option("--max-steps", default=10, type=int, help="Maximum reasoning steps.")
 @click.option("--stream", is_flag=True, help="Stream execution steps.")
 def run(task: str, flow: Optional[str], max_steps: int, stream: bool) -> None:
-    """Run an agent on a task."""
-    engine = _get_agent_engine()
+    """Run an agent on a task.
 
+    Agent execution is not yet backed by a node; a ``not_implemented``
+    message is printed while the command structure is preserved.
+    """
+    service = _get_service()
     if flow:
         console.print(
-            f"[cyan]Running multi-agent flow:[/cyan] [bold]{flow}[/bold]"
+            f"[cyan]Requested multi-agent flow:[/cyan] [bold]{flow}[/bold]"
         )
-        engine.create_agent(role="manager", max_steps=max_steps)
-        engine.create_agent(role="worker", max_steps=max_steps)
-        orchestrator = engine.create_flow(
-            agents=["manager", "worker"],
-            topology=flow,
-        )
-
-        with console.status("[bold cyan]Executing flow...[/bold cyan]"):
-            result = engine.execute(orchestrator, task)
     else:
-        console.print("[cyan]Running single agent (ReAct)...[/cyan]")
-        if stream:
-            console.print("\n[bold]Execution Trace:[/bold]\n")
-            for step in engine.stream(task, max_steps=max_steps):
-                _print_step(step)
-            # Get the final result for the summary.
-            result = engine.run(task, max_steps=max_steps)
-        else:
-            with console.status("[bold cyan]Agent is reasoning...[/bold cyan]"):
-                result = engine.run(task, max_steps=max_steps)
+        console.print("[cyan]Requested single agent (ReAct)...[/cyan]")
 
-    console.print()
+    result = service.agent_run()
+    msg = result.get("error", "Agent execution is not yet available via the Pipeline/Node system.")
+    console.print(f"\n[yellow]{msg}[/yellow]")
     console.print(
-        Panel(
-            Markdown(result.output),
-            title="[bold green]Final Output[/bold green]",
-            border_style="green",
-        )
-    )
-
-    # Print execution trace table.
-    if result.steps:
-        table = Table(title="Execution Trace", border_style="blue")
-        table.add_column("Step", style="dim", width=5)
-        table.add_column("Thought", style="white")
-        table.add_column("Action", style="cyan")
-        table.add_column("Observation", style="dim")
-
-        for step in result.steps:
-            table.add_row(
-                str(step.step_number),
-                step.thought[:60] + ("..." if len(step.thought) > 60 else ""),
-                step.action or "-",
-                step.observation[:60] + ("..." if len(step.observation) > 60 else ""),
-            )
-        console.print(table)
-
-    meta = result.metadata
-    console.print(
-        f"\n[dim]Steps: {meta.get('steps_taken', len(result.steps))} | "
-        f"Truncated: {meta.get('truncated', False)}[/dim]"
+        f"[dim]Task: {task} (max_steps={max_steps}, stream={stream})[/dim]"
     )
 
 
@@ -727,7 +709,7 @@ def info() -> None:
     table.add_column("Property", style="cyan")
     table.add_column("Value", style="white")
 
-    table.add_row("Version", "0.1.0")
+    table.add_row("Version", "0.3.1")
     table.add_row("Environment", cfg.environment)
     table.add_row("Config dir", str(cfg.config_dir))
     table.add_row("Device", device_info.get("device", "cpu"))
@@ -752,21 +734,26 @@ def info() -> None:
 
 @cli.command()
 def models() -> None:
-    """List all registered models."""
-    from core.model_registry import ModelRegistry
-
-    registry = ModelRegistry()
-    available = registry.list_available()
+    """List all registered node types (models)."""
+    service = _get_service()
+    available = service.list_models()
 
     if not available:
-        console.print("[yellow]No models registered.[/yellow]")
+        console.print("[yellow]No node types registered.[/yellow]")
         return
 
-    table = Table(title="Registered Models", border_style="cyan")
+    table = Table(title="Registered Node Types", border_style="cyan")
     table.add_column("#", style="dim", width=4)
-    table.add_column("Model Name", style="white")
-    for i, name in enumerate(available, 1):
-        table.add_row(str(i), name)
+    table.add_column("Node Type", style="white")
+    table.add_column("Name", style="cyan")
+    table.add_column("Description", style="dim")
+    for i, m in enumerate(available, 1):
+        table.add_row(
+            str(i),
+            str(m.get("id", "")),
+            str(m.get("name", "")),
+            str(m.get("description", ""))[:60],
+        )
     console.print(table)
 
 

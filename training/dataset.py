@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Unio
 import torch
 from torch.utils.data import Dataset
 
-from core.tokenizer_hub import BaseTokenizer, TextTokenizer, TokenizerHub
+# TokenizerHub removed - use ModuleBus
 from infrastructure.logger import get_logger
 
 __all__ = [

@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from engines.text_engine import Message, TextEngine
+# engines removed - use Pipeline
 from infrastructure.logger import get_logger
 
 __all__ = ["SyntheticDataGenerator", "SyntheticDataConfig"]

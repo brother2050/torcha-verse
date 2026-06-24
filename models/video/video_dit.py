@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.model_registry import BaseModel
+from models.base import BaseModel
 from models.components.rmsnorm import RMSNorm
 from models.image.unet import TimestepEmbedding
 from .motion_module import MotionModule

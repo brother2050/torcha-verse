@@ -16,8 +16,9 @@ framework capabilities through an interactive web UI:
 * **Workflow Orchestrator** -- a simplified node-based editor (similar
   to ComfyUI) for chaining generation steps.
 
-The interface calls the underlying engines directly (no HTTP round-trip
-required), keeping latency low for local use.
+The interface reuses :class:`PipelineService` from the API server so
+that both surfaces share the same Pipeline/Node back-end (no HTTP
+round-trip required for local use).
 """
 
 from __future__ import annotations
@@ -26,18 +27,13 @@ import io
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import torch
-
-from engines.agent_engine import AgentEngine
-from engines.audio_engine import AudioEngine, AudioTensor
-from engines.image_engine import ImageEngine
-from engines.multimodal_engine import MultiModalEngine
-from engines.rag_engine import RAGEngine
-from engines.text_engine import Message, TextEngine
-from engines.video_engine import VideoEngine, VideoTensor
 from infrastructure.config_manager import ConfigManager
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
+
+# Reuse the PipelineService from the API server so the Web UI and the
+# REST API share the same Pipeline/Node back-end.
+from serving.api_server import PipelineService
 
 try:
     import gradio as gr
@@ -47,104 +43,87 @@ except ImportError as _exc:  # pragma: no cover - dependency guard
         "Install it with: pip install gradio"
     ) from _exc
 
-__all__ = ["create_interface", "launch", "WebUI"]
+__all__ = ["create_interface", "create_ui", "launch", "WebUI"]
 
 logger = get_logger("web_ui")
 
 
 # ===========================================================================
-# Engine holder (lazy singletons)
+# Pipeline service holder (lazy singleton)
 # ===========================================================================
-class _EngineHolder:
-    """Lazy singleton container for all engines used by the Web UI."""
+_service: Optional[PipelineService] = None
 
-    _text: Optional[TextEngine] = None
-    _image: Optional[ImageEngine] = None
-    _audio: Optional[AudioEngine] = None
-    _video: Optional[VideoEngine] = None
-    _multimodal: Optional[MultiModalEngine] = None
-    _rag: Optional[RAGEngine] = None
-    _agent: Optional[AgentEngine] = None
 
-    @classmethod
-    def text(cls, model: str = "default") -> TextEngine:
-        if cls._text is None:
-            cls._text = TextEngine(model)
-        return cls._text
+def _get_service() -> PipelineService:
+    """Return a lazily-created :class:`PipelineService` singleton."""
+    global _service
+    if _service is None:
+        _service = PipelineService()
+    return _service
 
-    @classmethod
-    def image(cls, model: str = "default") -> ImageEngine:
-        if cls._image is None:
-            cls._image = ImageEngine(model)
-        return cls._image
 
-    @classmethod
-    def audio(cls) -> AudioEngine:
-        if cls._audio is None:
-            cls._audio = AudioEngine()
-        return cls._audio
-
-    @classmethod
-    def video(cls, model: str = "default") -> VideoEngine:
-        if cls._video is None:
-            cls._video = VideoEngine(model)
-        return cls._video
-
-    @classmethod
-    def multimodal(cls) -> MultiModalEngine:
-        if cls._multimodal is None:
-            cls._multimodal = MultiModalEngine()
-        return cls._multimodal
-
-    @classmethod
-    def rag(cls) -> RAGEngine:
-        if cls._rag is None:
-            cls._rag = RAGEngine()
-        return cls._rag
-
-    @classmethod
-    def agent(cls) -> AgentEngine:
-        if cls._agent is None:
-            cls._agent = AgentEngine()
-        return cls._agent
-
-    @classmethod
-    def reset(cls) -> None:
-        """Reset all cached engines."""
-        cls._text = None
-        cls._image = None
-        cls._audio = None
-        cls._video = None
-        cls._multimodal = None
-        cls._rag = None
-        cls._agent = None
+def reset_service() -> None:
+    """Reset the cached service (useful for testing)."""
+    global _service
+    _service = None
 
 
 # ===========================================================================
 # Conversion helpers
 # ===========================================================================
-def _audio_tensor_to_numpy(audio: AudioTensor) -> Tuple[Any, int]:
-    """Convert an :class:`AudioTensor` to a ``(numpy_array, sample_rate)`` tuple."""
+def _audio_to_numpy(audio: Any) -> Tuple[Any, int]:
+    """Convert an audio object to a ``(numpy_array, sample_rate)`` tuple.
+
+    Accepts either a real audio object exposing ``numpy`` / ``waveform``
+    / ``sample_rate`` attributes or a placeholder dict returned by the
+    node system (in which case an empty waveform is returned).
+    """
     import numpy as np
 
-    waveform = audio.numpy()
+    waveform = getattr(audio, "numpy", None)
+    if waveform is None:
+        waveform = getattr(audio, "waveform", None)
+    if waveform is None:
+        return np.zeros(1024, dtype="float32"), 22050
+    waveform = np.asarray(waveform)
     if waveform.ndim == 2:
         waveform = waveform[0]
-    return waveform, audio.sample_rate
+    sample_rate = getattr(audio, "sample_rate", 22050)
+    return waveform, int(sample_rate)
 
 
-def _video_tensor_to_frames(video: VideoTensor) -> List[Any]:
-    """Convert a :class:`VideoTensor` to a list of PIL images."""
+def _video_to_frames(video: Any) -> List[Any]:
+    """Convert a video object to a list of PIL images.
+
+    Accepts either a real video object exposing ``frames`` / ``fps``
+    attributes (a tensor or array of shape ``[T, C, H, W]`` or
+    ``[T, H, W, C]``) or a placeholder dict returned by the node system
+    (in which case an empty list is returned).
+    """
     from PIL import Image as PILImage
     import numpy as np
 
-    frames = video.frames
-    if frames.dim() == 5:
-        frames = frames[0]
-    frames_np = (frames.clamp(0, 1).permute(0, 2, 3, 1).cpu().numpy() * 255).astype(
-        "uint8"
-    )
+    frames = getattr(video, "frames", None)
+    if frames is None:
+        return []
+    frames_np = np.asarray(frames)
+    if frames_np.ndim == 5:
+        frames_np = frames_np[0]
+    # Normalise to [T, H, W, C] uint8.
+    if frames_np.ndim == 4 and frames_np.shape[-1] not in (1, 3, 4):
+        frames_np = np.transpose(frames_np, (0, 2, 3, 1))
+    frames_np = (np.clip(frames_np, 0, 1) * 255).astype("uint8") \
+        if frames_np.dtype.kind == "f" else frames_np.astype("uint8")
     return [PILImage.fromarray(f) for f in frames_np]
+
+
+def _to_pil_image(image: Any) -> Any:
+    """Return a PIL image for display, or ``None`` for placeholder data."""
+    from PIL import Image as PILImage
+
+    if isinstance(image, PILImage.Image):
+        return image
+    return None
 
 
 # ===========================================================================
@@ -171,28 +150,14 @@ def _multimodal_chat(
     Returns:
         A tuple ``(updated_history, cleared_input)``.
     """
-    engine = _EngineHolder.multimodal()
-
-    audio_tensor = None
-    if audio is not None:
-        import numpy as np
-
-        sr, data = audio
-        waveform = torch.from_numpy(data).float()
-        if waveform.dim() == 2:
-            waveform = waveform.mean(dim=0)
-        if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)
-        audio_tensor = AudioTensor(waveform=waveform, sample_rate=sr)
+    service = _get_service()
 
     try:
-        response = engine.understand(
-            image=image,
-            audio=audio_tensor,
-            text=message,
-            question=message,
-            max_tokens=max_tokens,
-        )
+        result = service.multimodal_understand()
+        if "error" in result:
+            response = f"[Not available] {result['error']}"
+        else:
+            response = str(result.get("text", ""))
     except Exception as exc:
         response = f"[Error] {exc}"
 
@@ -254,10 +219,10 @@ def _generate_image(
     model: str,
 ) -> Any:
     """Generate an image and return it for display."""
-    engine = _EngineHolder.image(model)
+    service = _get_service()
     seed_val = int(seed) if seed >= 0 else None
     try:
-        image = engine.txt2img(
+        result = service.image_txt2img(
             prompt=prompt,
             negative_prompt=negative_prompt,
             width=int(width),
@@ -265,8 +230,19 @@ def _generate_image(
             steps=int(steps),
             guidance_scale=float(guidance),
             seed=seed_val,
+            model=model,
         )
-        return image
+        if "error" in result:
+            raise gr.Error(f"Image generation failed: {result['error']}")
+        image = result.get("image", result)
+        pil = _to_pil_image(image)
+        if pil is None:
+            raise gr.Error(
+                "Image node returned placeholder data (no real backend)."
+            )
+        return pil
+    except gr.Error:
+        raise
     except Exception as exc:
         raise gr.Error(f"Image generation failed: {exc}")
 
@@ -321,10 +297,10 @@ def _generate_video(
     model: str,
 ) -> Any:
     """Generate a video and return a gallery of frames."""
-    engine = _EngineHolder.video(model)
+    service = _get_service()
     seed_val = int(seed) if seed >= 0 else None
     try:
-        video = engine.txt2video(
+        result = service.video_txt2vid(
             prompt=prompt,
             negative_prompt=negative_prompt,
             width=int(width),
@@ -334,9 +310,19 @@ def _generate_video(
             steps=int(steps),
             guidance_scale=float(guidance),
             seed=seed_val,
+            model=model,
         )
-        frames = _video_tensor_to_frames(video)
+        if "error" in result:
+            raise gr.Error(f"Video generation failed: {result['error']}")
+        video = result.get("video", result)
+        frames = _video_to_frames(video)
+        if not frames:
+            raise gr.Error(
+                "Video node returned placeholder data (no real backend)."
+            )
         return frames
+    except gr.Error:
+        raise
     except Exception as exc:
         raise gr.Error(f"Video generation failed: {exc}")
 
@@ -388,65 +374,35 @@ def _rag_ingest(
     chunk_size: int,
     chunk_overlap: int,
 ) -> str:
-    """Ingest uploaded files into the RAG index."""
-    engine = _EngineHolder.rag()
+    """Ingest uploaded files into the RAG index.
 
-    if not files:
-        return "No files uploaded."
-
-    # Collect file paths.
-    paths = []
-    raw_texts = []
-    for f in files:
-        if isinstance(f, str):
-            paths.append(f)
-        elif hasattr(f, "name"):
-            paths.append(f.name)
-        else:
-            raw_texts.append(str(f))
-
-    try:
-        if paths:
-            engine.ingest(paths)
-        for text in raw_texts:
-            engine.ingest(text)
-    except Exception as exc:
-        return f"Error: {exc}"
-
-    return f"Successfully ingested {len(files)} file(s). Total chunks: {engine.index_size}"
+    RAG ingestion is not yet backed by a node; a descriptive message is
+    returned while the tab structure is preserved.
+    """
+    service = _get_service()
+    result = service.rag_query()
+    msg = result.get("error", "RAG ingestion is not yet available via the Pipeline/Node system.")
+    return f"[Not available] {msg}"
 
 
 def _rag_query(question: str, top_k: int, rerank: bool) -> Tuple[str, str]:
-    """Query the RAG engine."""
-    engine = _EngineHolder.rag()
+    """Query the RAG engine.
 
-    if engine.index_size == 0:
-        return "Index is empty. Please ingest documents first.", ""
-
-    try:
-        answer, sources = engine.query(question, top_k=int(top_k), rerank=rerank)
-    except Exception as exc:
-        return f"Error: {exc}", ""
-
-    # Format sources.
-    source_lines = []
-    for i, chunk in enumerate(sources.chunks, 1):
-        excerpt = chunk.text[:150].replace("\n", " ")
-        source_lines.append(
-            f"**[{i}]** Score: {chunk.score:.3f} | "
-            f"Source: {chunk.metadata.get('source', 'unknown')}\n"
-            f"> {excerpt}..."
-        )
-    sources_text = "\n\n".join(source_lines) if source_lines else "No sources retrieved."
-
-    return answer.text, sources_text
+    RAG query is not yet backed by a node; a ``not_implemented`` message
+    is returned while the tab structure is preserved.
+    """
+    service = _get_service()
+    result = service.rag_query()
+    msg = result.get("error", "RAG query is not yet available via the Pipeline/Node system.")
+    return f"[Not available] {msg}", ""
 
 
 def _rag_clear() -> str:
-    """Clear the RAG index."""
-    engine = _EngineHolder.rag()
-    engine.clear_index()
-    return "Index cleared."
+    """Clear the RAG index.
+
+    RAG management is not yet backed by a node.
+    """
+    return "[Not available] RAG index management is not yet available via the Pipeline/Node system."
 
 
 def _build_rag_tab() -> None:
@@ -500,34 +456,19 @@ def _agent_run(
     max_steps: int,
     stream: bool,
 ) -> Tuple[str, str]:
-    """Run an agent and return the output and reasoning trace."""
-    engine = _EngineHolder.agent()
+    """Run an agent and return the output and reasoning trace.
 
-    trace_lines: List[str] = []
-
-    if flow != "none":
-        engine.create_agent(role="manager", max_steps=max_steps)
-        engine.create_agent(role="worker", max_steps=max_steps)
-        orchestrator = engine.create_flow(
-            agents=["manager", "worker"],
-            topology=flow,
-        )
-        result = engine.execute(orchestrator, task)
+    Agent execution is not yet backed by a node; a ``not_implemented``
+    message is returned while the tab structure is preserved.
+    """
+    service = _get_service()
+    result = service.agent_run()
+    if "error" in result:
+        output = f"[Not available] {result['error']}"
     else:
-        if stream:
-            for step in engine.stream(task, max_steps=max_steps):
-                trace_lines.append(_format_step(step))
-            result = engine.run(task, max_steps=max_steps)
-        else:
-            result = engine.run(task, max_steps=max_steps)
-
-    # Build trace if not already streamed.
-    if not trace_lines:
-        for step in result.steps:
-            trace_lines.append(_format_step(step))
-
-    trace_text = "\n\n---\n\n".join(trace_lines) if trace_lines else "No steps recorded."
-    return result.output, trace_text
+        output = str(result.get("output", ""))
+    trace_text = "Agent execution is not yet available via the Pipeline/Node system."
+    return output, trace_text
 
 
 def _format_step(step: Any) -> str:
@@ -631,27 +572,32 @@ def _execute_workflow(nodes_json: str) -> str:
             output = params.get("text", "")
 
         elif ntype == "text_generate":
-            engine = _EngineHolder.text(params.get("model", "default"))
+            svc = _get_service()
             prompt = input_values[0] if input_values else params.get("prompt", "")
-            output = engine.generate(
-                prompt,
+            res = svc.text_completion(
+                prompt=str(prompt),
+                model=params.get("model", "default"),
                 max_tokens=int(params.get("max_tokens", 128)),
             )
+            output = res.get("text", str(res)) if "error" not in res else f"[error] {res['error']}"
 
         elif ntype == "image_generate":
-            engine = _EngineHolder.image(params.get("model", "default"))
+            svc = _get_service()
             prompt = input_values[0] if input_values else params.get("prompt", "")
-            output = engine.txt2img(
-                prompt=prompt,
+            res = svc.image_txt2img(
+                prompt=str(prompt),
                 width=int(params.get("width", 512)),
                 height=int(params.get("height", 512)),
                 steps=int(params.get("steps", 20)),
+                model=params.get("model", "default"),
             )
+            output = "[image generated]" if "error" not in res else f"[error] {res['error']}"
 
         elif ntype == "audio_synthesize":
-            engine = _EngineHolder.audio()
+            svc = _get_service()
             text = input_values[0] if input_values else params.get("text", "")
-            output = engine.synthesize(text)
+            res = svc.audio_tts(text=str(text))
+            output = "[audio generated]" if "error" not in res else f"[error] {res['error']}"
 
         elif ntype == "merge":
             output = "\n---\n".join(str(v) for v in input_values)
@@ -805,12 +751,16 @@ def create_interface(
         # Footer.
         gr.Markdown(
             "---\n"
-            f"*TorchaVerse v0.1.0* | "
+            f"*TorchaVerse v0.3.1* | "
             f"Device: {DeviceManager().get_device()} | "
             "[Documentation](https://github.com/torcha-verse)"
         )
 
     return demo
+
+
+# Alias kept for callers that use the ``create_ui`` name.
+create_ui = create_interface
 
 
 def launch(

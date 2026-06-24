@@ -1,10 +1,9 @@
 """Core layer for the TorchaVerse framework.
 
 This package groups the domain-specific core components that sit above
-the infrastructure layer: the module assembly bus, model registry,
-tokenizer hub, KV cache management, diffusion scheduling, vocoder
-management, memory management, inference scheduling, and the tool
-registry.
+the infrastructure layer: the module assembly bus, paged KV cache,
+runtime scheduler, memory pool, unified sampler, diffusion scheduler,
+vocoder manager, and the tool registry.
 
 Import policy
 --------------
@@ -19,7 +18,7 @@ Concretely::
 
     import core                       # succeeds without torch
     from core import ModuleBus        # succeeds without torch
-    from core import BaseModel        # lazily imports torch on access
+    from core import PagedKVCache     # lazily imports torch on access
 """
 
 from __future__ import annotations
@@ -35,51 +34,48 @@ __all__ = [
     "ModuleBus",
     "ModuleSpec",
     "register_module",
-    # model_registry
-    "BaseModel",
-    "ModelRegistry",
-    "register_model",
-    # tokenizer_hub
-    "AudioTokenizer",
-    "BaseTokenizer",
-    "ImageTokenizer",
-    "TextTokenizer",
-    "TokenizerHub",
-    "VideoTokenizer",
-    # kv_cache_manager
-    "CacheStrategy",
-    "KVCacheManager",
+    # kv_cache_v2
+    "EvictionResult",
+    "KVCacheConfig",
+    "KVCacheBlock",
+    "PagedKVCache",
+    # runtime_scheduler
+    "TaskPriority",
+    "Task",
+    "Future",
+    "RuntimeScheduler",
+    # memory_pool
+    "OffloadStrategy",
+    "MemoryBlock",
+    "MemoryPool",
+    "MemoryEstimate",
+    "MemoryEstimator",
+    "ModelOffloader",
+    # sampler (unified sampler abstraction)
+    "SamplerConfig",
+    "SamplerRegistry",
+    "register_sampler",
     # diffusion_scheduler
-    "BaseSampler",
-    "ConsistencySampler",
-    "DDIMSampler",
-    "DDPMSampler",
-    "DiffusionScheduler",
-    "DPMSolverSampler",
-    "EulerSampler",
-    "GuidanceController",
     "NoiseSchedule",
-    "SAMPLER_REGISTRY",
+    "BaseSampler",
+    "DDPMSampler",
+    "DDIMSampler",
+    "EulerSampler",
+    "DPMSolverSampler",
+    "ConsistencySampler",
+    "GuidanceController",
     "StepController",
+    "DiffusionScheduler",
+    "SAMPLER_REGISTRY",
     # vocoder_manager
     "BaseVocoder",
     "HiFiGANVocoder",
     "VocoderManager",
-    # memory_manager
-    "MemoryInfo",
-    "MemoryManager",
-    "MemoryPool",
-    # inference_scheduler
-    "Future",
-    "InferenceRequest",
-    "InferenceResult",
-    "InferenceScheduler",
-    "RequestStatus",
     # tool_registry
     "BaseTool",
     "Tool",
-    "ToolRegistry",
     "ToolResult",
+    "ToolRegistry",
     "register_tool",
     "validate_params",
 ]
@@ -88,51 +84,48 @@ __all__ = [
 #: imported lazily on first access so that ``import core`` does not pull in
 #: optional heavy dependencies such as ``torch``.
 _LAZY_IMPORTS: dict[str, str] = {
-    # model_registry
-    "BaseModel": "model_registry",
-    "ModelRegistry": "model_registry",
-    "register_model": "model_registry",
-    # tokenizer_hub
-    "AudioTokenizer": "tokenizer_hub",
-    "BaseTokenizer": "tokenizer_hub",
-    "ImageTokenizer": "tokenizer_hub",
-    "TextTokenizer": "tokenizer_hub",
-    "TokenizerHub": "tokenizer_hub",
-    "VideoTokenizer": "tokenizer_hub",
-    # kv_cache_manager
-    "CacheStrategy": "kv_cache_manager",
-    "KVCacheManager": "kv_cache_manager",
+    # kv_cache_v2
+    "EvictionResult": "kv_cache_v2",
+    "KVCacheConfig": "kv_cache_v2",
+    "KVCacheBlock": "kv_cache_v2",
+    "PagedKVCache": "kv_cache_v2",
+    # runtime_scheduler
+    "TaskPriority": "runtime_scheduler",
+    "Task": "runtime_scheduler",
+    "Future": "runtime_scheduler",
+    "RuntimeScheduler": "runtime_scheduler",
+    # memory_pool
+    "OffloadStrategy": "memory_pool",
+    "MemoryBlock": "memory_pool",
+    "MemoryPool": "memory_pool",
+    "MemoryEstimate": "memory_pool",
+    "MemoryEstimator": "memory_pool",
+    "ModelOffloader": "memory_pool",
+    # sampler
+    "SamplerConfig": "sampler",
+    "SamplerRegistry": "sampler",
+    "register_sampler": "sampler",
     # diffusion_scheduler
-    "BaseSampler": "diffusion_scheduler",
-    "ConsistencySampler": "diffusion_scheduler",
-    "DDIMSampler": "diffusion_scheduler",
-    "DDPMSampler": "diffusion_scheduler",
-    "DiffusionScheduler": "diffusion_scheduler",
-    "DPMSolverSampler": "diffusion_scheduler",
-    "EulerSampler": "diffusion_scheduler",
-    "GuidanceController": "diffusion_scheduler",
     "NoiseSchedule": "diffusion_scheduler",
-    "SAMPLER_REGISTRY": "diffusion_scheduler",
+    "BaseSampler": "diffusion_scheduler",
+    "DDPMSampler": "diffusion_scheduler",
+    "DDIMSampler": "diffusion_scheduler",
+    "EulerSampler": "diffusion_scheduler",
+    "DPMSolverSampler": "diffusion_scheduler",
+    "ConsistencySampler": "diffusion_scheduler",
+    "GuidanceController": "diffusion_scheduler",
     "StepController": "diffusion_scheduler",
+    "DiffusionScheduler": "diffusion_scheduler",
+    "SAMPLER_REGISTRY": "diffusion_scheduler",
     # vocoder_manager
     "BaseVocoder": "vocoder_manager",
     "HiFiGANVocoder": "vocoder_manager",
     "VocoderManager": "vocoder_manager",
-    # memory_manager
-    "MemoryInfo": "memory_manager",
-    "MemoryManager": "memory_manager",
-    "MemoryPool": "memory_manager",
-    # inference_scheduler
-    "Future": "inference_scheduler",
-    "InferenceRequest": "inference_scheduler",
-    "InferenceResult": "inference_scheduler",
-    "InferenceScheduler": "inference_scheduler",
-    "RequestStatus": "inference_scheduler",
     # tool_registry
     "BaseTool": "tool_registry",
     "Tool": "tool_registry",
-    "ToolRegistry": "tool_registry",
     "ToolResult": "tool_registry",
+    "ToolRegistry": "tool_registry",
     "register_tool": "tool_registry",
     "validate_params": "tool_registry",
 }

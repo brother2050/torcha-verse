@@ -17,7 +17,14 @@ import re
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 from core.tool_registry import BaseTool, Tool, ToolRegistry, ToolResult
-from engines.text_engine import Message, ToolCall
+from dataclasses import dataclass
+@dataclass
+class Message:
+    role: str = "user"
+    content: str = ""
+
+class ToolCall:
+    pass
 from infrastructure.logger import get_logger
 from .base_agent import Memory, Result, Step
 from .react_agent import ReActAgent

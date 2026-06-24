@@ -6,7 +6,7 @@ text, image, audio, video generation, multimodal fusion, RAG, and agents,
 all built on native PyTorch without high-level wrappers.
 """
 
-__version__ = "0.3.0-alpha"
+__version__ = "0.3.1"
 __author__ = "TorchaVerse Team"
 
 # ---------------------------------------------------------------------------
