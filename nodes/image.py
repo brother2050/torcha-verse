@@ -59,6 +59,15 @@ _IMAGE_MODEL_VRAM_GB: float = 4.0
 #: Number of pixels in one megapixel.
 _MEGAPIXEL_PIXELS: float = 1_000_000.0
 
+#: 默认图像宽度/高度（像素），用于 execute() 中的回退值。
+_DEFAULT_WIDTH: int = 512
+#: 默认推理步数，用于 execute() 中的回退值。
+_DEFAULT_STEPS: int = 20
+#: 默认 img2img 重绘强度，用于 execute() 中的回退值。
+_DEFAULT_STRENGTH: float = 0.75
+#: 默认放大倍数，用于 execute() 中的回退值。
+_DEFAULT_SCALE: int = 2
+
 
 def _coerce_dim(value: Any) -> Optional[int]:
     """Return ``value`` as an ``int`` when it is an integer-like number."""
@@ -231,10 +240,10 @@ class ImageTxt2ImgNode(BaseNode):
             A dict with ``image`` and ``seed``.
         """
         prompt = str(inputs.get("prompt", ""))
-        width = _coerce_dim(inputs.get("width")) or 512
-        height = _coerce_dim(inputs.get("height")) or 512
+        width = _coerce_dim(inputs.get("width")) or _DEFAULT_WIDTH
+        height = _coerce_dim(inputs.get("height")) or _DEFAULT_WIDTH
         steps = inputs.get("steps")
-        steps = steps if isinstance(steps, int) and steps > 0 else 20
+        steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         seed = inputs.get("seed")
         seed = seed if isinstance(seed, int) else 0
         model = ctx.config.get("default_image_model")
@@ -426,13 +435,13 @@ class ImageImg2ImgNode(BaseNode):
             A dict with ``image`` and ``seed``.
         """
         prompt = str(inputs.get("prompt", ""))
-        width = _coerce_dim(inputs.get("width")) or 512
-        height = _coerce_dim(inputs.get("height")) or 512
+        width = _coerce_dim(inputs.get("width")) or _DEFAULT_WIDTH
+        height = _coerce_dim(inputs.get("height")) or _DEFAULT_WIDTH
         steps = inputs.get("steps")
-        steps = steps if isinstance(steps, int) and steps > 0 else 20
+        steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         strength = inputs.get("strength")
         strength = (
-            float(strength) if isinstance(strength, (int, float)) else 0.75
+            float(strength) if isinstance(strength, (int, float)) else _DEFAULT_STRENGTH
         )
         seed = inputs.get("seed")
         seed = seed if isinstance(seed, int) else 0
@@ -558,7 +567,7 @@ class ImageUpscaleNode(BaseNode):
             A dict with ``image``.
         """
         scale = inputs.get("scale")
-        scale = scale if isinstance(scale, int) and scale > 0 else 2
+        scale = scale if isinstance(scale, int) and scale > 0 else _DEFAULT_SCALE
         model = inputs.get("model") or ctx.config.get("default_upscale_model")
 
         ctx.logger.debug(

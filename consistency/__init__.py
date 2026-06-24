@@ -5,17 +5,19 @@ of engines, profiles, scoring primitives and a top-level pipeline that
 together ensure character / outfit / scene / depth identity is
 preserved across shots and over time (video).
 
-The consistency framework sits at L4 of the v0.3.0 architecture and
+The consistency framework sits at L6 of the v0.3.0 architecture and
 composes the L2 asset layer (characters, outfits, scenes, depth maps)
 with the L4 node system (placeholder consistency nodes) into a
 coherent generation surface.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- config, logging, devices.
 * L2 ``assets`` -- the asset model + :class:`~assets.store.AssetStore`.
 * L3 ``core`` -- module bus, model registry, schedulers.
-* L4 ``consistency`` (this package) -- engines, pipeline, scoring.
+* L4 ``nodes`` -- the node system (consistency-conditioning nodes).
+* L5 ``pipeline`` / ``canvas`` -- DAG, composer, visual canvas.
+* L6 ``consistency`` (this package) -- engines, pipeline, scoring.
 
 Submodules:
 

@@ -14,23 +14,25 @@ pip install -e .
 
 ```python
 from pipeline.composer import PipelineBuilder
+from nodes.base import NodeContext
 
 p = (PipelineBuilder("cinematic_shot")
     .node("image_txt2img", id="shot1", prompt="A cat playing piano",
           width=1024, height=576, steps=30)
     .node("image_upscale", id="shot1_up", scale=2)
     .connect("shot1", "shot1_up", output_key="image", input_key="image")
-    .node("subtitle_burn", id="sub1")
-    .connect("shot1_up", "sub1", output_key="image", input_key="video")
+    .node("image_img2img", id="refine", prompt="cinematic lighting, film grain", strength=0.3)
+    .connect("shot1_up", "refine", output_key="image", input_key="input_image")
     .build())
 
-result = p.run()
+result = p.run(NodeContext())
 ```
 
 ### Digital Human Pipeline
 
 ```python
 from pipeline.composer import PipelineBuilder
+from nodes.base import NodeContext
 
 p = (PipelineBuilder("digital_human")
     .node("dh_voice_clone", id="voice",
@@ -43,7 +45,7 @@ p = (PipelineBuilder("digital_human")
     .connect("head", "enhance", output_key="video", input_key="video")
     .build())
 
-result = p.run()
+result = p.run(NodeContext())
 ```
 
 ### Canvas + AutoDirector
@@ -51,11 +53,12 @@ result = p.run()
 ```python
 from canvas.autodirector import AutoDirector
 from pipeline.templates import TemplateRegistry
+from nodes.base import NodeContext
 
 director = AutoDirector(TemplateRegistry())
 canvas = director.generate("a 3-minute anime short about a girl and her robot")
 pipeline = canvas.to_pipeline()
-result = pipeline.run()
+result = pipeline.run(NodeContext())
 ```
 
 ### Plugin System
@@ -114,9 +117,9 @@ torcha_verse/
 | **6-Layer Architecture** | L1 Infrastructure → L2 Assets → L3 Core → L4 Nodes → L5 Pipeline → L6 Canvas |
 | **ModuleBus** | Unified name resolver replacing scattered singletons |
 | **29 Nodes** | Text, image, video, audio, subtitle, consistency, export, digital human |
-| **Canvas Type System** | 19 port types with compatibility matrix, 7-point connection validation |
+| **Canvas Type System** | 19 port types with compatibility matrix, 8-point connection validation |
 | **Digital Human** | 6 nodes: lip sync, talking head, portrait animate, full body, face enhance, voice clone |
-| **Consistency Framework** | Character/Outfit/Scene/Depth four-suite with weighted conditions |
+| **Consistency Framework** | Character/Outfit/Scene three engines + Depth node with weighted conditions |
 | **Plugin System** | 3-layer loading: entry-point, directory scan, programmatic registration |
 | **Paper Integration** | Registry with 5 papers, reference_impl linking to Sutskever-30/labmlai/Karpathy/lucidrains |
 | **Security** | 4-gate defense: input sanitizer, sandbox, output filter, audit/SBOM |
@@ -125,7 +128,7 @@ torcha_verse/
 ## Testing
 
 ```bash
-# Run all tests (301 tests)
+# Run all tests (331 tests)
 python -m pytest tests/ -v
 
 # Run only E2E tests

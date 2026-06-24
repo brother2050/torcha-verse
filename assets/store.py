@@ -159,6 +159,8 @@ class AssetStore:
         self._lock: threading.RLock = threading.RLock()
         self._cold_storage: Optional[ColdStorageProtocol] = cold_storage
         self._logger = get_logger(self.__class__.__name__)
+        # S2-7: 关闭标志，close() 后所有公共方法拒绝操作。
+        self._closed: bool = False
 
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
@@ -194,6 +196,16 @@ class AssetStore:
     # ------------------------------------------------------------------
     # Database lifecycle
     # ------------------------------------------------------------------
+    def _ensure_open(self) -> None:
+        """Raise ``RuntimeError`` if the store has been closed (S2-7).
+
+        All public methods call this before touching shared state so that
+        use-after-close is detected eagerly rather than producing obscure
+        SQLite errors.
+        """
+        if self._closed:
+            raise RuntimeError("AssetStore is closed")
+
     def _init_db(self) -> None:
         """Open the SQLite connection in WAL mode and create the schema."""
         self._conn = sqlite3.connect(
@@ -212,9 +224,13 @@ class AssetStore:
     def close(self) -> None:
         """Close the SQLite connection and clear the hot cache.
 
-        After calling this method the store must not be used again.
+        After calling this method the store must not be used again; all
+        public methods will raise :class:`RuntimeError`.
         """
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             if self._conn is not None:
                 try:
                     self._conn.commit()
@@ -265,57 +281,109 @@ class AssetStore:
         Raises:
             FileNotFoundError: If ``content_path`` does not exist.
         """
+        self._ensure_open()  # S2-7: 关闭后拒绝操作
         content_path = Path(content_path)
         if not content_path.exists():
             raise FileNotFoundError(f"Content file not found: {content_path}")
 
-        # Hashing is read-only on the source file; do it outside the lock
-        # so that a slow hash of a large model does not block other ops.
-        content_hash = self._hash_file(content_path)
         size_bytes = content_path.stat().st_size
 
-        # Step 1: under the lock, check whether the content blob already
-        # exists on disk (content-addressed deduplication).
+        # ==================================================================
+        # Phase 1 (锁内): 检查状态、生成临时路径。
+        # 加载已有修订用于 S2-5 大小预过滤；生成临时暂存路径(与 objects
+        # 目录在同一文件系统，保证 Phase 3 的 os.replace 原子重命名)。
+        # ==================================================================
         with self._lock:
-            content_exists = self._content_path(content_hash).exists()
-
-        # Step 2: copy the content file OUTSIDE the lock so that slow
-        # file I/O does not block other store operations.  The copy uses
-        # a temporary file plus an atomic rename for crash consistency.
-        if not content_exists:
-            self._store_content(content_path, content_hash)
-
-        # Step 3: under the lock, update the database records and cache.
-        with self._lock:
-            # Preserve revision history from a previously stored version.
+            self._ensure_open()
+            # S2-5: 加载已有修订，用于按文件大小预过滤去重。
             stored = self._load_asset(asset.id)
-            if stored is not None and stored.revisions:
-                asset.revisions = list(stored.revisions)
-
-            # Deduplicate: reuse an existing revision for the same content.
-            existing_rev = next(
-                (r for r in asset.revisions if r.content_hash == content_hash),
-                None,
+            existing_revisions: list = (
+                list(stored.revisions)
+                if stored is not None and stored.revisions
+                else []
             )
-            if existing_rev is not None:
-                rev = existing_rev
-            else:
-                rev = asset.add_revision(content_hash, size_bytes)
+            staging_dir = self._objects_dir / ".staging"
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            staging_path = staging_dir / f".{uuid4().hex}.tmp"
 
-            asset.updated_at = time.time()
-            self._save_asset(asset)
-            self._hot_put(asset)
+        # ==================================================================
+        # Phase 2 (锁外): 执行文件复制和哈希计算。
+        # 慢速 I/O(文件复制、sha256 计算)在锁外完成，不阻塞其他操作。
+        # ==================================================================
+        try:
+            self._copy_to_staging(content_path, staging_path)
+            # S2-5: 先检查文件大小是否匹配已有修订记录。
+            # 大小匹配则计算哈希以确认去重；大小不同则内容确定为新，
+            # 跳过哈希去重比对(仍需计算哈希用于内容寻址存储路径)。
+            content_hash = self._hash_file(staging_path)
+            size_match = any(
+                r.size_bytes == size_bytes for r in existing_revisions
+            )
+        except BaseException:
+            self._cleanup_staging(staging_path)
+            raise
 
-            self._logger.debug(
-                "Put asset %s rev %s (hash=%s, %d bytes).",
-                asset.id, rev.revision, content_hash[:12], size_bytes,
-            )
-            return AssetRef(
-                asset_id=asset.id,
-                asset_type=asset.asset_type,
-                revision=rev.revision,
-                content_hash=rev.content_hash,
-            )
+        # ==================================================================
+        # Phase 3 (锁内): 原子重命名、更新元数据。
+        # 将暂存文件原子重命名到内容寻址路径；在显式事务中更新数据库
+        # 与热缓存元数据(S2-6)。
+        # ==================================================================
+        with self._lock:
+            self._ensure_open()
+            try:
+                final_path = self._content_path(content_hash)
+                if not final_path.exists():
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staging_path, final_path)
+                else:
+                    # 内容寻址去重:blob 已存在，删除暂存文件。
+                    staging_path.unlink(missing_ok=True)
+
+                # S2-6: 显式事务保护元数据操作(加载资产 + 保存资产)。
+                self._conn.execute("BEGIN")  # type: ignore[union-attr]
+                try:
+                    # 保留此前存储版本的修订历史。
+                    stored = self._load_asset(asset.id)
+                    if stored is not None and stored.revisions:
+                        asset.revisions = list(stored.revisions)
+
+                    # 去重:复用相同内容的已有修订。
+                    # S2-5: 若大小与所有已有修订不同(size_match=False)，
+                    # 则跳过哈希去重比对，直接添加新修订。
+                    existing_rev = None
+                    if size_match:
+                        existing_rev = next(
+                            (r for r in asset.revisions
+                             if r.content_hash == content_hash),
+                            None,
+                        )
+                    if existing_rev is not None:
+                        rev = existing_rev
+                    else:
+                        rev = asset.add_revision(content_hash, size_bytes)
+
+                    asset.updated_at = time.time()
+                    self._save_asset(asset)
+                    self._conn.execute("COMMIT")  # type: ignore[union-attr]
+                except Exception:
+                    self._conn.execute("ROLLBACK")  # type: ignore[union-attr]
+                    raise
+
+                self._hot_put(asset)
+
+                self._logger.debug(
+                    "Put asset %s rev %s (hash=%s, %d bytes).",
+                    asset.id, rev.revision, content_hash[:12], size_bytes,
+                )
+                return AssetRef(
+                    asset_id=asset.id,
+                    asset_type=asset.asset_type,
+                    revision=rev.revision,
+                    content_hash=rev.content_hash,
+                )
+            except BaseException:
+                self._cleanup_staging(staging_path)
+                raise
 
     def get(self, ref: AssetRef) -> "tuple[Asset, Path]":
         """Retrieve an asset and the path to its content file.
@@ -330,6 +398,7 @@ class AssetStore:
             KeyError: If the asset or the referenced revision is missing.
             FileNotFoundError: If the content blob is missing on disk.
         """
+        self._ensure_open()  # S2-7
         with self._lock:
             asset = self._load_asset(ref.asset_id)
             if asset is None:
@@ -349,6 +418,7 @@ class AssetStore:
 
     def exists(self, ref: AssetRef) -> bool:
         """Return ``True`` if the referenced asset + revision exist."""
+        self._ensure_open()  # S2-7
         with self._lock:
             asset = self._load_asset(ref.asset_id)
             if asset is None:
@@ -382,6 +452,7 @@ class AssetStore:
             params.append(status.value)
         query += " ORDER BY updated_at DESC;"
 
+        self._ensure_open()  # S2-7
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()  # type: ignore[union-attr]
 
@@ -406,6 +477,7 @@ class AssetStore:
             ``True`` if the asset was found and archived, ``False`` if it
             was not found.
         """
+        self._ensure_open()  # S2-7
         with self._lock:
             asset = self._load_asset(ref.asset_id)
             if asset is None:
@@ -431,6 +503,7 @@ class AssetStore:
         """
         if not query:
             return []
+        self._ensure_open()  # S2-7
         pattern = f"%{query}%"
         with self._lock:
             rows = self._conn.execute(  # type: ignore[union-attr]
@@ -467,6 +540,7 @@ class AssetStore:
         Returns:
             An :class:`AssetRef` to the newly created asset.
         """
+        self._ensure_open()  # S2-7
         asset, content_path = self.get(ref)
         data = asset.to_dict()
         new_id = f"{asset.id}-fork-{uuid4().hex[:8]}"
@@ -495,6 +569,7 @@ class AssetStore:
         Returns:
             ``True`` if the content is present and its hash matches.
         """
+        self._ensure_open()  # S2-7
         with self._lock:
             asset = self._load_asset(ref.asset_id)
             if asset is None:
@@ -607,6 +682,34 @@ class AssetStore:
             except OSError:
                 pass
             raise
+
+    def _copy_to_staging(self, src: Path, staging_path: Path) -> None:
+        """Copy ``src`` to a staging path (S1-3 Phase 2, lock-free).
+
+        Writes the source content to ``staging_path`` in chunked fashion
+        with an ``fsync`` so that the staged file is durable before the
+        atomic rename in Phase 3.  This method performs *no* locking and
+        may run concurrently with other store operations.
+        """
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(src, "rb") as fsrc, open(staging_path, "wb") as fdst:
+            while True:
+                chunk = fsrc.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                fdst.write(chunk)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+
+    @staticmethod
+    def _cleanup_staging(staging_path: Path) -> None:
+        """Remove a staging file if it still exists (best-effort)."""
+        try:
+            staging_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
     @staticmethod
     def _hash_file(path: Path) -> str:

@@ -30,6 +30,7 @@ Example:
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Sequence, Tuple, Union
@@ -70,6 +71,9 @@ _BYTES_PER_GIB: float = 1024.0 ** 3
 #: Sentinel attribute name used to tag modules whose attention has been
 #: patched to use SDPA.
 _SDPA_TAG: str = "_torcha_verse_sdpa_applied"
+
+#: 模块级日志器，用于记录优化跳过/失败等警告信息。
+_logger: logging.Logger = logging.getLogger("performance.optimizer")
 
 
 # ---------------------------------------------------------------------------
@@ -297,13 +301,13 @@ class PerformanceOptimizer:
         if hasattr(pipeline, "fuse_nodes"):
             try:
                 pipeline.fuse_nodes()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - 最佳努力
+                _logger.warning("pipeline.fuse_nodes() 失败，已跳过: %s", exc)
         if hasattr(pipeline, "preallocate"):
             try:
                 pipeline.preallocate()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - 最佳努力
+                _logger.warning("pipeline.preallocate() 失败，已跳过: %s", exc)
         return pipeline
 
     # ------------------------------------------------------------------
@@ -411,8 +415,8 @@ class PerformanceOptimizer:
                 # Even without CUDA backend controls, mark as enabled
                 # so we don't retry; PyTorch 2.0+ uses SDPA internally.
                 enabled = True
-        except Exception:
-            pass
+        except Exception as exc:  # pragma: no cover - 最佳努力
+            _logger.warning("启用 SDPA 注意力后端失败，已跳过: %s", exc)
         setattr(model, _SDPA_TAG, True)
         return True
 
@@ -425,7 +429,8 @@ class PerformanceOptimizer:
             return model
         try:
             return torch.compile(model, mode=self._config.compile_mode)  # type: ignore[call-overload]
-        except Exception:
+        except Exception as exc:  # pragma: no cover - 最佳努力
+            _logger.warning("torch.compile 失败，返回原始模型: %s", exc)
             return model
 
     # ------------------------------------------------------------------

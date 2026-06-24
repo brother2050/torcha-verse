@@ -24,12 +24,12 @@ descriptor dictionaries; the full interface is exercised so that the
 methods can be swapped for a real generation backend without changing
 call sites.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- logging.
 * L2 ``assets`` -- :class:`~assets.model_asset.OutfitAsset`,
   :class:`~assets.store.AssetStore`, :class:`~assets.base.AssetRef`.
-* L4 ``consistency`` (this module) -- outfit engine.
+* L6 ``consistency`` (this module) -- outfit engine.
 
 This module is torch-free at the import level; it only depends on the
 standard library and the L1/L2 layers.  (The actual image operations

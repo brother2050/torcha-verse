@@ -34,6 +34,7 @@ Example:
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from dataclasses import dataclass, field
@@ -44,6 +45,9 @@ __all__ = [
     "FilterResult",
 ]
 
+#: 模块级日志器，用于记录可选依赖缺失及过滤失败等警告信息。
+_logger: logging.Logger = logging.getLogger("security.output_filter")
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -52,6 +56,7 @@ try:  # pragma: no cover - import guard
 
     _HAS_DETOXIFY: bool = True
 except Exception:  # pragma: no cover - Detoxify not installed
+    _logger.debug("Detoxify 未安装，文本过滤将使用回退模式。", exc_info=True)
     _HAS_DETOXIFY: bool = False
 
 try:  # pragma: no cover - import guard
@@ -59,6 +64,7 @@ try:  # pragma: no cover - import guard
 
     _HAS_NUDENET: bool = True
 except Exception:  # pragma: no cover - NudeNet not installed
+    _logger.debug("NudeNet 未安装，图像过滤将使用回退模式。", exc_info=True)
     _HAS_NUDENET: bool = False
 
 
@@ -316,7 +322,8 @@ class OutputFilter:
         model = self._get_detoxify()
         try:
             results = model.predict(text)
-        except Exception:
+        except Exception as exc:
+            _logger.warning("Detoxify 预测失败，回退到黑名单匹配: %s", exc)
             return self._filter_text_blocklist(text)
 
         scores: dict[str, float] = {}
@@ -377,7 +384,8 @@ class OutputFilter:
         detector = self._get_nude_detector()
         try:
             detections = detector.detect(image)
-        except Exception:
+        except Exception as exc:
+            _logger.warning("NudeNet 检测失败，返回宽松通过结果: %s", exc)
             return FilterResult(
                 passed=True,
                 score=0.0,

@@ -1,4 +1,4 @@
-"""Canvas version control for the TorchaVerse v0.3.0 architecture (L6).
+"""Canvas version control for the TorchaVerse v0.3.0 architecture (L5).
 
 This module provides a Git-like versioning system for canvases.  Every
 :meth:`~canvas.canvas.Canvas.snapshot` of a canvas can be *committed* as an

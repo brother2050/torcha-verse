@@ -38,6 +38,7 @@ Example:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from dataclasses import dataclass, field
@@ -51,6 +52,9 @@ __all__ = [
     "LicenseCheck",
 ]
 
+#: 模块级日志器，用于记录可选依赖缺失及扫描失败等警告信息。
+_logger: logging.Logger = logging.getLogger("security.audit")
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -60,6 +64,7 @@ try:  # pragma: no cover - import guard
 
     _HAS_PIP_AUDIT: bool = True
 except Exception:  # pragma: no cover - pip-audit not installed
+    _logger.debug("pip-audit 未安装，依赖漏洞扫描将使用回退模式。", exc_info=True)
     _HAS_PIP_AUDIT: bool = False
 
 try:  # pragma: no cover - import guard
@@ -67,6 +72,7 @@ try:  # pragma: no cover - import guard
 
     _HAS_SAFETY: bool = True
 except Exception:  # pragma: no cover - safety not installed
+    _logger.debug("safety 未安装，依赖漏洞扫描将使用回退模式。", exc_info=True)
     _HAS_SAFETY: bool = False
 
 
@@ -407,7 +413,8 @@ class SecurityAudit:
         try:
             reqs = ReqFile(str(path))  # type: ignore[name-defined]
             _, audit_results = _pip_audit(reqs)  # type: ignore[name-defined]
-        except Exception:
+        except Exception as exc:
+            _logger.warning("pip-audit 扫描失败，返回空漏洞列表: %s", exc)
             return vulnerabilities
 
         for dep, vulns in audit_results:
@@ -515,7 +522,10 @@ class SecurityAudit:
                         from infrastructure.audit_log import AuditLogger
 
                         self._audit_logger = AuditLogger()
-                    except Exception:
+                    except Exception as exc:
+                        _logger.warning(
+                            "无法加载 AuditLogger，审计日志功能不可用: %s", exc
+                        )
                         self._audit_logger = None
         return self._audit_logger
 

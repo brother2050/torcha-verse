@@ -30,17 +30,25 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import (
+    ALL_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    wait,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
 
+from nodes.base import NodeContext, NodeExecutor
 from .dag import DAG, DAGEdge, DAGNode
+from .validators import ConnectionValidator
 
 __all__ = [
     "NodeContext",
+    "NodeExecutor",
     "PipelineConfig",
     "Pipeline",
     "PipelineBuilder",
@@ -58,220 +66,8 @@ _logger: logging.Logger = logging.getLogger("pipeline.composer")
 _DEFAULT_OUTPUT_KEY: str = "output"
 _DEFAULT_INPUT_KEY: str = "input"
 
-#: Default maximum number of worker threads used when running a parallel
-#: group.  The actual concurrency is the smaller of this value and the group
-#: size, so a tiny group never spins up idle workers.
-_DEFAULT_MAX_WORKERS: int = 8
-
-#: Sentinel returned by :meth:`NodeContext.get_output` when a key is absent,
-#: distinguishing a stored ``None`` from a missing entry.
-_MISSING: Any = object()
-
-
-# Type alias for a node executor callable.
-NodeExecutor = Callable[[Dict[str, Any], "NodeContext"], Dict[str, Any]]
-
 #: Type alias for the progress callback signature.
 ProgressCallback = Callable[[int, int, str, str], None]
-
-
-# ---------------------------------------------------------------------------
-# NodeContext
-# ---------------------------------------------------------------------------
-class NodeContext:
-    """Per-run execution context shared across all nodes of a pipeline.
-
-    A :class:`NodeContext` carries three responsibilities:
-
-    1. **Output store** -- a thread-safe mapping of ``node_id -> outputs``
-       populated as nodes complete, so downstream nodes can fetch upstream
-       results.
-    2. **Executor resolution** -- a lookup chain that finds the callable to
-       run for a given ``node_type``.  Explicit per-type executors take
-       precedence, then the :class:`~core.module_bus.ModuleBus` (under the
-       ``node.<node_type>`` namespace), then ``None`` (passthrough).
-    3. **Metadata** -- an arbitrary, mutable key/value bag for run-level
-       configuration (seeds, device hints, asset references, ...).
-
-    The context is intentionally lightweight and dependency-free so that it
-    can be constructed in any environment.
-
-    Args:
-        bus: Optional :class:`~core.module_bus.ModuleBus` used for executor
-            resolution.  When ``None`` only the explicit ``executors`` map
-            is consulted.
-        executors: Optional mapping of ``node_type -> callable``.  Each
-            callable receives ``(inputs, ctx)`` and returns an output dict.
-        metadata: Optional initial metadata dictionary.
-        max_workers: Default worker cap for parallel execution.
-    """
-
-    def __init__(
-        self,
-        bus: Any = None,
-        executors: Optional[Dict[str, NodeExecutor]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        max_workers: int = _DEFAULT_MAX_WORKERS,
-        strict_mode: bool = False,
-        budget: Any = None,
-    ) -> None:
-        self._bus = bus
-        self._executors: Dict[str, NodeExecutor] = dict(executors or {})
-        self._metadata: Dict[str, Any] = dict(metadata or {})
-        self._outputs: Dict[str, Dict[str, Any]] = {}
-        self._max_workers: int = max(1, int(max_workers))
-        self._strict_mode: bool = bool(strict_mode)
-        self._budget: Any = budget
-        self._lock: threading.RLock = threading.RLock()
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-    @property
-    def bus(self) -> Any:
-        """The underlying :class:`~core.module_bus.ModuleBus` (or ``None``)."""
-        return self._bus
-
-    @property
-    def max_workers(self) -> int:
-        """The default worker cap for parallel execution."""
-        return self._max_workers
-
-    @property
-    def strict_mode(self) -> bool:
-        """When ``True``, missing executors raise instead of passthrough."""
-        return self._strict_mode
-
-    @property
-    def budget(self) -> Any:
-        """The resource budget tracker (if configured)."""
-        return self._budget
-
-    @property
-    def metadata(self) -> Dict[str, Any]:
-        """The mutable run-level metadata bag."""
-        return self._metadata
-
-    # ------------------------------------------------------------------
-    # Output store
-    # ------------------------------------------------------------------
-    def set_output(self, node_id: str, outputs: Dict[str, Any]) -> None:
-        """Record the outputs produced by ``node_id``.
-
-        Args:
-            node_id: The id of the node that produced the outputs.
-            outputs: The output dictionary to store.
-        """
-        with self._lock:
-            self._outputs[node_id] = dict(outputs)
-
-    def get_output(
-        self, node_id: str, key: Optional[str] = None
-    ) -> Any:
-        """Retrieve an output produced by a node.
-
-        Args:
-            node_id: The id of the producing node.
-            key: When given, return the specific output key; when ``None``,
-                return the node's entire output dict.
-
-        Returns:
-            The requested value (or output dict).  Missing keys return
-            ``None``; missing nodes raise :class:`KeyError`.
-
-        Raises:
-            KeyError: If no outputs have been recorded for ``node_id``.
-        """
-        with self._lock:
-            outputs = self._outputs.get(node_id, _MISSING)
-        if outputs is _MISSING:
-            raise KeyError(
-                "No outputs recorded for node {!r}.".format(node_id)
-            )
-        if key is None:
-            return dict(outputs)
-        return outputs.get(key)
-
-    def has_output(self, node_id: str) -> bool:
-        """Return ``True`` if outputs have been recorded for ``node_id``."""
-        with self._lock:
-            return node_id in self._outputs
-
-    def all_outputs(self) -> Dict[str, Dict[str, Any]]:
-        """Return a shallow copy of every recorded node output."""
-        with self._lock:
-            return {nid: dict(out) for nid, out in self._outputs.items()}
-
-    def reset(self) -> None:
-        """Clear all recorded outputs and reset the run state."""
-        with self._lock:
-            self._outputs.clear()
-
-    # ------------------------------------------------------------------
-    # Executor resolution
-    # ------------------------------------------------------------------
-    def register_executor(self, node_type: str, executor: NodeExecutor) -> None:
-        """Register an explicit executor for a node type.
-
-        Args:
-            node_type: The node type the executor handles.
-            executor: A callable ``(inputs, ctx) -> outputs``.
-        """
-        with self._lock:
-            self._executors[node_type] = executor
-
-    def resolve_executor(self, node_type: str) -> Optional[NodeExecutor]:
-        """Resolve the executor callable for ``node_type``.
-
-        Lookup order:
-
-        1. The explicit ``executors`` map.
-        2. The :class:`~core.module_bus.ModuleBus` under the ``"node"``
-           kind (when a bus is configured).  When the resolved object is a
-           :class:`~nodes.base.BaseNode` instance (i.e. has an ``execute``
-           method), it is wrapped in an adapter that converts the pipeline
-           call signature ``(inputs, ctx)`` into the node signature
-           ``execute(ctx, **inputs)``.
-
-        Returns:
-            The executor callable, or ``None`` if none is registered (in
-            which case the pipeline falls back to a passthrough).
-        """
-        with self._lock:
-            executor = self._executors.get(node_type)
-        if executor is not None:
-            return executor
-        if self._bus is not None:
-            try:
-                if self._bus.has("node", node_type):  # type: ignore[union-attr]
-                    resolved = self._bus.resolve("node", node_type)  # type: ignore[union-attr]
-                    # If the resolved object is a BaseNode instance, wrap
-                    # it in an adapter that converts (inputs, ctx) ->
-                    # node.execute(ctx, **inputs).
-                    if hasattr(resolved, "execute") and callable(
-                        getattr(resolved, "execute")
-                    ):
-                        def _node_adapter(
-                            inputs: Dict[str, Any],
-                            ctx: "NodeContext",
-                        ) -> Dict[str, Any]:
-                            from nodes.base import NodeContext as L4NodeContext
-                            l4_ctx = L4NodeContext(
-                                bus=getattr(ctx, "bus", None) or self._bus,
-                                config=getattr(ctx, "metadata", {}),
-                                budget=getattr(ctx, "budget", None),
-                            )
-                            return resolved.execute(l4_ctx, **inputs)
-                        return _node_adapter
-                    return resolved
-            except Exception:  # pragma: no cover - defensive
-                _logger.debug("ModuleBus lookup failed for %s", node_type, exc_info=True)
-        return None
-
-    def __repr__(self) -> str:
-        return "NodeContext(outputs={}, executors={})".format(
-            len(self._outputs), len(self._executors)
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +290,35 @@ class Pipeline:
                         self._logger.error(
                             "Node %r failed: %s", node_id, exc
                         )
+                        # R0-7: 节点失败时保留部分结果。
+                        # 等待同层其余 future 全部完成,收集已完成节点的输出,
+                        # 写入 ctx 的输出存储,然后抛出 RuntimeError。
+                        remaining = [
+                            f
+                            for f in future_map
+                            if f is not fut and not f.done()
+                        ]
+                        if remaining:
+                            wait(remaining, return_when=ALL_COMPLETED)
+                        for other_fut, other_id in future_map.items():
+                            if other_fut is fut:
+                                continue
+                            if other_id in results:
+                                continue
+                            if not other_fut.done():
+                                continue
+                            try:
+                                other_outputs = other_fut.result()
+                            except Exception:
+                                # 该 future 也失败了,跳过(不保留失败结果)。
+                                continue
+                            results[other_id] = other_outputs
+                            ctx.set_output(other_id, other_outputs)
+                            step += 1
+                            if progress_callback is not None:
+                                progress_callback(
+                                    step, total, other_id, "done"
+                                )
                         raise RuntimeError(
                             "Node {!r} failed: {}".format(node_id, exc)
                         ) from exc
@@ -775,6 +600,21 @@ class PipelineBuilder:
         Calling ``connect(a, b)`` also makes ``b`` depend on ``a``, so the
         resulting DAG's dependency edges stay consistent with its data edges.
 
+        连接声明时会执行完整校验(委托 :class:`ConnectionValidator`):
+
+        * **端点存在性** —— ``from_id`` 与 ``to_id`` 必须已通过 ``node()``
+          声明。
+        * **自环检测** —— ``from_id != to_id``。
+        * **重复边检测** —— 同一条 ``(from, to, output_key, input_key)`` 不能
+          重复声明。
+        * **端口存在性**(可选,需要 NodeSpec)—— ``output_key`` 是上游节点
+          类型的声明输出,``input_key`` 是下游节点类型的声明输入。
+        * **类型兼容性**(可选,需要 TypeSystem)—— 输出端口类型与输入端口
+          类型兼容。
+        * **环检测**(DFS)—— 新边不引入环。
+
+        校验失败时抛出 :class:`ValueError`。
+
         Args:
             from_id: The producing node id.
             to_id: The consuming node id.
@@ -783,13 +623,43 @@ class PipelineBuilder:
 
         Returns:
             ``self`` for chaining.
+
+        Raises:
+            ValueError: 如果连接违反上述任一校验规则。
         """
+        out_key = output_key or _DEFAULT_OUTPUT_KEY
+        in_key = input_key or _DEFAULT_INPUT_KEY
+
+        # 构建校验所需的上下文:已声明节点 id、现有边四元组、节点类型映射。
+        existing_edges: List[tuple] = [
+            (e.from_node, e.to_node, e.output_key, e.input_key)
+            for e in self._edges
+        ]
+        node_type_map: Dict[str, str] = {
+            node.id: node.node_type for node in self._nodes
+        }
+        # 惰性加载节点规格(注册表不可用时返回 None,跳过端口 / 类型校验)。
+        specs = ConnectionValidator.load_specs()
+
+        error = ConnectionValidator.validate_connection(
+            from_id=from_id,
+            to_id=to_id,
+            output_key=out_key,
+            input_key=in_key,
+            declared_ids=self._ids,
+            existing_edges=existing_edges,
+            node_type_map=node_type_map,
+            specs=specs,
+        )
+        if error is not None:
+            raise ValueError(error)
+
         self._edges.append(
             DAGEdge(
                 from_node=from_id,
                 to_node=to_id,
-                output_key=output_key or _DEFAULT_OUTPUT_KEY,
-                input_key=input_key or _DEFAULT_INPUT_KEY,
+                output_key=out_key,
+                input_key=in_key,
             )
         )
         return self

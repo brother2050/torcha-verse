@@ -60,6 +60,17 @@ _VIDEO_MODEL_VRAM_GB: float = 6.0
 #: Number of pixels in one megapixel.
 _MEGAPIXEL_PIXELS: float = 1_000_000.0
 
+#: 默认视频帧数，用于 execute() 中的回退值。
+_DEFAULT_NUM_FRAMES: int = 16
+#: 默认帧率（fps），用于 execute() 中的回退值。
+_DEFAULT_FPS: int = 24
+#: 默认视频宽度/高度（像素），用于 execute() 中的回退值。
+_DEFAULT_WIDTH: int = 512
+#: 默认推理步数，用于 execute() 中的回退值。
+_DEFAULT_STEPS: int = 20
+#: 默认插帧目标帧率（fps），用于 execute() 中的回退值。
+_DEFAULT_TARGET_FPS: int = 60
+
 
 def _coerce_int(value: Any) -> Optional[int]:
     """Return ``value`` as an ``int`` when it is an integer-like number."""
@@ -246,12 +257,12 @@ class VideoTxt2VidNode(BaseNode):
             A dict with ``video`` and ``seed``.
         """
         prompt = str(inputs.get("prompt", ""))
-        num_frames = _coerce_int(inputs.get("num_frames")) or 16
-        fps = _coerce_int(inputs.get("fps")) or 24
-        width = _coerce_int(inputs.get("width")) or 512
-        height = _coerce_int(inputs.get("height")) or 512
+        num_frames = _coerce_int(inputs.get("num_frames")) or _DEFAULT_NUM_FRAMES
+        fps = _coerce_int(inputs.get("fps")) or _DEFAULT_FPS
+        width = _coerce_int(inputs.get("width")) or _DEFAULT_WIDTH
+        height = _coerce_int(inputs.get("height")) or _DEFAULT_WIDTH
         steps = inputs.get("steps")
-        steps = steps if isinstance(steps, int) and steps > 0 else 20
+        steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         seed = inputs.get("seed")
         seed = seed if isinstance(seed, int) else 0
         model = ctx.config.get("default_video_model")
@@ -378,7 +389,7 @@ class VideoInterpolateNode(BaseNode):
         Returns:
             A dict with ``video``.
         """
-        target_fps = _coerce_int(inputs.get("target_fps")) or 60
+        target_fps = _coerce_int(inputs.get("target_fps")) or _DEFAULT_TARGET_FPS
         model = ctx.config.get("default_interpolate_model")
 
         ctx.logger.debug(

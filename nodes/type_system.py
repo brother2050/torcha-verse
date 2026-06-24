@@ -7,7 +7,7 @@ input types.
 
 The :class:`TypeSystem` is intentionally dependency-free so that it can be
 imported in any environment -- including minimal CI sandboxes -- and used
-by both the L4 node layer (for spec declarations) and the L6 canvas layer
+by both the L4 node layer (for spec declarations) and the L5 canvas layer
 (for connection validation).
 
 Type identifiers

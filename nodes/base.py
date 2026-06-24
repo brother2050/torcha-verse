@@ -7,7 +7,7 @@ lines, ...) with small, single-responsibility, composable nodes.
 A *node* is the smallest unit of generative capability: it accepts a set of
 typed inputs, executes one well-defined operation against a
 :class:`NodeContext`, and returns a set of typed outputs.  Nodes are wired
-together by the (future) L5 pipeline layer; the contract defined here is
+together by the L5 pipeline layer; the contract defined here is
 what makes that composition possible.
 
 Public surface
@@ -66,6 +66,7 @@ from .type_system import is_optional
 __all__ = [
     "NodeSpec",
     "NodeContext",
+    "NodeExecutor",
     "BaseNode",
     "NodeRegistry",
     "register_node",
@@ -242,34 +243,55 @@ class NodeSpec:
 # ---------------------------------------------------------------------------
 # NodeContext
 # ---------------------------------------------------------------------------
+#: :meth:`NodeContext.get_output` 在键不存在时返回的哨兵对象,
+#: 用于区分"存储了 ``None``"与"该条目不存在"两种情况。
+_MISSING: Any = object()
+
+#: L5 管道层默认的最大并发工作线程数。
+_DEFAULT_MAX_WORKERS: int = 4
+
+
 @dataclass
 class NodeContext:
-    """Runtime context handed to every node ``execute`` call.
+    """运行期上下文,同时承载 L4 节点执行与 L5 管道编排所需的服务。
 
-    A :class:`NodeContext` bundles the cross-cutting services a node needs
-    at execution time: the :class:`ModuleBus` for resolving models /
-    tokenizers / peer nodes, the :class:`AssetStore` for reading /
-    writing versioned artefacts, the :class:`ResourceBudget` declaring the
-    hard resource limits, a logger, an :class:`AuditLogger`, the run
-    configuration dictionary and a unique run id.
+    本类是 v0.3.0 架构中 **唯一** 的 ``NodeContext``:它合并了原先
+    ``nodes/base.py`` 的 L4 节点上下文与 ``pipeline/composer.py`` 的 L5
+    管道上下文,消除两个同名类带来的歧义。
 
-    All fields have sensible defaults so that a context can be constructed
-    with no arguments (useful for tests and dry-runs).  The
-    :class:`ModuleBus` default is the process-wide singleton; the
-    :class:`AssetStore` and :class:`AuditLogger` default to ``None`` so
-    that constructing a context never performs disk I/O.
+    **L4 节点上下文职责** —— 传递给每个节点 ``execute`` 调用的横切服务:
+    :class:`ModuleBus`(解析模型 / 分词器 / 同伴节点)、:class:`AssetStore`
+    (读写版本化资产)、:class:`ResourceBudget`(硬性资源上限)、日志器、
+    :class:`AuditLogger`、运行配置字典与唯一运行 id。
+
+    **L5 管道上下文职责** —— 在同一次管道运行中跨节点共享:
+
+    1. *输出存储* —— 线程安全的 ``node_id -> outputs`` 映射,节点完成后写入,
+       下游节点据此读取上游结果。
+    2. *执行器解析* —— 为给定 ``node_type`` 查找可调用对象的查找链。显式
+       注册的执行器优先,其次 :class:`ModuleBus`(``"node"`` kind),最后
+       返回 ``None``(passthrough)。
+    3. *元数据* —— 任意可变的键值袋,作为 ``config`` 的别名保留 L5 历史调用
+       习惯。
+
+    所有字段都有合理默认值,因此可以无参构造(便于测试与 dry-run)。
 
     Attributes:
-        bus: The module assembly bus used to resolve dependencies.
-        assets: The tiered asset store (may be ``None`` in dry-runs).
-        budget: The hard resource budget for this run.
-        logger: Logger used by the node for diagnostics.
-        audit: Audit logger for security/operational events.
-        config: Free-form run configuration dictionary.  Nodes read
-            defaults (e.g. ``"default_text_model"``) from here.
-        run_id: Unique identifier of the current run.
+        bus: 用于解析依赖的模块装配总线。
+        assets: 分层资产存储(dry-run 时可为 ``None``)。
+        budget: 本次运行的硬性资源预算。
+        logger: 节点诊断用的日志器。
+        audit: 安全 / 运维事件的审计日志器。
+        config: 自由格式的运行配置字典。节点从此读取默认值
+            (如 ``"default_text_model"``)。同时也是 L5 ``metadata`` 的别名。
+        run_id: 当前运行的唯一标识。
+        executors: ``node_type -> 可调用对象`` 的显式映射。每个可调用对象
+            接收 ``(inputs, ctx)`` 并返回输出字典。
+        max_workers: 并行执行的默认工作线程上限。
+        strict_mode: 为 ``True`` 时,缺失执行器会抛异常而非 passthrough。
     """
 
+    # --- L4 节点上下文字段 ---
     bus: ModuleBus = field(default_factory=ModuleBus)
     assets: Optional[AssetStore] = None
     budget: ResourceBudget = field(default_factory=ResourceBudget)
@@ -279,17 +301,162 @@ class NodeContext:
     audit: Optional[AuditLogger] = None
     config: Dict[str, Any] = field(default_factory=dict)
     run_id: str = field(default_factory=lambda: uuid4().hex)
+    # --- L5 管道层字段 ---
+    executors: Dict[str, "NodeExecutor"] = field(default_factory=dict)
+    max_workers: int = _DEFAULT_MAX_WORKERS
+    strict_mode: bool = False
+
+    def __post_init__(self) -> None:
+        """初始化 L5 管道内部状态(输出存储与线程锁)并规范化字段。"""
+        # 输出存储与保护它的可重入锁。
+        self._lock: threading.RLock = threading.RLock()
+        self._outputs: Dict[str, Dict[str, Any]] = {}
+        # 规范化 max_workers,保证至少为 1。
+        self.max_workers = max(1, int(self.max_workers))
+
+    # ------------------------------------------------------------------
+    # L5 兼容属性
+    # ------------------------------------------------------------------
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """``config`` 的别名,保留 L5 管道层的历史调用习惯。"""
+        return self.config
+
+    # ------------------------------------------------------------------
+    # 输出存储
+    # ------------------------------------------------------------------
+    def set_output(self, node_id: str, outputs: Dict[str, Any]) -> None:
+        """记录节点 ``node_id`` 产生的输出。
+
+        Args:
+            node_id: 产生输出的节点 id。
+            outputs: 待存储的输出字典。
+        """
+        with self._lock:
+            self._outputs[node_id] = dict(outputs)
+
+    def get_output(
+        self, node_id: str, key: Optional[str] = None
+    ) -> Any:
+        """获取节点 ``node_id`` 的输出。
+
+        Args:
+            node_id: 产生输出的节点 id。
+            key: 给定时返回该具体输出键;为 ``None`` 时返回节点完整输出字典。
+
+        Returns:
+            请求的值(或输出字典)。缺失的键返回 ``None``;缺失的节点抛
+            :class:`KeyError`。
+
+        Raises:
+            KeyError: 若 ``node_id`` 没有记录任何输出。
+        """
+        with self._lock:
+            outputs = self._outputs.get(node_id, _MISSING)
+        if outputs is _MISSING:
+            raise KeyError(
+                "No outputs recorded for node {!r}.".format(node_id)
+            )
+        if key is None:
+            return dict(outputs)
+        return outputs.get(key)
+
+    def has_output(self, node_id: str) -> bool:
+        """返回是否已为 ``node_id`` 记录输出。"""
+        with self._lock:
+            return node_id in self._outputs
+
+    def all_outputs(self) -> Dict[str, Dict[str, Any]]:
+        """返回所有已记录节点输出的浅拷贝。"""
+        with self._lock:
+            return {nid: dict(out) for nid, out in self._outputs.items()}
+
+    def reset_outputs(self) -> None:
+        """清空所有已记录的输出,重置运行状态。"""
+        with self._lock:
+            self._outputs.clear()
+
+    # ------------------------------------------------------------------
+    # 执行器解析
+    # ------------------------------------------------------------------
+    def register_executor(
+        self, node_type: str, executor: "NodeExecutor"
+    ) -> None:
+        """为节点类型注册一个显式执行器。
+
+        Args:
+            node_type: 执行器所处理的节点类型。
+            executor: ``(inputs, ctx) -> outputs`` 的可调用对象。
+        """
+        with self._lock:
+            self.executors[node_type] = executor
+
+    def resolve_executor(
+        self, node_type: str
+    ) -> Optional["NodeExecutor"]:
+        """解析 ``node_type`` 对应的执行器可调用对象。
+
+        查找顺序:
+
+        1. 显式 ``executors`` 映射。
+        2. :class:`ModuleBus` 的 ``"node"`` kind(配置了 bus 时)。当解析
+           结果是一个 :class:`BaseNode` 实例(即具有 ``execute`` 方法)时,
+           包装为适配器闭包,将管道调用签名 ``(inputs, ctx)`` 转换为节点
+           签名 ``execute(ctx, **inputs)``。
+
+        Returns:
+            执行器可调用对象;未注册时返回 ``None``(管道将回退到 passthrough)。
+        """
+        # 1. 先查 executors dict。
+        with self._lock:
+            executor = self.executors.get(node_type)
+        if executor is not None:
+            return executor
+
+        # 2. 再查 ModuleBus 的 "node" kind。
+        if self.bus is not None:
+            try:
+                if self.bus.has(_NODE_KIND, node_type):
+                    resolved = self.bus.resolve(_NODE_KIND, node_type)
+                    # 若解析结果是一个 BaseNode 实例(具有 execute 方法),
+                    # 包装为适配器闭包,将 (inputs, ctx) 转为
+                    # node.execute(ctx, **inputs)。
+                    if hasattr(resolved, "execute") and callable(
+                        getattr(resolved, "execute")
+                    ):
+                        def _node_adapter(
+                            inputs: Dict[str, Any],
+                            ctx: "NodeContext",
+                        ) -> Dict[str, Any]:
+                            # 优先使用 _safe_execute(S2-4),获得统一的异常
+                            # 处理与日志记录;回退到 execute 以兼容非 BaseNode。
+                            if hasattr(resolved, "_safe_execute"):
+                                return resolved._safe_execute(ctx, **inputs)
+                            return resolved.execute(ctx, **inputs)
+                        return _node_adapter
+                    return resolved
+            except Exception:  # pragma: no cover - 防御性处理
+                _logger.debug(
+                    "ModuleBus 查找 %s 失败", node_type, exc_info=True
+                )
+        return None
 
     def __repr__(self) -> str:
         return (
             "NodeContext(run_id={!r}, bus={!r}, assets={!r}, "
-            "budget={!r})".format(
+            "budget={!r}, outputs={}, executors={})".format(
                 self.run_id,
                 self.bus,
                 "set" if self.assets is not None else "None",
                 self.budget,
+                len(self._outputs),
+                len(self.executors),
             )
         )
+
+
+#: 节点执行器可调用对象的类型别名:``(inputs, ctx) -> outputs``。
+NodeExecutor = Callable[[Dict[str, Any], "NodeContext"], Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +496,41 @@ class BaseNode(abc.ABC):
             their produced values.
         """
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # 安全执行包装 (S2-4)
+    # ------------------------------------------------------------------
+    def _safe_execute(
+        self, ctx: NodeContext, **inputs: Any
+    ) -> Dict[str, Any]:
+        """安全执行包装:捕获常见运行时异常并记录日志后重新抛出。
+
+        本方法包裹 :meth:`execute`,捕获 :class:`OSError`、
+        :class:`RuntimeError` 与 :class:`MemoryError`,在 ctx 的日志器上
+        记录 error 级别日志后重新抛出,以便上层
+        :class:`~pipeline.composer.Pipeline` 处理部分结果保留(R0-7)。
+
+        Args:
+            ctx: 运行期 :class:`NodeContext`。
+            **inputs: 与 :meth:`execute` 相同的关键字输入。
+
+        Returns:
+            节点输出的字典。
+
+        Raises:
+            Exception: 重新抛出 :meth:`execute` 抛出的异常。
+        """
+        try:
+            return self.execute(ctx, **inputs)
+        except (OSError, RuntimeError, MemoryError) as exc:
+            logger = getattr(ctx, "logger", None) or _logger
+            logger.error(
+                "节点 %s 执行失败 (%s): %s",
+                getattr(self.spec, "type", self.__class__.__name__),
+                type(exc).__name__,
+                exc,
+            )
+            raise
 
     # ------------------------------------------------------------------
     # Reusable validation

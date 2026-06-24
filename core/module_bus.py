@@ -13,7 +13,7 @@ discovered hierarchically, for example::
 
     "model.text"        text models
     "model.image"       image models
-    "node.image_txt2img" an image text-to-image pipeline node
+    "node"              capability nodes (flat kind; the node type is the name)
     "tokenizer.text"    text tokenizers
     "lora"              LoRA adapters
     "character"         character/persona definitions
@@ -152,7 +152,7 @@ class ModuleBus:
     single, namespace-aware assembly point.  Modules are registered as
     factories under a ``(kind, name)`` pair where ``kind`` is a
     dot-separated namespace (e.g. ``"model.text"``,
-    ``"node.image_txt2img"``, ``"lora"``, ``"character"``).
+    ``"node"``, ``"lora"``, ``"character"``).
 
     Resolving a module invokes its factory at most once per
     ``(kind, name, version)`` triple; subsequent resolves return the

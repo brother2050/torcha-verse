@@ -27,6 +27,7 @@ sandboxes, exactly like :mod:`core.module_bus`.
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -268,11 +269,16 @@ class DAG:
     def get_node(self, node_id: str) -> DAGNode:
         """Return the node registered under ``node_id``.
 
+        返回节点的一个 **浅拷贝** (S3-9),而非内部存储的直接引用。这样调用
+        方无法意外修改 DAG 的内部状态;嵌套的可变对象(如 ``inputs`` 字典、
+        ``dependencies`` 列表)仍为共享引用,但调用方通常只读取它们或通过
+        ``dict(node.inputs)`` 创建副本后再使用。
+
         Args:
             node_id: The node id to look up.
 
         Returns:
-            The :class:`DAGNode`.
+            The :class:`DAGNode` 的浅拷贝。
 
         Raises:
             KeyError: If no node with that id exists.
@@ -281,7 +287,8 @@ class DAG:
             node = self._nodes.get(node_id)
         if node is None:
             raise KeyError("No DAGNode with id={!r}.".format(node_id))
-        return node
+        # 返回浅拷贝,防止调用方意外修改 DAG 内部状态。
+        return copy.copy(node)
 
     def has_node(self, node_id: str) -> bool:
         """Return ``True`` if a node with ``node_id`` exists."""

@@ -26,9 +26,33 @@ deterministic mock data.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from security.input_sanitizer import InputSanitizer
+
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+
+
+# ---------------------------------------------------------------------------
+# 路径净化 -- 所有接收路径输入的字幕节点在使用路径前必须经过此校验。
+# 允许的根目录包含系统临时目录(测试与临时输出)与当前工作目录(项目内
+# 输出)，同时拒绝路径穿越(``..``)与敏感系统路径(如 ``/etc/passwd``)。
+# ---------------------------------------------------------------------------
+_sanitizer = InputSanitizer()
+
+
+def _sanitize_path(path: str) -> str:
+    """对节点路径输入进行净化校验，返回净化后的路径字符串。
+
+    空路径原样返回(由 ``validate_inputs`` 负责非空校验)；非空路径经
+    :meth:`InputSanitizer.sanitize_path` 解析并校验后返回字符串形式。
+    """
+    if not path:
+        return path
+    allowed_roots = (tempfile.gettempdir(), Path.cwd())
+    return str(_sanitizer.sanitize_path(path, allowed_roots=allowed_roots))
 
 __all__ = [
     "SubtitleGenerateNode",
@@ -206,7 +230,10 @@ class SubtitleGenerateNode(BaseNode):
         source = str(inputs.get("source", "text"))
         method = str(inputs.get("method", "asr"))
         language = str(inputs.get("language", ""))
+        # 对媒体路径输入进行净化校验，拒绝路径穿越与敏感系统路径。
         media_path = inputs.get("media_path")
+        if isinstance(media_path, str) and media_path:
+            media_path = _sanitize_path(media_path)
         text = inputs.get("text", "")
         model = ctx.config.get("default_asr_model")
 
@@ -588,7 +615,8 @@ class SubtitleExportNode(BaseNode):
         """
         track = inputs.get("subtitle_track")
         fmt = str(inputs.get("format", "srt"))
-        path = str(inputs.get("path", ""))
+        # 对导出路径输入进行净化校验，拒绝路径穿越与敏感系统路径。
+        path = _sanitize_path(str(inputs.get("path", "")))
 
         ctx.logger.debug(
             "subtitle_export run_id=%s format=%s path=%s cues=%d",

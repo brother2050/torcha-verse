@@ -24,9 +24,33 @@ free of heavy imports (``torch`` / ``PIL`` / ``av``).
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from security.input_sanitizer import InputSanitizer
+
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+
+
+# ---------------------------------------------------------------------------
+# 路径净化 -- 所有接收路径输入的导出节点在落盘前必须经过此校验。
+# 允许的根目录包含系统临时目录(测试与临时导出)与当前工作目录(项目内
+# 输出)，同时拒绝路径穿越(``..``)与敏感系统路径(如 ``/etc/passwd``)。
+# ---------------------------------------------------------------------------
+_sanitizer = InputSanitizer()
+
+
+def _sanitize_path(path: str) -> str:
+    """对节点路径输入进行净化校验，返回净化后的路径字符串。
+
+    空路径原样返回(由 ``validate_inputs`` 负责非空校验)；非空路径经
+    :meth:`InputSanitizer.sanitize_path` 解析并校验后返回字符串形式。
+    """
+    if not path:
+        return path
+    allowed_roots = (tempfile.gettempdir(), Path.cwd())
+    return str(_sanitizer.sanitize_path(path, allowed_roots=allowed_roots))
 
 __all__ = [
     "ExportImageNode",
@@ -157,7 +181,7 @@ class ExportImageNode(BaseNode):
         Returns:
             A dict with ``path``.
         """
-        path = str(inputs.get("path", ""))
+        path = _sanitize_path(str(inputs.get("path", "")))
         fmt = str(inputs.get("format", "png"))
 
         ctx.logger.debug(
@@ -284,7 +308,7 @@ class ExportVideoNode(BaseNode):
         Returns:
             A dict with ``path``.
         """
-        path = str(inputs.get("path", ""))
+        path = _sanitize_path(str(inputs.get("path", "")))
         fmt = str(inputs.get("format", "mp4"))
         fps = _coerce_int(inputs.get("fps")) or 24
 
@@ -415,7 +439,7 @@ class ExportAudioNode(BaseNode):
         Returns:
             A dict with ``path``.
         """
-        path = str(inputs.get("path", ""))
+        path = _sanitize_path(str(inputs.get("path", "")))
         fmt = str(inputs.get("format", "wav"))
         sample_rate = _coerce_int(inputs.get("sample_rate")) or 22050
 

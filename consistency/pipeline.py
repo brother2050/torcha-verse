@@ -2,48 +2,46 @@
 (v0.3.0).
 
 This module provides :class:`ConsistencyPipeline`, the top-level
-orchestrator that composes the four consistency engines (character /
-outfit / scene / depth) into a single generation surface.  It is the
-"integration layer" of the consistency framework.
+orchestrator that composes the three consistency engines (character /
+outfit / scene) plus a depth conditioning input into a single generation
+surface.  It is the "integration layer" of the consistency framework.
 
 Capabilities:
 
-* :meth:`ConsistencyPipeline.generate` -- generate a single image by
-  applying all configured conditioning signals (character / outfit /
-  scene / depth) according to the weights in the
-  :class:`~consistency.profile.ConsistencyProfile`.
-* :meth:`ConsistencyPipeline.generate_batch` -- generate a batch of
-  images from a list of prompts while maintaining consistency across
-  the batch.
-* :meth:`ConsistencyPipeline.generate_video` -- generate a video
-  (sequence of frames) with temporal consistency: the consistency seed
-  is locked, features are re-written every ``reframe_interval`` frames,
-  and drift is detected and corrected by local re-generation.
-* :meth:`ConsistencyPipeline.score` -- evaluate the consistency of a
-  generation output against the configured reference assets.
+* :meth:`ConsistencyPipeline.generate_via_pipeline` -- （推荐）通过 L5
+  Pipeline 执行一致性生成，将流程编译为可执行的
+  :class:`~pipeline.composer.Pipeline`。
+* :meth:`ConsistencyPipeline.to_pipeline` -- 将一致性生成流程编译为
+  L5 :class:`~pipeline.composer.Pipeline`。
+* :meth:`ConsistencyPipeline.generate` -- （已弃用）直接生成单张图像。
+* :meth:`ConsistencyPipeline.generate_batch` -- （已弃用）批量生成。
+* :meth:`ConsistencyPipeline.generate_video` -- （已弃用）生成视频。
+* :meth:`ConsistencyPipeline.score` -- 评估生成输出的一致性。
 
-The pipeline delegates the actual conditioning to the four engines
+The pipeline delegates the actual conditioning to the three engines
 (:class:`~consistency.character.CharacterEngine`,
 :class:`~consistency.outfit.OutfitEngine`,
 :class:`~consistency.scene.SceneEngine`) and the scoring to
-:class:`~consistency.score.ScoreCalculator`.  The generation itself is
-a placeholder that returns descriptor dictionaries; the full interface
-is exercised so that the pipeline can be swapped for a real generation
-backend without changing call sites.
+:class:`~consistency.score.ScoreCalculator`.  Depth is applied as a
+conditioning input rather than via a dedicated engine.  The generation
+itself is a placeholder that returns descriptor dictionaries; the full
+interface is exercised so that the pipeline can be swapped for a real
+generation backend without changing call sites.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- logging.
 * L2 ``assets`` -- asset types.
-* L4 ``consistency`` (this module) -- pipeline orchestration.
+* L6 ``consistency`` (this module) -- pipeline orchestration.
 
 This module depends on :mod:`torch` (transitively, through the score
-calculator) and the L1/L2/L4 layers.
+calculator) and the L1/L2/L6 layers.
 """
 
 from __future__ import annotations
 
 import threading
+import warnings
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from assets.model_asset import CharacterAsset, DepthAsset, OutfitAsset, SceneAsset
@@ -94,13 +92,15 @@ _logger = get_logger("consistency.pipeline")
 # ConsistencyPipeline
 # ---------------------------------------------------------------------------
 class ConsistencyPipeline:
-    """Top-level consistency pipeline composing the four engines.
+    """Top-level consistency pipeline composing the three engines.
 
     The pipeline is constructed with a :class:`ConsistencyProfile` and
     optional references to the four asset types (character / outfit /
     scene / depth).  When an :class:`~assets.store.AssetStore` is
-    provided the four engines are created from it; otherwise the engines
-    default to ``None`` and only the scoring surface is available.
+    provided the three engines (character / outfit / scene) are created
+    from it; depth is applied as a conditioning input without a dedicated
+    engine.  Otherwise the engines default to ``None`` and only the
+    scoring surface is available.
 
     Args:
         profile: The :class:`ConsistencyProfile` controlling per-axis
@@ -110,8 +110,8 @@ class ConsistencyPipeline:
         scene: Optional :class:`SceneAsset` to condition on.
         depth: Optional :class:`DepthAsset` to condition on.
         asset_store: Optional :class:`AssetStore` used to construct the
-            four engines.  When ``None`` the engines are ``None`` and
-            only :meth:`score` is functional.
+            three engines (character / outfit / scene).  When ``None`` the
+            engines are ``None`` and only :meth:`score` is functional.
         score_calculator: Optional pre-configured
             :class:`ScoreCalculator`.  When ``None`` a default
             calculator is created.
@@ -201,7 +201,7 @@ class ConsistencyPipeline:
         return self._scorer
 
     # ------------------------------------------------------------------
-    # Single-image generation
+    # Single-image generation (已弃用，推荐使用 generate_via_pipeline)
     # ------------------------------------------------------------------
     def generate(
         self,
@@ -211,6 +211,10 @@ class ConsistencyPipeline:
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate a single image with all consistency conditioning applied.
+
+        .. deprecated::
+            请改用 :meth:`generate_via_pipeline`，它通过 L5 Pipeline
+            执行生成，是推荐的一致性生成入口。
 
         The conditioning signals (character / outfit / scene / depth)
         are applied according to the weights in the
@@ -238,6 +242,12 @@ class ConsistencyPipeline:
             ValueError: If ``width`` or ``height`` are outside
                 ``[_DIM_MIN, _DIM_MAX]``.
         """
+        warnings.warn(
+            "ConsistencyPipeline.generate() 已弃用，请改用 "
+            "generate_via_pipeline() 通过 L5 Pipeline 执行一致性生成。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._validate_dimensions(width, height)
         seed = kwargs.get("seed", _DEFAULT_VIDEO_SEED)
 
@@ -316,7 +326,7 @@ class ConsistencyPipeline:
         return result
 
     # ------------------------------------------------------------------
-    # Batch generation
+    # Batch generation (已弃用，推荐使用 generate_via_pipeline)
     # ------------------------------------------------------------------
     def generate_batch(
         self,
@@ -324,6 +334,9 @@ class ConsistencyPipeline:
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         """Generate a batch of images while maintaining consistency.
+
+        .. deprecated::
+            请改用 :meth:`generate_via_pipeline`，逐个提示词调用即可。
 
         Each prompt is generated independently but with the same
         conditioning assets and profile, so that identity / outfit /
@@ -337,6 +350,12 @@ class ConsistencyPipeline:
         Returns:
             A list of generation result dictionaries (one per prompt).
         """
+        warnings.warn(
+            "ConsistencyPipeline.generate_batch() 已弃用，请改用 "
+            "generate_via_pipeline() 逐个执行。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         results: List[Dict[str, Any]] = []
         for prompt in prompts:
             result = self.generate(prompt, **kwargs)
@@ -347,7 +366,7 @@ class ConsistencyPipeline:
         return results
 
     # ------------------------------------------------------------------
-    # Video generation
+    # Video generation (已弃用)
     # ------------------------------------------------------------------
     def generate_video(
         self,
@@ -356,6 +375,10 @@ class ConsistencyPipeline:
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate a video with temporal consistency.
+
+        .. deprecated::
+            该方法仍保留但已弃用，未来将通过 L5 Pipeline 的视频节点
+            提供等效功能。
 
         The generation enforces temporal consistency across frames:
 
@@ -392,6 +415,12 @@ class ConsistencyPipeline:
             ValueError: If ``num_frames`` is outside
                 ``[_FRAMES_MIN, _FRAMES_MAX]``.
         """
+        warnings.warn(
+            "ConsistencyPipeline.generate_video() 已弃用，未来将通过 "
+            "L5 Pipeline 的视频节点提供等效功能。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if num_frames < _FRAMES_MIN or num_frames > _FRAMES_MAX:
             raise ValueError(
                 "num_frames must be in [{}, {}], got {}.".format(
@@ -506,6 +535,151 @@ class ConsistencyPipeline:
             image = output["image"]
         references = self._build_references()
         return self._scorer.calculate(image, references)
+
+    # ------------------------------------------------------------------
+    # L5 Pipeline 集成（推荐入口）
+    # ------------------------------------------------------------------
+    def to_pipeline(
+        self,
+        prompt: str,
+        width: int = _DEFAULT_WIDTH,
+        height: int = _DEFAULT_HEIGHT,
+        **kwargs: Any,
+    ) -> Any:
+        """构建 L5 Pipeline 用于一致性生成。
+
+        将一致性生成流程编译为 L5 :class:`~pipeline.composer.Pipeline`：
+        基础图像生成节点（``image_txt2img``）之后按权重链式连接
+        character / outfit / scene / depth 一致性节点。只有已配置
+        （非 ``None``）且权重 > 0 的轴才会被加入链中。
+
+        Args:
+            prompt: 文本提示词。
+            width: 输出图像宽度（像素），默认 ``1024``。
+            height: 输出图像高度（像素），默认 ``1024``。
+            **kwargs: 传递给基础图像节点的额外参数（如 ``steps``、
+                ``seed``、``guidance_scale``）。
+
+        Returns:
+            构建完成的 :class:`~pipeline.composer.Pipeline`。
+
+        Raises:
+            ValueError: 如果 ``width`` 或 ``height`` 超出
+                ``[_DIM_MIN, _DIM_MAX]``。
+        """
+        from pipeline.composer import PipelineBuilder
+
+        self._validate_dimensions(width, height)
+        builder = PipelineBuilder("consistency_generate")
+
+        # 基础图像生成节点
+        base_inputs: Dict[str, Any] = {
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+        }
+        base_inputs.update(kwargs)
+        builder.node("image_txt2img", id="base", **base_inputs)
+        prev_id, prev_key = "base", "image"
+
+        # 按权重链式添加一致性节点
+        if (
+            self._character is not None
+            and self._profile.character_weight > 0.0
+        ):
+            builder.node(
+                "character_apply",
+                id="char",
+                character_id=self._character.id,
+                character_weight=self._profile.character_weight,
+            )
+            builder.connect(
+                prev_id, "char", output_key=prev_key, input_key="image"
+            )
+            prev_id, prev_key = "char", "image"
+
+        if (
+            self._outfit is not None
+            and self._profile.outfit_weight > 0.0
+        ):
+            builder.node(
+                "outfit_apply",
+                id="outfit",
+                outfit_id=self._outfit.id,
+                outfit_weight=self._profile.outfit_weight,
+            )
+            builder.connect(
+                prev_id, "outfit", output_key=prev_key, input_key="image"
+            )
+            prev_id, prev_key = "outfit", "image"
+
+        if (
+            self._scene is not None
+            and self._profile.scene_weight > 0.0
+        ):
+            builder.node(
+                "scene_apply",
+                id="scene",
+                scene_id=self._scene.id,
+                scene_weight=self._profile.scene_weight,
+            )
+            builder.connect(
+                prev_id, "scene", output_key=prev_key, input_key="image"
+            )
+            prev_id, prev_key = "scene", "image"
+
+        if (
+            self._depth is not None
+            and self._profile.depth_weight > 0.0
+        ):
+            builder.node(
+                "depth_condition",
+                id="depth",
+                depth_id=self._depth.id,
+                depth_weight=self._profile.depth_weight,
+            )
+            builder.connect(
+                prev_id, "depth", output_key=prev_key, input_key="image"
+            )
+            prev_id, prev_key = "depth", "image"
+
+        self._logger.debug(
+            "Built consistency pipeline (prompt=%r, %dx%d).",
+            prompt[:48], width, height,
+        )
+        return builder.build()
+
+    def generate_via_pipeline(
+        self,
+        prompt: str,
+        width: int = _DEFAULT_WIDTH,
+        height: int = _DEFAULT_HEIGHT,
+        ctx: Any = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """通过 L5 Pipeline 执行一致性生成。
+
+        推荐的一致性生成入口：先将流程编译为 L5
+        :class:`~pipeline.composer.Pipeline`，再通过
+        :class:`~nodes.base.NodeContext` 执行。
+
+        Args:
+            prompt: 文本提示词。
+            width: 输出图像宽度（像素），默认 ``1024``。
+            height: 输出图像高度（像素），默认 ``1024``。
+            ctx: 可选的 :class:`~nodes.base.NodeContext`。为 ``None``
+                时创建默认上下文。
+            **kwargs: 传递给 :meth:`to_pipeline` 的额外参数。
+
+        Returns:
+            :meth:`Pipeline.run` 的执行结果（节点 ID 到输出的映射）。
+        """
+        if ctx is None:
+            from nodes.base import NodeContext
+
+            ctx = NodeContext()
+        pipeline = self.to_pipeline(prompt, width, height, **kwargs)
+        return pipeline.run(ctx)
 
     # ------------------------------------------------------------------
     # Internal helpers

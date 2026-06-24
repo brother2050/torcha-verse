@@ -25,13 +25,13 @@ placeholder; the conditioning logic returns descriptor dictionaries.
 The full interface is exercised so that the methods can be swapped for
 a real generation backend without changing call sites.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- logging.
 * L2 ``assets`` -- :class:`~assets.model_asset.SceneAsset`,
   :class:`~assets.model_asset.DepthAsset`,
   :class:`~assets.store.AssetStore`, :class:`~assets.base.AssetRef`.
-* L4 ``consistency`` (this module) -- scene engine + depth estimation.
+* L6 ``consistency`` (this module) -- scene engine + depth estimation.
 
 This module depends on :mod:`torch` for the depth-map estimation
 placeholder.

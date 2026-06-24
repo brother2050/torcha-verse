@@ -1,4 +1,4 @@
-"""Community template registry for the TorchaVerse v0.3.0 architecture (L6).
+"""Community template registry for the TorchaVerse v0.3.0 architecture (L5).
 
 This module provides a lightweight, in-memory registry for *community*
 canvas templates -- user-submitted canvas states that can be searched,

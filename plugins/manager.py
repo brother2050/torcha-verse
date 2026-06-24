@@ -32,9 +32,10 @@ guarded by a single :class:`threading.RLock`.  Re-entrant locking is used
 so that an ``on_load`` hook may safely call back into the manager.
 
 The manager is dependency-free at import time (it only touches
-:mod:`core.module_bus`, :mod:`plugins.spec`, :mod:`plugins.manifest` and
-the standard library).  :mod:`nodes` is imported lazily inside
-:meth:`load` / :meth:`unload` because importing it pulls in ``torch``.
+:mod:`core.module_bus`, :mod:`security.sandbox` (pure-Python AST analyser),
+:mod:`plugins.spec`, :mod:`plugins.manifest` and the standard library).
+:mod:`nodes` is imported lazily inside :meth:`load` / :meth:`unload`
+because importing it pulls in ``torch``.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from core.module_bus import ModuleBus
+from security.sandbox import ASTAnalyzer
 
 from .manifest import ManifestError, ManifestParser
 from .spec import (
@@ -73,6 +75,14 @@ __all__ = [
 # Module-level logger (stdlib only -- no torch).
 # ---------------------------------------------------------------------------
 _logger: logging.Logger = logging.getLogger("PluginManager")
+
+# ---------------------------------------------------------------------------
+# R0-6: 插件源码静态安全分析器(纯 Python，无 torch 依赖)。
+# 在 importlib 执行插件源码前，对源码进行 AST 静态分析，拒绝包含危险调用
+# (os.system / subprocess / eval / exec ...)、危险导入 (os / socket / ctypes
+# ...) 或敏感文件访问的插件。分析器无状态且线程安全。
+# ---------------------------------------------------------------------------
+_ast_analyzer: ASTAnalyzer = ASTAnalyzer()
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +160,8 @@ class PluginManager:
         # State.
         self._available: Dict[str, PluginSpec] = {}
         self._loaded: Dict[str, Plugin] = {}
+        # S1-2: 标记正在加载中的插件，防止并发重复导入同一插件。
+        self._loading: set = set()
         self._programmatic: Dict[str, PluginSpec] = {}
         self._enabled_state: Dict[str, bool] = {}
         self._discovered: bool = False
@@ -370,8 +382,14 @@ class PluginManager:
             PluginError: If the plugin is disabled or loading fails.
             PluginAlreadyLoadedError: If the plugin is already loaded.
         """
+        # ==================================================================
+        # Phase 1 (锁内): 检查状态、标记加载中。
+        # 仅持有锁完成快速的状态校验与 spec 解析，不执行任何 I/O。
+        # ==================================================================
         with self._lock:
             if name in self._loaded:
+                raise PluginAlreadyLoadedError(name)
+            if name in self._loading:
                 raise PluginAlreadyLoadedError(name)
             if not self._enabled_state.get(name, True):
                 raise PluginError(
@@ -389,20 +407,35 @@ class PluginManager:
                 raise PluginNotFoundError(name)
 
         with self._lock:
-            # Re-check after discovery (another thread may have loaded).
+            # 发现后再次检查(另一线程可能已加载或正在加载)。
             if name in self._loaded:
                 raise PluginAlreadyLoadedError(name)
+            if name in self._loading:
+                raise PluginAlreadyLoadedError(name)
+            # 标记为加载中，防止并发重复导入。
+            self._loading.add(name)
 
-        # Import node modules and invoke lifecycle hooks OUTSIDE the lock
-        # so that slow imports / I/O (importlib.import_module, _call_hook)
-        # do not block other manager operations.  _load_spec only reads the
-        # shared ModuleBus; the manager state is updated under the lock below.
-        plugin = self._load_spec(spec)
+        # ==================================================================
+        # Phase 2 (锁外): 执行 import_module 与 _call_hook。
+        # 慢速 I/O(模块导入、钩子调用、sys.path 修改)在锁外完成，
+        # 不阻塞其他管理器操作。sys.path 的修改在 _import_node_modules
+        # 内部完成并在 finally 中回滚。
+        # ==================================================================
+        try:
+            plugin = self._load_spec(spec)
+        except Exception:
+            # 加载失败时清理 loading 标记，允许后续重试。
+            with self._lock:
+                self._loading.discard(name)
+            raise
 
+        # ==================================================================
+        # Phase 3 (锁内): 更新元数据。
+        # 处理并发竞争:若另一线程在此期间已加载同一插件，则回滚本次
+        # 重复注册并抛出异常。
+        # ==================================================================
         with self._lock:
-            # Another thread may have loaded the plugin while we were
-            # importing outside the lock; if so, undo our duplicate
-            # registration and raise.
+            self._loading.discard(name)
             if name in self._loaded:
                 self._unload_plugin(plugin)
                 raise PluginAlreadyLoadedError(name)
@@ -594,6 +627,19 @@ class PluginManager:
         # Avoid collisions when the same file is imported twice.
         if mod_name in sys.modules:
             return sys.modules[mod_name]
+        # --- R0-6: 静态安全分析 --------------------------------------------
+        # 在 importlib 执行插件源码前，读取源码并使用 ASTAnalyzer 进行
+        # 静态分析。命中危险调用 / 危险导入 / 敏感文件访问时拒绝加载，
+        # 防止恶意插件在 exec_module 阶段造成破坏。
+        source = path.read_text(encoding="utf-8")
+        result = _ast_analyzer.analyze(source)
+        if not result.is_safe:
+            raise PluginError(
+                "Plugin {!r} source {!r} rejected by sandbox AST analysis: "
+                "{}".format(
+                    plugin_name, path, "; ".join(result.violations)
+                )
+            )
         spec = importlib.util.spec_from_file_location(mod_name, path)
         if spec is None or spec.loader is None:
             raise PluginError(

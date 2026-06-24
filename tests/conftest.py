@@ -20,7 +20,6 @@ import pytest
 # 轻量导入(不依赖 torch)
 from assets.store import AssetStore
 from nodes.base import NodeContext, NodeRegistry
-from pipeline.composer import NodeContext as PipelineContext
 
 
 __all__ = [
@@ -111,7 +110,7 @@ def pipeline_service():
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def pipeline_ctx(node_ctx):
-    """编排层 :class:`~pipeline.composer.NodeContext`。
+    """编排层 :class:`~nodes.base.NodeContext`(统一上下文)。
 
     为 ``NodeRegistry`` 中注册的每个节点类型安装一个执行器,执行器将输入
     派发到对应的 L4 节点 ``execute()``(返回占位数据,无需 GPU)。配合
@@ -136,4 +135,4 @@ def pipeline_ctx(node_ctx):
     for spec in registry.list():
         executors[spec.type] = _make_executor(spec.type)
 
-    return PipelineContext(executors=executors)
+    return NodeContext(executors=executors)

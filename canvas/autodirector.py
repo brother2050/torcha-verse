@@ -1,4 +1,4 @@
-"""AutoDirector v2 -- intelligent canvas generation for TorchaVerse v0.3.0 (L6).
+"""AutoDirector v2 -- intelligent canvas generation for TorchaVerse v0.3.0 (L5).
 
 The :class:`AutoDirector` is the "smart" layer above the canvas system.  Given
 a natural-language *topic* (e.g. ``"a cat playing piano"``), it:

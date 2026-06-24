@@ -370,12 +370,12 @@ class PipelineService:
         The returned callable has the signature ``(inputs, ctx) ->
         outputs`` expected by :class:`pipeline.composer.Pipeline`.  It
         reads the run-level config (model defaults) from the composer
-        context's ``metadata["node_config"]`` bag.
+        context's ``config["node_config"]`` bag.
         """
         registry = self._registry
 
         def _executor(inputs: Dict[str, Any], ctx: PipelineContext) -> Dict[str, Any]:
-            run_config: Dict[str, Any] = ctx.metadata.get("node_config", {})
+            run_config: Dict[str, Any] = ctx.config.get("node_config", {})
             node_ctx = NodeExecutionContext(config=dict(run_config))
             node = registry.get(node_type)
             return node.execute(node_ctx, **inputs)
@@ -406,7 +406,7 @@ class PipelineService:
         try:
             ctx = PipelineContext(
                 executors=self._executors,
-                metadata={"node_config": config or {}},
+                config={"node_config": config or {}},
             )
             pipeline = (
                 PipelineBuilder(name)

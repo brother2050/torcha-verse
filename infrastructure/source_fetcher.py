@@ -878,6 +878,10 @@ class SourceRegistry:
 
         downloaded = {"bytes": 0}
         progress_lock = threading.Lock()
+        # S2-8: 跟踪每个分片上次报告的累计字节数。
+        # fetch_range 的进度回调传入的 ``done`` 是该分片内的累计值
+        # (而非增量)，因此需要记录上次值并计算差值，避免重复累加。
+        shard_done: Dict[int, int] = {i: 0 for i in range(len(part_paths))}
 
         def _run_shard(index: int) -> Path:
             start, end = offsets[index]
@@ -885,7 +889,12 @@ class SourceRegistry:
 
             def _shard_progress(done: int, total: Optional[int], msg: str = "") -> None:
                 with progress_lock:
-                    downloaded["bytes"] += 0  # placeholder for fine-grained updates
+                    # S2-8: 计算本分片自上次回调以来的增量字节数，
+                    # 累加到总进度(downloaded["bytes"])。
+                    prev = shard_done.get(index, 0)
+                    delta = done - prev if done > prev else 0
+                    downloaded["bytes"] += delta
+                    shard_done[index] = done
                 if progress_callback is not None:
                     with progress_lock:
                         progress_callback(

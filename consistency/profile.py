@@ -24,11 +24,11 @@ The :class:`ConsistencyManager` keeps an in-memory registry of named
 profiles, guarded by a :class:`threading.Lock`, and supports
 serialising / deserialising profiles to and from JSON files.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- logging.
 * L2 ``assets`` -- asset types (referenced for type hints only).
-* L4 ``consistency`` (this module) -- profile configuration.
+* L6 ``consistency`` (this module) -- profile configuration.
 
 This module is torch-free; it only depends on the standard library and
 the L1 logging layer.

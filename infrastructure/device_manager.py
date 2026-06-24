@@ -10,6 +10,7 @@ concrete implementations are available.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional, Protocol, Union, runtime_checkable
 
@@ -22,6 +23,9 @@ __all__ = [
     "TensorParallel",
     "PipelineParallel",
 ]
+
+#: 模块级日志器，用于记录设备操作中的警告信息。
+_logger: logging.Logger = logging.getLogger("infrastructure.device_manager")
 
 
 # ---------------------------------------------------------------------------
@@ -512,8 +516,8 @@ class DeviceManager:
         if hasattr(torch.backends, "mps") and hasattr(torch.mps, "empty_cache"):
             try:
                 torch.mps.empty_cache()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - 最佳努力
+                _logger.warning("清空 MPS 缓存失败，已跳过: %s", exc)
 
     @classmethod
     def reset(cls) -> None:

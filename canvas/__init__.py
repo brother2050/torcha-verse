@@ -1,10 +1,10 @@
-"""L6 Canvas layer for the TorchaVerse v0.3.0 architecture.
+"""L5 Canvas layer for the TorchaVerse v0.3.0 architecture.
 
-This package provides the visual *canvas* system that sits above the L5
+This package provides the visual *canvas* system that sits above the L4
 pipeline layer.  A canvas is a spatial, editable representation of a pipeline
 DAG: nodes are placed at 2-D coordinates, connections are drawn between their
 ports, and the whole thing can be serialised, versioned, shared and
-auto-generated.
+auto-generated.  Canvas 是 L5 Pipeline 的可视化前端，与 Pipeline 同处 L5 层。
 
 Layering (L1 -> L6):
 
@@ -12,9 +12,10 @@ Layering (L1 -> L6):
 * L2 ``assets`` -- the asset model + store.
 * L3 ``core`` -- module bus, model registry, schedulers, tokenizers.
 * L4 ``nodes`` -- the node system (23 composable capability nodes).
-* L5 ``pipeline`` -- DAG, composer, templates, prompt studio.
-* L6 ``canvas`` (this package) -- visual canvas, versioning, sharing,
-  AutoDirector v2, community registry.
+* L5 ``pipeline`` / ``canvas`` (this package) -- DAG, composer, templates,
+  prompt studio, visual canvas, versioning, sharing, AutoDirector v2,
+  community registry.
+* L6 ``consistency`` -- character, outfit, scene, depth, pipeline, scoring.
 
 The canvas layer is deliberately *torch-free*: it never imports
 :mod:`torch` directly.  It depends only on the L5 pipeline layer

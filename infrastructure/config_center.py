@@ -8,7 +8,7 @@ ordered layers, each with a strictly increasing precedence:
    ``<package>/config/_defaults/``.  These are *immutable* from the user's
    perspective and are snapshotted in CI as golden files.
 2. **Project** -- the ``./config/*.yaml`` files committed with the
-   repository (loaded via the inherited :class:`ConfigManager` logic).
+   repository.
 3. **User** -- per-user overrides living under
    ``~/.config/torcha-verse/`` (Linux/macOS) or
    ``%APPDATA%/torcha-verse/`` (Windows): UI preferences, API keys, local
@@ -16,18 +16,18 @@ ordered layers, each with a strictly increasing precedence:
 4. **Run** -- every run produces a ``config_snapshot.json`` so that the
    exact configuration used for a generation can be replayed later.
 
-:class:`ConfigCenter` inherits the full :class:`ConfigManager` interface
-(``get`` / ``set`` / ``has`` / ``merge`` / ``to_dict`` with dot-notation
-access) and adds tier-aware loading, snapshot serialisation and a
-:class:`ResourceBudget` accessor.
+:class:`ConfigCenter` 提供完整的配置访问接口（``get`` / ``set`` /
+``has`` / ``merge`` / ``to_dict``，支持点号分隔的键访问），并在此基础上
+添加分层加载、快照序列化以及 :class:`ResourceBudget` 访问器。
+``ConfigManager`` 现已合并为本类的薄别名。
 
 Example:
     >>> cc = ConfigCenter()
     >>> cc.get("default.dtype")
     'bf16'
-    >>> snap = cc.snapshot()              # deep-copy JSON of current config
-    >>> path = cc.save_run_snapshot()     # write config_snapshot.json
-    >>> cc.load_run_snapshot(path)        # replay a previous run
+    >>> snap = cc.snapshot()              # 深拷贝当前配置的 JSON
+    >>> path = cc.save_run_snapshot()     # 写入 config_snapshot.json
+    >>> cc.load_run_snapshot(path)        # 重放之前的运行
 """
 
 from __future__ import annotations
@@ -40,15 +40,65 @@ import threading
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import yaml
 
-from .config_manager import ConfigManager, _deep_merge, _resolve_config_dir
 from .logger import get_logger
 from .resource_budget import ResourceBudget
 
-__all__ = ["ConfigCenter", "ResourceBudget"]
+__all__ = ["ConfigCenter", "ResourceBudget", "get_config"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers (合并自 config_manager，ConfigCenter 不再继承 ConfigManager)
+# ---------------------------------------------------------------------------
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """递归地将 ``override`` 合并到 ``base`` 中。
+
+    嵌套字典按键逐个合并，而 ``override`` 中的非字典值替换 ``base`` 中
+    对应的值。返回一个新字典；输入永远不会被修改。
+
+    Args:
+        base: 基础配置字典。
+        override: 取得优先级的字典。
+
+    Returns:
+        包含合并结果的新字典。
+    """
+    result: Dict[str, Any] = deepcopy(base)
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
+def _resolve_config_dir(config_dir: Optional[Union[str, Path]]) -> Path:
+    """解析配置目录。
+
+    当 ``config_dir`` 为 ``None`` 时，目录相对于本文件定位
+    （``<project_root>/config``）。也可通过 ``TORCHAVERSE_CONFIG_DIR``
+    环境变量覆盖默认位置。
+
+    Args:
+        config_dir: 显式路径或 ``None`` 以自动检测。
+
+    Returns:
+        指向配置目录的已解析 :class:`~pathlib.Path`。
+    """
+    env_dir = os.environ.get("TORCHAVERSE_CONFIG_DIR")
+    if config_dir is not None:
+        return Path(config_dir).expanduser().resolve()
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    # 本文件位于 <project_root>/infrastructure/config_center.py
+    return Path(__file__).resolve().parent.parent / "config"
 
 #: Environment variable used to override the System defaults directory.
 _ENV_SYSTEM_DIR: str = "TORCHAVERSE_SYSTEM_CONFIG_DIR"
@@ -123,30 +173,28 @@ def _run_snapshot_dir() -> Path:
 # ---------------------------------------------------------------------------
 # ConfigCenter
 # ---------------------------------------------------------------------------
-class ConfigCenter(ConfigManager):
-    """Singleton four-level configuration merge centre.
+class ConfigCenter:
+    """单例四级配置合并中心。
 
-    :class:`ConfigCenter` extends :class:`ConfigManager` with tier-aware
-    loading.  The four layers (System < Project < User < Run) are deep-merged
-    in order so that higher-precedence layers override lower ones.
+    :class:`ConfigCenter` 提供分层感知的配置加载。四个层级
+    （System < Project < User < Run）按顺序深度合并，使更高优先级的
+    层级覆盖更低优先级的层级。
 
-    The singleton retains the dot-notation accessors (``get`` / ``set`` /
-    ``has`` / ``merge`` / ``to_dict``) inherited from :class:`ConfigManager`
-    and adds:
+    该单例保留点号分隔的访问器（``get`` / ``set`` / ``has`` /
+    ``merge`` / ``to_dict``）并添加：
 
-    * :meth:`load_user_config` -- (re)load the User layer.
-    * :meth:`load_run_snapshot` -- replay a previous run's snapshot.
-    * :meth:`snapshot` -- deep-copy the current config as JSON.
-    * :meth:`save_run_snapshot` -- persist the current config for replay.
-    * :meth:`resource_budget` -- build a :class:`ResourceBudget` from config.
+    * :meth:`load_user_config` -- （重新）加载 User 层。
+    * :meth:`load_run_snapshot` -- 重放之前运行的快照。
+    * :meth:`snapshot` -- 深拷贝当前配置为 JSON。
+    * :meth:`save_run_snapshot` -- 持久化当前配置以供重放。
+    * :meth:`resource_budget` -- 从配置构建 :class:`ResourceBudget`。
 
     Args:
-        config_dir: Override for the Project-layer config directory.
-        environment: Active environment (``dev`` or ``prod``).
-        auto_load: When ``True`` (default) all layers are loaded immediately.
-        include_user: When ``True`` (default) the User layer is loaded.
-        include_run: When ``True`` (default) a run snapshot is written on
-            load.
+        config_dir: Project 层配置目录的覆盖。
+        environment: 活动环境（``dev`` 或 ``prod``）。
+        auto_load: 为 ``True``（默认）时立即加载所有层级。
+        include_user: 为 ``True``（默认）时加载 User 层。
+        include_run: 为 ``True``（默认）时在加载时写入运行快照。
 
     Example:
         >>> cc = ConfigCenter()
@@ -160,9 +208,19 @@ class ConfigCenter(ConfigManager):
 
     _instance: Optional["ConfigCenter"] = None
     _initialized: bool = False
-    # RLock (not Lock): __new__ calls super().__new__() (ConfigManager.__new__)
-    # which re-enters this same lock because ``cls`` is still ConfigCenter.
+    # RLock（非 Lock）：__new__ 可能被并发调用，RLock 允许可重入获取。
     _singleton_lock: threading.RLock = threading.RLock()
+
+    #: 启动时加载的默认配置文件。
+    DEFAULT_CONFIG_FILES: Sequence[str] = (
+        "model_config.yaml",
+        "inference_config.yaml",
+        "training_config.yaml",
+        "prompt_templates.yaml",
+    )
+
+    #: 支持的环境标识符。
+    SUPPORTED_ENVIRONMENTS: Sequence[str] = ("dev", "prod")
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "ConfigCenter":
         if cls._instance is None:
@@ -207,6 +265,21 @@ class ConfigCenter(ConfigManager):
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
+    @property
+    def environment(self) -> str:
+        """当前活动的环境（``dev`` 或 ``prod``）。"""
+        return self._environment
+
+    @property
+    def config_dir(self) -> Path:
+        """已解析的配置目录。"""
+        return self._config_dir
+
+    @property
+    def loaded_files(self) -> List[Path]:
+        """已成功加载的配置文件列表。"""
+        return list(self._loaded_files)
+
     @property
     def system_dir(self) -> Path:
         """The System-layer defaults directory."""
@@ -337,6 +410,139 @@ class ConfigCenter(ConfigManager):
             self._run_snapshot_path = snapshot_path
             self._logger.info("Loaded run snapshot from %s.", snapshot_path)
             return deepcopy(self._config)
+
+    def load_file(self, path: Union[str, Path], required: bool = True) -> None:
+        """加载额外的 YAML 文件并合并到配置中。
+
+        Args:
+            path: YAML 文件路径。
+            required: 为 ``True`` 时，缺失文件会抛出 ``FileNotFoundError``。
+        """
+        with self._lock:
+            self._load_file(Path(path).expanduser().resolve(), required=required)
+
+    def _load_file(self, path: Path, required: bool = True) -> None:
+        """加载并合并单个 YAML 文件。"""
+        if not path.exists():
+            if required:
+                raise FileNotFoundError(f"Configuration file not found: {path}")
+            return
+
+        with open(path, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Configuration file {path} must contain a YAML mapping at "
+                f"the top level, got {type(data).__name__}."
+            )
+
+        with self._lock:
+            self._config = _deep_merge(self._config, data)
+            self._loaded_files.append(path)
+
+    # ------------------------------------------------------------------
+    # Access (点号分隔键访问)
+    # ------------------------------------------------------------------
+    def get(self, key: str, default: Any = None) -> Any:
+        """使用点号分隔表示法获取配置值。
+
+        Args:
+            key: 点号分隔路径，如 ``"sampling.default.temperature"``。
+            default: 键不存在时返回的值。
+
+        Returns:
+            配置值或 ``default``。
+        """
+        if not key:
+            return default
+
+        with self._lock:
+            current: Any = self._config
+            for part in key.split("."):
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                else:
+                    return default
+            return current
+
+    def set(self, key: str, value: Any) -> None:
+        """使用点号分隔表示法动态设置配置值。
+
+        缺失的中间字典会自动创建。
+
+        Args:
+            key: 点号分隔路径，如 ``"sampling.default.temperature"``。
+            value: 要赋的值。
+        """
+        if not key:
+            raise KeyError("Configuration key must be a non-empty string.")
+
+        with self._lock:
+            parts = key.split(".")
+            node: Dict[str, Any] = self._config
+            for part in parts[:-1]:
+                existing = node.get(part)
+                if not isinstance(existing, dict):
+                    existing = {}
+                    node[part] = existing
+                node = existing
+            node[parts[-1]] = deepcopy(value)
+
+    def has(self, key: str) -> bool:
+        """当 ``key`` 存在于配置中时返回 ``True``。"""
+        sentinel = object()
+        return self.get(key, sentinel) is not sentinel
+
+    # ------------------------------------------------------------------
+    # Merging
+    # ------------------------------------------------------------------
+    def merge(self, *sources: Dict[str, Any]) -> Dict[str, Any]:
+        """将一个或多个字典合并到当前配置中。
+
+        后面的源优先级高于前面的源及现有配置。合并以递归方式进行。
+
+        Args:
+            *sources: 一个或多个配置字典。
+
+        Returns:
+            合并后的配置字典。
+        """
+        with self._lock:
+            for source in sources:
+                if not isinstance(source, dict):
+                    raise TypeError(
+                        f"Each merge source must be a dict, got "
+                        f"{type(source).__name__}."
+                    )
+                self._config = _deep_merge(self._config, source)
+            return deepcopy(self._config)
+
+    # ------------------------------------------------------------------
+    # Misc
+    # ------------------------------------------------------------------
+    def to_dict(self) -> Dict[str, Any]:
+        """返回完整配置字典的深拷贝。"""
+        with self._lock:
+            return deepcopy(self._config)
+
+    def switch_environment(self, environment: str) -> Dict[str, Any]:
+        """切换活动环境并重新加载配置。
+
+        Args:
+            environment: 目标环境（``dev`` 或 ``prod``）。
+
+        Returns:
+            新合并的配置字典。
+        """
+        if environment not in self.SUPPORTED_ENVIRONMENTS:
+            raise ValueError(
+                f"Unsupported environment '{environment}'. Supported: "
+                f"{', '.join(self.SUPPORTED_ENVIRONMENTS)}."
+            )
+        return self.load(environment=environment)
 
     # ------------------------------------------------------------------
     # Snapshot
@@ -525,3 +731,16 @@ def _to_jsonable(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
     return obj
+
+
+def get_config(key: str, default: Any = None) -> Any:
+    """单例 :class:`ConfigCenter` 的便捷访问器。
+
+    Args:
+        key: 点号分隔的配置键。
+        default: 回退值。
+
+    Returns:
+        配置值或 ``default``。
+    """
+    return ConfigCenter().get(key, default)

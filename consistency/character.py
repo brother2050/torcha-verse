@@ -31,12 +31,12 @@ constraints, seed / LoRA / prompt-prefix reuse, consistency validation
 with automatic retry) is exercised so that the method can be swapped
 for a real generation backend without changing call sites.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- logging.
 * L2 ``assets`` -- :class:`~assets.model_asset.CharacterAsset`,
   :class:`~assets.store.AssetStore`, :class:`~assets.base.AssetRef`.
-* L4 ``consistency`` (this module) -- character engine + scoring.
+* L6 ``consistency`` (this module) -- character engine + scoring.
 
 This module depends on :mod:`torch` for the CLIP-I distance computation
 (delegated to :class:`~consistency.score.ScoreCalculator`).

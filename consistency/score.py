@@ -29,11 +29,11 @@ feature vectors so that the distance metrics are reproducible within a
 process, while remaining a drop-in target for a future pretrained
 backbone.
 
-Layering (L1 -> L4):
+Layering (L1 -> L6):
 
 * L1 ``infrastructure`` -- logging.
 * L2 ``assets`` -- asset types (referenced for type hints only).
-* L4 ``consistency`` (this module) -- scoring primitives.
+* L6 ``consistency`` (this module) -- scoring primitives.
 
 This module depends on :mod:`torch` for tensor operations and feature
 extraction.
