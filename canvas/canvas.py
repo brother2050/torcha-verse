@@ -571,20 +571,30 @@ class Canvas:
     # ------------------------------------------------------------------
     # Internal helpers for connection validation
     # ------------------------------------------------------------------
-    @staticmethod
-    def _load_specs() -> Optional[Dict[str, Any]]:
-        """Lazily load node specs from the L4 registry.
+    _spec_cache: Optional[Dict[str, Any]] = None
+    _spec_cache_time: float = 0.0
+    _SPEC_CACHE_TTL: float = 5.0  # seconds
+
+    @classmethod
+    def _load_specs(cls) -> Optional[Dict[str, Any]]:
+        """Lazily load node specs from the L4 registry with TTL caching.
 
         Returns a ``{node_type: NodeSpec}`` mapping, or ``None`` when the
-        node registry is unavailable (e.g. in a minimal environment
-        without the L4 layer).  The result is not cached so that
-        dynamically registered nodes are picked up.
+        node registry is unavailable.  Results are cached for
+        :attr:`_SPEC_CACHE_TTL` seconds to avoid re-traversing the
+        registry on every ``connect()`` call.
         """
+        import time as _time
+        now = _time.monotonic()
+        if cls._spec_cache is not None and (now - cls._spec_cache_time) < cls._SPEC_CACHE_TTL:
+            return cls._spec_cache
         try:
             from nodes import NodeRegistry  # type: ignore[import-not-found]
 
             registry = NodeRegistry()
-            return {spec.type: spec for spec in registry.list()}
+            cls._spec_cache = {spec.type: spec for spec in registry.list()}
+            cls._spec_cache_time = now
+            return cls._spec_cache
         except Exception:
             return None
 
@@ -994,8 +1004,15 @@ class Canvas:
 
         Returns:
             A new :class:`~pipeline.composer.Pipeline`.
+
+        Raises:
+            ValueError: If the canvas has no nodes.
         """
         with self._lock:
+            if not self._state.nodes:
+                raise ValueError(
+                    "Cannot convert an empty canvas (no nodes) to a pipeline."
+                )
             config = PipelineConfig(
                 name=self._name,
                 version=_DEFAULT_PIPELINE_VERSION,
@@ -1096,6 +1113,18 @@ class Canvas:
     # ------------------------------------------------------------------
     # Snapshot / fork / merge
     # ------------------------------------------------------------------
+    def _replace_state(self, new_state: CanvasState) -> None:
+        """Replace the internal state (used by CanvasHistory).
+
+        This is the only sanctioned way for an external collaborator
+        (notably :class:`~canvas.versioning.CanvasHistory`) to swap the
+        canvas's state.  It acquires ``self._lock`` so that the
+        replacement is atomic with respect to other canvas operations,
+        instead of bypassing the lock with a direct ``_state`` assignment.
+        """
+        with self._lock:
+            self._state = new_state
+
     def snapshot(self) -> Dict[str, Any]:
         """Return a version-control-friendly snapshot of the canvas.
 

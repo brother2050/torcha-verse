@@ -36,6 +36,7 @@ import json
 import os
 import platform
 import sys
+import threading
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -159,10 +160,15 @@ class ConfigCenter(ConfigManager):
 
     _instance: Optional["ConfigCenter"] = None
     _initialized: bool = False
+    # RLock (not Lock): __new__ calls super().__new__() (ConfigManager.__new__)
+    # which re-enters this same lock because ``cls`` is still ConfigCenter.
+    _singleton_lock: threading.RLock = threading.RLock()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "ConfigCenter":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._singleton_lock:
+                if cls._instance is None:  # double-check
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(
@@ -183,6 +189,7 @@ class ConfigCenter(ConfigManager):
         self._environment: str = environment
         self._config_dir: Path = _resolve_config_dir(config_dir)
         self._loaded_files: List[Path] = []
+        self._lock: threading.RLock = threading.RLock()
 
         self._system_dir: Path = _system_defaults_dir()
         self._user_dir: Path = _user_config_dir()
@@ -239,38 +246,39 @@ class ConfigCenter(ConfigManager):
         Returns:
             The fully merged configuration dictionary.
         """
-        if config_dir is not None:
-            self._config_dir = _resolve_config_dir(config_dir)
-        if environment is not None:
-            self._environment = environment
+        with self._lock:
+            if config_dir is not None:
+                self._config_dir = _resolve_config_dir(config_dir)
+            if environment is not None:
+                self._environment = environment
 
-        self._config = {}
-        self._loaded_files = []
+            self._config = {}
+            self._loaded_files = []
 
-        # 1. System layer (immutable built-in defaults).
-        self._load_dir(self._system_dir, required=False, layer="system")
+            # 1. System layer (immutable built-in defaults).
+            self._load_dir(self._system_dir, required=False, layer="system")
 
-        # 2. Project layer (committed ./config/*.yaml + environment override).
-        for filename in self.DEFAULT_CONFIG_FILES:
-            self._load_file(self._config_dir / filename)
-        env_file = self._config_dir / f"config.{self._environment}.yaml"
-        self._load_file(env_file, required=False)
+            # 2. Project layer (committed ./config/*.yaml + environment override).
+            for filename in self.DEFAULT_CONFIG_FILES:
+                self._load_file(self._config_dir / filename)
+            env_file = self._config_dir / f"config.{self._environment}.yaml"
+            self._load_file(env_file, required=False)
 
-        # 3. User layer (per-user overrides).
-        if include_user:
-            self.load_user_config()
+            # 3. User layer (per-user overrides).
+            if include_user:
+                self.load_user_config()
 
-        # 4. Run layer (persist a snapshot for reproducibility).
-        if include_run:
-            try:
-                self._run_snapshot_path = self.save_run_snapshot()
-            except Exception as exc:  # pragma: no cover - best effort
-                self._logger.warning(
-                    "Failed to write run snapshot: %s", exc
-                )
-                self._run_snapshot_path = None
+            # 4. Run layer (persist a snapshot for reproducibility).
+            if include_run:
+                try:
+                    self._run_snapshot_path = self.save_run_snapshot()
+                except Exception as exc:  # pragma: no cover - best effort
+                    self._logger.warning(
+                        "Failed to write run snapshot: %s", exc
+                    )
+                    self._run_snapshot_path = None
 
-        return deepcopy(self._config)
+            return deepcopy(self._config)
 
     def load_user_config(self) -> Dict[str, Any]:
         """Load (or reload) the User-layer overrides.
@@ -282,8 +290,9 @@ class ConfigCenter(ConfigManager):
         Returns:
             The merged configuration dictionary after applying user overrides.
         """
-        self._load_dir(self._user_dir, required=False, layer="user")
-        return deepcopy(self._config)
+        with self._lock:
+            self._load_dir(self._user_dir, required=False, layer="user")
+            return deepcopy(self._config)
 
     def load_run_snapshot(self, path: Union[str, Path]) -> Dict[str, Any]:
         """Replay a previous run's configuration snapshot.
@@ -322,11 +331,12 @@ class ConfigCenter(ConfigManager):
                 f"object, got {type(payload).__name__}."
             )
 
-        self._config = _deep_merge(self._config, payload)
-        self._loaded_files.append(snapshot_path)
-        self._run_snapshot_path = snapshot_path
-        self._logger.info("Loaded run snapshot from %s.", snapshot_path)
-        return deepcopy(self._config)
+        with self._lock:
+            self._config = _deep_merge(self._config, payload)
+            self._loaded_files.append(snapshot_path)
+            self._run_snapshot_path = snapshot_path
+            self._logger.info("Loaded run snapshot from %s.", snapshot_path)
+            return deepcopy(self._config)
 
     # ------------------------------------------------------------------
     # Snapshot
@@ -337,7 +347,8 @@ class ConfigCenter(ConfigManager):
         The returned dictionary is safe to serialise with :func:`json.dumps`
         and contains no references back into the live configuration.
         """
-        return _to_jsonable(deepcopy(self._config))
+        with self._lock:
+            return _to_jsonable(deepcopy(self._config))
 
     def save_run_snapshot(
         self,
@@ -364,16 +375,17 @@ class ConfigCenter(ConfigManager):
 
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        envelope: Dict[str, Any] = {
-            "framework": "TorchaVerse",
-            "version": "0.3.0",
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "timestamp": time.time(),
-            "platform": platform.platform(),
-            "python": sys.version.split()[0],
-            "environment": self._environment,
-            "config": _to_jsonable(deepcopy(self._config)),
-        }
+        with self._lock:
+            envelope: Dict[str, Any] = {
+                "framework": "TorchaVerse",
+                "version": "0.3.0",
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": time.time(),
+                "platform": platform.platform(),
+                "python": sys.version.split()[0],
+                "environment": self._environment,
+                "config": _to_jsonable(deepcopy(self._config)),
+            }
         with open(target, "w", encoding="utf-8") as handle:
             json.dump(envelope, handle, indent=2, ensure_ascii=False, default=str)
 
@@ -438,7 +450,8 @@ class ConfigCenter(ConfigManager):
             self._backup: Dict[str, Any] = {}
 
         def __enter__(self) -> "ConfigCenter":
-            self._backup = deepcopy(self._owner._config)
+            with self._owner._lock:
+                self._backup = deepcopy(self._owner._config)
             return self._owner
 
         def __exit__(
@@ -447,7 +460,8 @@ class ConfigCenter(ConfigManager):
             exc_val: Optional[BaseException],
             exc_tb: Any,
         ) -> bool:
-            self._owner._config = self._backup
+            with self._owner._lock:
+                self._owner._config = self._backup
             return False
 
     def reset_context(self) -> "ConfigCenter._ResetContext":
@@ -490,8 +504,9 @@ class ConfigCenter(ConfigManager):
 
         Primarily useful for testing where a fresh configuration is required.
         """
-        cls._instance = None
-        cls._initialized = False
+        with cls._singleton_lock:
+            cls._instance = None
+            cls._initialized = False
 
 
 # ---------------------------------------------------------------------------

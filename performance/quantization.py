@@ -375,7 +375,11 @@ class Quantizer:
 
     @staticmethod
     def _bnb_replace_linear(model: nn.Module, method: str) -> nn.Module:
-        """Replace ``nn.Linear`` layers with bitsandbytes 4-bit layers."""
+        """Replace ``nn.Linear`` layers with bitsandbytes 4-bit layers.
+
+        The original weights are quantised and copied into the new
+        ``Linear4bit`` module so the model retains its trained weights.
+        """
         quant_type = "nf4" if method == "nf4" else "fp4"
         for name, module in list(model.named_children()):
             if isinstance(module, nn.Linear):
@@ -385,6 +389,17 @@ class Quantizer:
                     bias=module.bias is not None,
                     quant_type=quant_type,
                 )
+                # Quantise and copy the original weight into the new module.
+                new_module.weight = _bnb.nn.Params4bit(  # type: ignore[attr-defined]
+                    module.weight.data.clone(),
+                    quant_type=quant_type,
+                    requires_grad=False,
+                )
+                # Copy bias if present.
+                if module.bias is not None:
+                    new_module.bias = nn.Parameter(module.bias.data.clone())
+                # Move to the same device as the original module.
+                new_module = new_module.to(module.weight.device)
                 setattr(model, name, new_module)
             else:
                 Quantizer._bnb_replace_linear(module, method)

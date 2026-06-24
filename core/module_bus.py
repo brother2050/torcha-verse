@@ -179,13 +179,16 @@ class ModuleBus:
 
     _instance: Optional["ModuleBus"] = None
     _initialized: bool = False
+    _singleton_lock: threading.Lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Singleton plumbing
     # ------------------------------------------------------------------
     def __new__(cls, *args: Any, **kwargs: Any) -> "ModuleBus":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._singleton_lock:
+                if cls._instance is None:  # double-check
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self) -> None:
@@ -520,8 +523,9 @@ class ModuleBus:
 
         After calling this, ``ModuleBus()`` returns a fresh, empty bus.
         """
-        cls._instance = None
-        cls._initialized = False
+        with cls._singleton_lock:
+            cls._instance = None
+            cls._initialized = False
 
 
 # ---------------------------------------------------------------------------

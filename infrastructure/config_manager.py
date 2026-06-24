@@ -12,6 +12,7 @@ values should be hard-coded inside the framework logic.
 from __future__ import annotations
 
 import os
+import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
@@ -99,6 +100,11 @@ class ConfigManager:
 
     _instance: Optional["ConfigManager"] = None
     _initialized: bool = False
+    # RLock (not Lock) because ConfigCenter subclasses ConfigManager and its
+    # __new__ calls super().__new__(), which re-enters this same lock via
+    # ``cls._singleton_lock`` (cls is still the subclass).  A plain Lock
+    # would self-deadlock; RLock permits the re-entrant acquisition.
+    _singleton_lock: threading.RLock = threading.RLock()
 
     #: The default configuration files loaded on startup.
     DEFAULT_CONFIG_FILES: Sequence[str] = (
@@ -113,7 +119,9 @@ class ConfigManager:
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "ConfigManager":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._singleton_lock:
+                if cls._instance is None:  # double-check
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(
@@ -132,6 +140,7 @@ class ConfigManager:
         self._environment: str = environment
         self._config_dir: Path = _resolve_config_dir(config_dir)
         self._loaded_files: List[Path] = []
+        self._lock: threading.RLock = threading.RLock()
 
         if auto_load:
             self.load(environment=environment)
@@ -176,23 +185,24 @@ class ConfigManager:
         Returns:
             The fully merged configuration dictionary.
         """
-        if config_dir is not None:
-            self._config_dir = _resolve_config_dir(config_dir)
-        if environment is not None:
-            self._environment = environment
+        with self._lock:
+            if config_dir is not None:
+                self._config_dir = _resolve_config_dir(config_dir)
+            if environment is not None:
+                self._environment = environment
 
-        self._config = {}
-        self._loaded_files = []
+            self._config = {}
+            self._loaded_files = []
 
-        # 1. Load the default config files.
-        for filename in self.DEFAULT_CONFIG_FILES:
-            self._load_file(self._config_dir / filename)
+            # 1. Load the default config files.
+            for filename in self.DEFAULT_CONFIG_FILES:
+                self._load_file(self._config_dir / filename)
 
-        # 2. Overlay the environment-specific config.
-        env_file = self._config_dir / f"config.{self._environment}.yaml"
-        self._load_file(env_file, required=False)
+            # 2. Overlay the environment-specific config.
+            env_file = self._config_dir / f"config.{self._environment}.yaml"
+            self._load_file(env_file, required=False)
 
-        return deepcopy(self._config)
+            return deepcopy(self._config)
 
     def load_file(self, path: Union[str, Path], required: bool = True) -> None:
         """Load an additional YAML file and merge it into the configuration.
@@ -201,7 +211,8 @@ class ConfigManager:
             path: Path to the YAML file.
             required: If ``True`` a missing file raises ``FileNotFoundError``.
         """
-        self._load_file(Path(path).expanduser().resolve(), required=required)
+        with self._lock:
+            self._load_file(Path(path).expanduser().resolve(), required=required)
 
     def _load_file(self, path: Path, required: bool = True) -> None:
         """Load and merge a single YAML file."""
@@ -221,8 +232,9 @@ class ConfigManager:
                 f"the top level, got {type(data).__name__}."
             )
 
-        self._config = _deep_merge(self._config, data)
-        self._loaded_files.append(path)
+        with self._lock:
+            self._config = _deep_merge(self._config, data)
+            self._loaded_files.append(path)
 
     # ------------------------------------------------------------------
     # Access
@@ -240,13 +252,14 @@ class ConfigManager:
         if not key:
             return default
 
-        current: Any = self._config
-        for part in key.split("."):
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            else:
-                return default
-        return current
+        with self._lock:
+            current: Any = self._config
+            for part in key.split("."):
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                else:
+                    return default
+            return current
 
     def set(self, key: str, value: Any) -> None:
         """Dynamically set a configuration value using dot-separated notation.
@@ -260,15 +273,16 @@ class ConfigManager:
         if not key:
             raise KeyError("Configuration key must be a non-empty string.")
 
-        parts = key.split(".")
-        node: Dict[str, Any] = self._config
-        for part in parts[:-1]:
-            existing = node.get(part)
-            if not isinstance(existing, dict):
-                existing = {}
-                node[part] = existing
-            node = existing
-        node[parts[-1]] = deepcopy(value)
+        with self._lock:
+            parts = key.split(".")
+            node: Dict[str, Any] = self._config
+            for part in parts[:-1]:
+                existing = node.get(part)
+                if not isinstance(existing, dict):
+                    existing = {}
+                    node[part] = existing
+                node = existing
+            node[parts[-1]] = deepcopy(value)
 
     def has(self, key: str) -> bool:
         """Return ``True`` if ``key`` exists in the configuration."""
@@ -290,21 +304,23 @@ class ConfigManager:
         Returns:
             The merged configuration dictionary.
         """
-        for source in sources:
-            if not isinstance(source, dict):
-                raise TypeError(
-                    f"Each merge source must be a dict, got "
-                    f"{type(source).__name__}."
-                )
-            self._config = _deep_merge(self._config, source)
-        return deepcopy(self._config)
+        with self._lock:
+            for source in sources:
+                if not isinstance(source, dict):
+                    raise TypeError(
+                        f"Each merge source must be a dict, got "
+                        f"{type(source).__name__}."
+                    )
+                self._config = _deep_merge(self._config, source)
+            return deepcopy(self._config)
 
     # ------------------------------------------------------------------
     # Misc
     # ------------------------------------------------------------------
     def to_dict(self) -> Dict[str, Any]:
         """Return a deep copy of the full configuration dictionary."""
-        return deepcopy(self._config)
+        with self._lock:
+            return deepcopy(self._config)
 
     def switch_environment(self, environment: str) -> Dict[str, Any]:
         """Switch the active environment and reload configuration.
@@ -328,8 +344,9 @@ class ConfigManager:
 
         Primarily useful for testing where a fresh configuration is required.
         """
-        cls._instance = None
-        cls._initialized = False
+        with cls._singleton_lock:
+            cls._instance = None
+            cls._initialized = False
 
 
 def get_config(key: str, default: Any = None) -> Any:

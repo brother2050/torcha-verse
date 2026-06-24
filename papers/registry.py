@@ -97,13 +97,16 @@ class PaperRegistry:
 
     _instance: Optional["PaperRegistry"] = None
     _initialized: bool = False
+    _singleton_lock: threading.Lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Singleton plumbing
     # ------------------------------------------------------------------
     def __new__(cls, *args: Any, **kwargs: Any) -> "PaperRegistry":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._singleton_lock:
+                if cls._instance is None:  # double-check
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self) -> None:
@@ -335,5 +338,6 @@ class PaperRegistry:
         After calling this, ``PaperRegistry()`` returns a fresh, empty
         registry.
         """
-        cls._instance = None
-        cls._initialized = False
+        with cls._singleton_lock:
+            cls._instance = None
+            cls._initialized = False

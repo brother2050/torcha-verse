@@ -327,9 +327,10 @@ class CanvasHistory:
                 raise KeyError(
                     "No version with id {!r}.".format(version_id)
                 )
-            self._canvas._state = CanvasState.from_dict(
+            new_state = CanvasState.from_dict(
                 version.state.to_dict()
             )
+            self._canvas._replace_state(new_state)
             _logger.info(
                 "Reverted canvas %r to version %r.",
                 self._canvas.name, version_id,
@@ -371,9 +372,10 @@ class CanvasHistory:
         """
         with self._lock:
             merged = self._canvas.merge(branch)
-            self._canvas._state = CanvasState.from_dict(
+            new_state = CanvasState.from_dict(
                 merged.state.to_dict()
             )
+            self._canvas._replace_state(new_state)
             _logger.info(
                 "Merged branch into canvas %r.", self._canvas.name
             )

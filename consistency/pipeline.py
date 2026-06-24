@@ -663,7 +663,9 @@ class ConsistencyPipeline:
         """
         # Placeholder: deterministic pseudo-distance based on the
         # frame index so that the drift logic is exercised.
-        distance = (frame_idx % 10) / 100.0
+        # Values span [0, 0.18] so drift exceeds the default threshold
+        # of 0.15 when frame_idx % 10 >= 8, triggering re-generation.
+        distance = (frame_idx % 10) / 50.0
         return {
             "frame_index": frame_idx,
             "distance": distance,

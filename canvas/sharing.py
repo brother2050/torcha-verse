@@ -97,7 +97,9 @@ def _verify_password(password: str, stored: str) -> bool:
         _PASSWORD_HASH_ALGORITHM,
         (salt + password).encode("utf-8"),
     ).hexdigest()
-    return digest == expected_hash
+    # Use constant-time comparison to prevent timing side-channel attacks.
+    import hmac as _hmac
+    return _hmac.compare_digest(digest, expected_hash)
 
 
 # ---------------------------------------------------------------------------

@@ -98,28 +98,28 @@ class TypeSystem:
     #: connect to.  A type is always compatible with itself (handled in
     #: :meth:`is_compatible`), so it does not need to be listed here.
     COMPATIBILITY: dict[str, list[str]] = {
-        IMAGE: [IMAGE, LATENT],
-        VIDEO: [VIDEO, IMAGE],
-        AUDIO: [AUDIO],
-        TEXT: [TEXT, PROMPT],
-        INT: [INT, FLOAT, SEED],
-        FLOAT: [FLOAT],
-        BOOL: [BOOL],
-        SEED: [SEED, INT],
-        PROMPT: [PROMPT, TEXT],
-        CHARACTER: [CHARACTER, ASSET_REF],
-        OUTFIT: [OUTFIT, ASSET_REF],
-        SCENE: [SCENE, ASSET_REF],
-        DEPTH: [DEPTH, ASSET_REF],
-        LORA: [LORA, ASSET_REF],
-        CONTROLNET: [CONTROLNET, ASSET_REF],
+        IMAGE: [LATENT],
+        VIDEO: [IMAGE],
+        AUDIO: [],
+        TEXT: [PROMPT],
+        INT: [FLOAT, SEED],
+        FLOAT: [],
+        BOOL: [],
+        SEED: [INT],
+        PROMPT: [TEXT],
+        CHARACTER: [ASSET_REF],
+        OUTFIT: [ASSET_REF],
+        SCENE: [ASSET_REF],
+        DEPTH: [ASSET_REF],
+        LORA: [ASSET_REF],
+        CONTROLNET: [ASSET_REF],
         # Types below are leaf types with no extra compatibility beyond
         # themselves; they are listed so that :meth:`all_types` reports
         # them.
-        ASSET_REF: [ASSET_REF],
-        SUBTITLE: [SUBTITLE],
-        LATENT: [LATENT],
-        MODEL: [MODEL],
+        ASSET_REF: [],
+        SUBTITLE: [],
+        LATENT: [],
+        MODEL: [],
     }
 
     # ------------------------------------------------------------------

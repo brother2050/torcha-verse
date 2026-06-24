@@ -130,6 +130,7 @@ class CharacterApplyNode(BaseNode):
             "prompt": "PROMPT",
             "width": "INT",
             "height": "INT",
+            "character_weight": "Optional[FLOAT]",
         },
         outputs={
             "image": "IMAGE",
@@ -253,6 +254,7 @@ class OutfitApplyNode(BaseNode):
         inputs={
             "image": "IMAGE",
             "outfit": "OUTFIT",
+            "outfit_weight": "Optional[FLOAT]",
         },
         outputs={
             "image": "IMAGE",
@@ -341,6 +343,7 @@ class SceneApplyNode(BaseNode):
         inputs={
             "image": "IMAGE",
             "scene": "SCENE",
+            "scene_weight": "Optional[FLOAT]",
         },
         outputs={
             "image": "IMAGE",
@@ -430,6 +433,7 @@ class DepthConditionNode(BaseNode):
         inputs={
             "image_or_scene": "IMAGE",
             "method": "TEXT",
+            "depth_weight": "Optional[FLOAT]",
         },
         outputs={
             "depth_map": "DEPTH",

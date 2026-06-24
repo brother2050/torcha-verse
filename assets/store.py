@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -273,9 +274,19 @@ class AssetStore:
         content_hash = self._hash_file(content_path)
         size_bytes = content_path.stat().st_size
 
+        # Step 1: under the lock, check whether the content blob already
+        # exists on disk (content-addressed deduplication).
         with self._lock:
+            content_exists = self._content_path(content_hash).exists()
+
+        # Step 2: copy the content file OUTSIDE the lock so that slow
+        # file I/O does not block other store operations.  The copy uses
+        # a temporary file plus an atomic rename for crash consistency.
+        if not content_exists:
             self._store_content(content_path, content_hash)
 
+        # Step 3: under the lock, update the database records and cache.
+        with self._lock:
             # Preserve revision history from a previously stored version.
             stored = self._load_asset(asset.id)
             if stored is not None and stored.revisions:
@@ -566,18 +577,36 @@ class AssetStore:
         """Copy ``src`` into the object store under ``content_hash``.
 
         Deduplicated: if the target blob already exists nothing is done.
+
+        This method may be called *outside* the manager lock.  To keep
+        the object store consistent in the presence of concurrent writers
+        it writes to a uniquely-named temporary file in the destination
+        directory and then performs an atomic ``os.replace`` rename, so
+        that a partially-written blob is never observable.
         """
-        # Caller holds self._lock.
         dst = self._content_path(content_hash)
         if dst.exists():
             return
         dst.parent.mkdir(parents=True, exist_ok=True)
-        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
-            while True:
-                chunk = fsrc.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                fdst.write(chunk)
+        # Unique temp file in the same directory to allow an atomic rename.
+        tmp = dst.with_name("." + dst.name + "." + uuid4().hex + ".tmp")
+        try:
+            with open(src, "rb") as fsrc, open(tmp, "wb") as fdst:
+                while True:
+                    chunk = fsrc.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    fdst.write(chunk)
+                fdst.flush()
+                os.fsync(fdst.fileno())
+            os.replace(tmp, dst)
+        except BaseException:
+            # Clean up the temp file on any failure.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
 
     @staticmethod
     def _hash_file(path: Path) -> str:

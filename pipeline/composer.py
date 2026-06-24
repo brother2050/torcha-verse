@@ -112,12 +112,16 @@ class NodeContext:
         executors: Optional[Dict[str, NodeExecutor]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         max_workers: int = _DEFAULT_MAX_WORKERS,
+        strict_mode: bool = False,
+        budget: Any = None,
     ) -> None:
         self._bus = bus
         self._executors: Dict[str, NodeExecutor] = dict(executors or {})
         self._metadata: Dict[str, Any] = dict(metadata or {})
         self._outputs: Dict[str, Dict[str, Any]] = {}
         self._max_workers: int = max(1, int(max_workers))
+        self._strict_mode: bool = bool(strict_mode)
+        self._budget: Any = budget
         self._lock: threading.RLock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -132,6 +136,16 @@ class NodeContext:
     def max_workers(self) -> int:
         """The default worker cap for parallel execution."""
         return self._max_workers
+
+    @property
+    def strict_mode(self) -> bool:
+        """When ``True``, missing executors raise instead of passthrough."""
+        return self._strict_mode
+
+    @property
+    def budget(self) -> Any:
+        """The resource budget tracker (if configured)."""
+        return self._budget
 
     @property
     def metadata(self) -> Dict[str, Any]:
@@ -212,8 +226,12 @@ class NodeContext:
         Lookup order:
 
         1. The explicit ``executors`` map.
-        2. The :class:`~core.module_bus.ModuleBus` under the
-           ``node.<node_type>`` namespace (when a bus is configured).
+        2. The :class:`~core.module_bus.ModuleBus` under the ``"node"``
+           kind (when a bus is configured).  When the resolved object is a
+           :class:`~nodes.base.BaseNode` instance (i.e. has an ``execute``
+           method), it is wrapped in an adapter that converts the pipeline
+           call signature ``(inputs, ctx)`` into the node signature
+           ``execute(ctx, **inputs)``.
 
         Returns:
             The executor callable, or ``None`` if none is registered (in
@@ -224,10 +242,28 @@ class NodeContext:
         if executor is not None:
             return executor
         if self._bus is not None:
-            kind = "node.{}".format(node_type)
             try:
-                if self._bus.has(kind, node_type):  # type: ignore[union-attr]
-                    return self._bus.resolve(kind, node_type)  # type: ignore[union-attr]
+                if self._bus.has("node", node_type):  # type: ignore[union-attr]
+                    resolved = self._bus.resolve("node", node_type)  # type: ignore[union-attr]
+                    # If the resolved object is a BaseNode instance, wrap
+                    # it in an adapter that converts (inputs, ctx) ->
+                    # node.execute(ctx, **inputs).
+                    if hasattr(resolved, "execute") and callable(
+                        getattr(resolved, "execute")
+                    ):
+                        def _node_adapter(
+                            inputs: Dict[str, Any],
+                            ctx: "NodeContext",
+                        ) -> Dict[str, Any]:
+                            from nodes.base import NodeContext as L4NodeContext
+                            l4_ctx = L4NodeContext(
+                                bus=getattr(ctx, "bus", None) or self._bus,
+                                config=getattr(ctx, "metadata", {}),
+                                budget=getattr(ctx, "budget", None),
+                            )
+                            return resolved.execute(l4_ctx, **inputs)
+                        return _node_adapter
+                    return resolved
             except Exception:  # pragma: no cover - defensive
                 _logger.debug("ModuleBus lookup failed for %s", node_type, exc_info=True)
         return None
@@ -485,11 +521,33 @@ class Pipeline:
         executor = ctx.resolve_executor(node.node_type)
         if executor is None:
             # Passthrough: return merged inputs so the graph can still flow.
-            self._logger.debug(
+            if ctx.strict_mode:
+                raise RuntimeError(
+                    "No executor registered for node_type {!r} (strict mode).".format(
+                        node.node_type
+                    )
+                )
+            self._logger.warning(
                 "No executor for node_type %r; passthrough for %r.",
                 node.node_type, node_id,
             )
             return inputs
+
+        # Resource budget pre-check: warn if VRAM is critically low.
+        budget = ctx.budget
+        if budget is not None:
+            try:
+                available = budget.available()
+                vram = available.get("vram_gb", float("inf"))
+                if vram < 1.0:
+                    self._logger.warning(
+                        "Low VRAM (%.1f GB available) before executing "
+                        "node %r (type %r).",
+                        vram, node_id, node.node_type,
+                    )
+            except Exception:
+                pass  # Don't block execution on budget check failure
+
         return executor(inputs, ctx)
 
     # ------------------------------------------------------------------

@@ -331,21 +331,21 @@ def _tmpl(
 def _anime_short_film() -> PipelineTemplate:
     """3-minute anime short film: script -> cast -> storyboard -> generate -> voice -> subtitle."""
     nodes = [
-        _node("script", "script_generate", {"duration_minutes": 3, "genre": "anime"}, []),
-        _node("cast", "character_design", {"style": "anime"}, ["script"]),
-        _node("storyboard", "storyboard_layout", {"shots_per_minute": 8}, ["script"]),
+        _node("script", "text_chat", {"duration_minutes": 3, "genre": "anime"}, []),
+        _node("cast", "character_apply", {"style": "anime"}, ["script"]),
+        _node("storyboard", "image_txt2img", {"shots_per_minute": 8}, ["script"]),
         _node("shots", "image_txt2img", {"width": 1280, "height": 720}, ["storyboard"]),
-        _node("voice", "tts_multi_speaker", {"language": "ja"}, ["script", "cast"]),
+        _node("voice", "audio_tts", {"language": "ja"}, ["script", "cast"]),
         _node("subtitle", "subtitle_burn", {"font": "sans", "language": "zh"}, ["shots", "voice"]),
     ]
     edges = [
-        _edge("script", "cast", "script", "context"),
-        _edge("script", "storyboard", "script", "script"),
-        _edge("storyboard", "shots", "frames", "prompt"),
-        _edge("script", "voice", "script", "lines"),
-        _edge("cast", "voice", "characters", "speakers"),
-        _edge("shots", "subtitle", "images", "video"),
-        _edge("voice", "subtitle", "audio", "audio"),
+        _edge("script", "cast", "text", "prompt"),
+        _edge("script", "storyboard", "text", "prompt"),
+        _edge("storyboard", "shots", "image", "prompt"),
+        _edge("script", "voice", "text", "text"),
+        _edge("cast", "voice", "image", "voice"),
+        _edge("shots", "subtitle", "image", "video"),
+        _edge("voice", "subtitle", "audio", "subtitle_track"),
     ]
     return _tmpl(
         "anime_short_film",
@@ -362,16 +362,16 @@ def _anime_short_film() -> PipelineTemplate:
 def _mv_music_video() -> PipelineTemplate:
     """Music video: lyrics -> beat map -> shot sequencer -> render."""
     nodes = [
-        _node("lyrics", "lyrics_generate", {"theme": "love", "language": "en"}, []),
-        _node("beat", "beat_map", {"bpm": 120}, ["lyrics"]),
-        _node("shots", "shot_sequencer", {"aspect": "16:9"}, ["lyrics", "beat"]),
-        _node("render", "video_compose", {"fps": 30}, ["shots"]),
+        _node("lyrics", "text_chat", {"theme": "love", "language": "en"}, []),
+        _node("beat", "audio_music", {"bpm": 120}, ["lyrics"]),
+        _node("shots", "image_txt2img", {"aspect": "16:9"}, ["lyrics", "beat"]),
+        _node("render", "export_video", {"fps": 30}, ["shots"]),
     ]
     edges = [
-        _edge("lyrics", "beat", "lyrics", "lyrics"),
-        _edge("lyrics", "shots", "lyrics", "lyrics"),
-        _edge("beat", "shots", "beats", "timing"),
-        _edge("shots", "render", "sequence", "clips"),
+        _edge("lyrics", "beat", "text", "prompt"),
+        _edge("lyrics", "shots", "text", "prompt"),
+        _edge("beat", "shots", "audio", "prompt"),
+        _edge("shots", "render", "image", "video"),
     ]
     return _tmpl(
         "mv_music_video",
@@ -387,9 +387,9 @@ def _mv_music_video() -> PipelineTemplate:
 def _product_showcase() -> PipelineTemplate:
     """E-commerce product showcase: input -> background swap -> light match -> upscale."""
     nodes = [
-        _node("input", "image_input", {"source": "upload"}, []),
-        _node("bg", "background_swap", {"scenes": ["studio", "lifestyle"]}, ["input"]),
-        _node("light", "light_match", {"target": "studio_softbox"}, ["bg"]),
+        _node("input", "image_txt2img", {"source": "upload"}, []),
+        _node("bg", "scene_apply", {"scenes": ["studio", "lifestyle"]}, ["input"]),
+        _node("light", "scene_apply", {"target": "studio_softbox"}, ["bg"]),
         _node("upscale", "image_upscale", {"scale": 4}, ["light"]),
     ]
     edges = [
@@ -412,16 +412,16 @@ def _product_showcase() -> PipelineTemplate:
 def _character_card_5view() -> PipelineTemplate:
     """Character card five-view: ref -> five view -> outfit variants -> contact sheet."""
     nodes = [
-        _node("ref", "image_input", {"source": "upload"}, []),
-        _node("views", "five_view", {"views": ["front", "side", "back", "3q", "top"]}, ["ref"]),
-        _node("outfits", "outfit_variants", {"count": 4}, ["views"]),
-        _node("sheet", "contact_sheet", {"cols": 5, "rows": 2}, ["views", "outfits"]),
+        _node("ref", "image_txt2img", {"source": "upload"}, []),
+        _node("views", "character_five_view", {"views": ["front", "side", "back", "3q", "top"]}, ["ref"]),
+        _node("outfits", "outfit_apply", {"count": 4}, ["views"]),
+        _node("sheet", "export_image", {"cols": 5, "rows": 2}, ["views", "outfits"]),
     ]
     edges = [
-        _edge("ref", "views", "image", "image"),
-        _edge("views", "outfits", "views", "views"),
-        _edge("views", "sheet", "views", "images"),
-        _edge("outfits", "sheet", "variants", "variants"),
+        _edge("ref", "views", "image", "reference_image"),
+        _edge("views", "outfits", "five_views", "image"),
+        _edge("views", "sheet", "five_views", "image"),
+        _edge("outfits", "sheet", "image", "image"),
     ]
     return _tmpl(
         "character_card_5view",
@@ -438,13 +438,13 @@ def _character_card_5view() -> PipelineTemplate:
 def _story_illustration() -> PipelineTemplate:
     """Novel illustration: chapter text -> scene extract -> illustration grid."""
     nodes = [
-        _node("chapter", "text_input", {"source": "novel"}, []),
-        _node("scenes", "scene_extract", {"max_scenes": 8}, ["chapter"]),
-        _node("grid", "illustration_grid", {"style": "watercolor", "cols": 3}, ["scenes"]),
+        _node("chapter", "text_chat", {"source": "novel"}, []),
+        _node("scenes", "text_chat", {"max_scenes": 8}, ["chapter"]),
+        _node("grid", "export_image", {"style": "watercolor", "cols": 3}, ["scenes"]),
     ]
     edges = [
-        _edge("chapter", "scenes", "text", "text"),
-        _edge("scenes", "grid", "scenes", "scenes"),
+        _edge("chapter", "scenes", "text", "prompt"),
+        _edge("scenes", "grid", "text", "image"),
     ]
     return _tmpl(
         "story_illustration",
@@ -461,14 +461,14 @@ def _story_illustration() -> PipelineTemplate:
 def _douyin_vertical_clip() -> PipelineTemplate:
     """Vertical short video: topic -> script -> 9:16 shot -> subtitle burn."""
     nodes = [
-        _node("topic", "topic_expand", {"platform": "douyin"}, []),
-        _node("script", "script_generate", {"duration_seconds": 30}, ["topic"]),
+        _node("topic", "text_chat", {"platform": "douyin"}, []),
+        _node("script", "text_chat", {"duration_seconds": 30}, ["topic"]),
         _node("shot", "image_txt2img", {"width": 1080, "height": 1920}, ["script"]),
         _node("subtitle", "subtitle_burn", {"font": "bold", "language": "zh"}, ["shot"]),
     ]
     edges = [
-        _edge("topic", "script", "topic", "topic"),
-        _edge("script", "shot", "script", "prompt"),
+        _edge("topic", "script", "text", "prompt"),
+        _edge("script", "shot", "text", "prompt"),
         _edge("shot", "subtitle", "image", "video"),
     ]
     return _tmpl(
@@ -484,15 +484,15 @@ def _douyin_vertical_clip() -> PipelineTemplate:
 
 
 def _kids_storybook() -> PipelineTemplate:
-    """Kids storybook: story text -> illustration loop -> PDF export."""
+    """Children's storybook: story -> illustration loop -> PDF export."""
     nodes = [
-        _node("story", "text_input", {"audience": "kids"}, []),
-        _node("pages", "illustration_loop", {"style": "cartoon", "per_page": 1}, ["story"]),
-        _node("pdf", "pdf_export", {"page_size": "A4", "dpi": 300}, ["pages"]),
+        _node("story", "text_chat", {"audience": "children"}, []),
+        _node("pages", "image_txt2img", {"pages": 12, "style": "cartoon"}, ["story"]),
+        _node("pdf", "export_image", {"format": "pdf"}, ["pages"]),
     ]
     edges = [
-        _edge("story", "pages", "text", "text"),
-        _edge("pages", "pdf", "illustrations", "pages"),
+        _edge("story", "pages", "text", "prompt"),
+        _edge("pages", "pdf", "image", "image"),
     ]
     return _tmpl(
         "kids_storybook",
@@ -508,13 +508,13 @@ def _kids_storybook() -> PipelineTemplate:
 def _concept_art_pack() -> PipelineTemplate:
     """Concept art pack: theme -> multi angle -> mood board."""
     nodes = [
-        _node("theme", "theme_expand", {"domain": "sci-fi"}, []),
-        _node("angles", "multi_angle", {"angles": ["front", "side", "top", "detail"]}, ["theme"]),
-        _node("mood", "mood_board", {"palette": "auto", "cols": 4}, ["angles"]),
+        _node("theme", "text_chat", {"domain": "sci-fi"}, []),
+        _node("angles", "character_five_view", {"angles": ["front", "side", "top", "detail"]}, ["theme"]),
+        _node("mood", "image_txt2img", {"palette": "auto", "cols": 4}, ["angles"]),
     ]
     edges = [
-        _edge("theme", "angles", "theme", "theme"),
-        _edge("angles", "mood", "renders", "images"),
+        _edge("theme", "angles", "text", "reference_image"),
+        _edge("angles", "mood", "five_views", "prompt"),
     ]
     return _tmpl(
         "concept_art_pack",
@@ -530,16 +530,17 @@ def _concept_art_pack() -> PipelineTemplate:
 def _tutorial_overlay() -> PipelineTemplate:
     """Tutorial screen recording packaging: recording -> caption -> highlight -> export."""
     nodes = [
-        _node("recording", "screen_recording", {"fps": 30, "resolution": "1080p"}, []),
-        _node("caption", "caption_generate", {"language": "en"}, ["recording"]),
-        _node("highlight", "highlight_overlay", {"style": "pointer"}, ["recording"]),
-        _node("export", "video_export", {"format": "mp4", "codec": "h264"}, ["caption", "highlight"]),
+        _node("recording", "export_video", {"fps": 30, "resolution": "1080p"}, []),
+        _node("caption", "subtitle_generate", {"language": "en"}, ["recording"]),
+        _node("highlight", "subtitle_burn", {"style": "highlight"}, ["recording", "caption"]),
+        _node("export", "export_video", {"format": "mp4"}, ["caption", "highlight"]),
     ]
     edges = [
-        _edge("recording", "caption", "video", "video"),
-        _edge("recording", "highlight", "video", "video"),
-        _edge("caption", "export", "captions", "captions"),
-        _edge("highlight", "export", "overlays", "overlays"),
+        _edge("recording", "caption", "path", "media_path"),
+        _edge("recording", "highlight", "path", "video"),
+        _edge("caption", "highlight", "subtitle_track", "subtitle_track"),
+        _edge("caption", "export", "subtitle_track", "video"),
+        _edge("highlight", "export", "video", "video"),
     ]
     return _tmpl(
         "tutorial_overlay",
@@ -556,13 +557,13 @@ def _tutorial_overlay() -> PipelineTemplate:
 def _image_variation_grid() -> PipelineTemplate:
     """Image variation matrix: input -> style matrix -> grid compose."""
     nodes = [
-        _node("input", "image_input", {"source": "upload"}, []),
-        _node("matrix", "style_matrix", {"styles": ["anime", "realistic", "oil", "pixel"]}, ["input"]),
-        _node("grid", "grid_compose", {"cols": 4, "rows": 4}, ["matrix"]),
+        _node("input", "image_txt2img", {"source": "upload"}, []),
+        _node("matrix", "export_image", {"styles": ["anime", "realistic", "oil", "pixel"]}, ["input"]),
+        _node("grid", "export_image", {"cols": 4, "rows": 4}, ["matrix"]),
     ]
     edges = [
         _edge("input", "matrix", "image", "image"),
-        _edge("matrix", "grid", "variations", "tiles"),
+        _edge("matrix", "grid", "path", "image"),
     ]
     return _tmpl(
         "image_variation_grid",
@@ -578,17 +579,17 @@ def _image_variation_grid() -> PipelineTemplate:
 def _restoration_pipeline() -> PipelineTemplate:
     """Old film restoration: input -> denoise -> colorize -> interpolate -> upscale."""
     nodes = [
-        _node("input", "video_input", {"source": "archive"}, []),
-        _node("denoise", "video_denoise", {"strength": 0.6}, ["input"]),
-        _node("colorize", "video_colorize", {"model": "deoldify"}, ["denoise"]),
-        _node("interp", "frame_interpolate", {"target_fps": 60}, ["colorize"]),
-        _node("upscale", "video_upscale", {"scale": 4}, ["interp"]),
+        _node("input", "export_video", {"source": "archive"}, []),
+        _node("denoise", "image_upscale", {"strength": 0.6}, ["input"]),
+        _node("colorize", "image_upscale", {"model": "deoldify"}, ["denoise"]),
+        _node("interp", "video_interpolate", {"target_fps": 60}, ["colorize"]),
+        _node("upscale", "image_upscale", {"scale": 4}, ["interp"]),
     ]
     edges = [
-        _edge("input", "denoise", "video", "video"),
-        _edge("denoise", "colorize", "video", "video"),
-        _edge("colorize", "interp", "video", "video"),
-        _edge("interp", "upscale", "video", "video"),
+        _edge("input", "denoise", "path", "image"),
+        _edge("denoise", "colorize", "image", "image"),
+        _edge("colorize", "interp", "image", "video"),
+        _edge("interp", "upscale", "video", "image"),
     ]
     return _tmpl(
         "restoration_pipeline",
@@ -605,16 +606,16 @@ def _restoration_pipeline() -> PipelineTemplate:
 def _audiobook_with_bgm() -> PipelineTemplate:
     """Audiobook with BGM: text -> TTS -> BGM mix -> chapter markers."""
     nodes = [
-        _node("text", "text_input", {"source": "epub"}, []),
-        _node("tts", "tts_narrate", {"voice": "warm_male", "language": "zh"}, ["text"]),
-        _node("bgm", "bgm_mix", {"mood": "calm", "ducking": 0.7}, ["tts"]),
-        _node("markers", "chapter_markers", {"format": "m4b"}, ["text", "bgm"]),
+        _node("text", "text_chat", {"source": "epub"}, []),
+        _node("tts", "audio_tts", {"voice": "warm_male", "language": "zh"}, ["text"]),
+        _node("bgm", "audio_music", {"mood": "calm", "ducking": 0.7}, ["tts"]),
+        _node("markers", "subtitle_generate", {"format": "m4b"}, ["text", "bgm"]),
     ]
     edges = [
         _edge("text", "tts", "text", "text"),
-        _edge("tts", "bgm", "audio", "narration"),
+        _edge("tts", "bgm", "audio", "prompt"),
         _edge("text", "markers", "text", "text"),
-        _edge("bgm", "markers", "audio", "audio"),
+        _edge("bgm", "markers", "audio", "media_path"),
     ]
     return _tmpl(
         "audiobook_with_bgm",

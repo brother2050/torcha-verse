@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import threading
 import types
 import typing
 from dataclasses import dataclass, field, replace
@@ -79,6 +80,10 @@ _NODE_KIND: str = "node"
 #: without instantiating the node.  The :class:`ModuleBus` remains the
 #: authoritative discovery surface.
 _NODE_CLASSES: Dict[str, type[BaseNode]] = {}
+
+#: Re-entrant lock guarding the module-level ``_NODE_CLASSES`` index so
+#: that concurrent registration / unregistration / lookup is safe.
+_NODE_CLASSES_LOCK: threading.RLock = threading.RLock()
 
 #: Module-level logger for the node system (stdlib only -- no torch).
 _logger: logging.Logger = get_logger("nodes")
@@ -481,7 +486,8 @@ def _register_node_class(
         )
 
     registry_bus = bus if bus is not None else ModuleBus()
-    _NODE_CLASSES[spec.type] = cls
+    with _NODE_CLASSES_LOCK:
+        _NODE_CLASSES[spec.type] = cls
     registry_bus.register(
         kind=_NODE_KIND,
         name=spec.type,
@@ -516,7 +522,8 @@ def _unregister_node_class(
     """
     registry_bus = bus if bus is not None else ModuleBus()
     existed = registry_bus.unregister(_NODE_KIND, node_type)
-    cls = _NODE_CLASSES.pop(node_type, None)
+    with _NODE_CLASSES_LOCK:
+        cls = _NODE_CLASSES.pop(node_type, None)
     if cls is not None:
         _logger.debug(
             "Unregistered node type=%s class=%s.", node_type,
@@ -647,7 +654,8 @@ class NodeRegistry:
             instance = self._bus.resolve(_NODE_KIND, node_type)
             return instance  # type: ignore[return-value]
         except _BusNotFoundError:
-            cls = _NODE_CLASSES.get(node_type)
+            with _NODE_CLASSES_LOCK:
+                cls = _NODE_CLASSES.get(node_type)
             if cls is None:
                 raise KeyError(
                     "No node registered for type {!r}.".format(node_type)
@@ -673,13 +681,16 @@ class NodeRegistry:
             if module_spec.kind != _NODE_KIND:
                 # Skip nested "node.*" namespaces -- only exact "node".
                 continue
-            cls = _NODE_CLASSES.get(module_spec.name)
+            with _NODE_CLASSES_LOCK:
+                cls = _NODE_CLASSES.get(module_spec.name)
             if cls is not None:
                 specs.append(cls.spec)
                 seen.add(module_spec.name)
 
         # Defensive: include any in-memory-only registrations.
-        for node_type, cls in _NODE_CLASSES.items():
+        with _NODE_CLASSES_LOCK:
+            node_classes_items = list(_NODE_CLASSES.items())
+        for node_type, cls in node_classes_items:
             if node_type not in seen:
                 specs.append(cls.spec)
                 seen.add(node_type)

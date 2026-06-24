@@ -371,14 +371,20 @@ class DAG:
         """
         with self._lock:
             nodes_snapshot = list(self._nodes.values())
-            # Build adjacency: dep -> dependents, and in-degree per node.
+            # Build reverse adjacency once: to_node -> [from_node]
+            # This avoids the O(V*E) inner loop of iterating all edges
+            # for each node.
+            reverse_adj: Dict[str, List[str]] = defaultdict(list)
+            for edge in self._edges:
+                reverse_adj[edge.to_node].append(edge.from_node)
+
+            # Build forward adjacency: dep -> dependents, and in-degree.
             adjacency: Dict[str, List[str]] = defaultdict(list)
             in_degree: Dict[str, int] = {n.id: 0 for n in nodes_snapshot}
             for node in nodes_snapshot:
                 deps = set(node.dependencies)
-                for edge in self._edges:
-                    if edge.to_node == node.id:
-                        deps.add(edge.from_node)
+                if node.id in reverse_adj:
+                    deps.update(reverse_adj[node.id])
                 for dep in deps:
                     # Only count deps that exist as nodes; missing deps are
                     # a validation concern, not a topology concern.
@@ -424,9 +430,20 @@ class DAG:
             ValueError: If the graph contains a cycle.
         """
         order = self.topological_sort()
+        # Build dependency map once (O(V+E)) instead of calling
+        # get_dependencies() for each node (O(V*E)).
+        with self._lock:
+            reverse_adj: Dict[str, set] = {nid: set() for nid in order}
+            for node in self._nodes.values():
+                if node.id in reverse_adj:
+                    reverse_adj[node.id].update(node.dependencies)
+            for edge in self._edges:
+                if edge.to_node in reverse_adj:
+                    reverse_adj[edge.to_node].add(edge.from_node)
+
         depth: Dict[str, int] = {}
         for nid in order:
-            deps = self.get_dependencies(nid)
+            deps = reverse_adj.get(nid, set())
             if not deps:
                 depth[nid] = 0
             else:

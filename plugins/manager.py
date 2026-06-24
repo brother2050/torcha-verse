@@ -392,7 +392,20 @@ class PluginManager:
             # Re-check after discovery (another thread may have loaded).
             if name in self._loaded:
                 raise PluginAlreadyLoadedError(name)
-            plugin = self._load_spec(spec)
+
+        # Import node modules and invoke lifecycle hooks OUTSIDE the lock
+        # so that slow imports / I/O (importlib.import_module, _call_hook)
+        # do not block other manager operations.  _load_spec only reads the
+        # shared ModuleBus; the manager state is updated under the lock below.
+        plugin = self._load_spec(spec)
+
+        with self._lock:
+            # Another thread may have loaded the plugin while we were
+            # importing outside the lock; if so, undo our duplicate
+            # registration and raise.
+            if name in self._loaded:
+                self._unload_plugin(plugin)
+                raise PluginAlreadyLoadedError(name)
             self._loaded[name] = plugin
             self._logger.info("Loaded plugin %s v%s.", spec.name, spec.version)
             return plugin
