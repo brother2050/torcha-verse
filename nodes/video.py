@@ -111,19 +111,19 @@ class VideoTxt2VidNode(BaseNode):
         name="Video Text-to-Video",
         description="Generate a video clip from a text prompt.",
         inputs={
-            "prompt": str,
-            "negative_prompt": Optional[str],
-            "num_frames": int,
-            "fps": int,
-            "width": int,
-            "height": int,
-            "steps": int,
-            "guidance_scale": float,
-            "seed": Optional[int],
+            "prompt": "PROMPT",
+            "negative_prompt": "Optional[PROMPT]",
+            "num_frames": "INT",
+            "fps": "INT",
+            "width": "INT",
+            "height": "INT",
+            "steps": "INT",
+            "guidance_scale": "FLOAT",
+            "seed": "Optional[SEED]",
         },
         outputs={
-            "video": Any,
-            "seed": int,
+            "video": "VIDEO",
+            "seed": "SEED",
         },
         tags=["video", "generation", "diffusion", "txt2vid"],
     )
@@ -314,11 +314,11 @@ class VideoInterpolateNode(BaseNode):
         name="Video Interpolate",
         description="Interpolate video frames to a target frame rate.",
         inputs={
-            "video": Any,
-            "target_fps": int,
+            "video": "VIDEO",
+            "target_fps": "INT",
         },
         outputs={
-            "video": Any,
+            "video": "VIDEO",
         },
         tags=["video", "postprocess", "interpolate", "frame"],
     )
@@ -426,11 +426,11 @@ class VideoStitchNode(BaseNode):
         name="Video Stitch",
         description="Concatenate multiple video clips with an optional transition.",
         inputs={
-            "videos": List[Any],
-            "transition": Optional[str],
+            "videos": "LIST[VIDEO]",
+            "transition": "Optional[TEXT]",
         },
         outputs={
-            "video": Any,
+            "video": "VIDEO",
         },
         tags=["video", "postprocess", "stitch", "concat"],
     )

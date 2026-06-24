@@ -60,6 +60,8 @@ from infrastructure.audit_log import AuditLogger
 from infrastructure.logger import get_logger
 from infrastructure.resource_budget import ResourceBudget
 
+from .type_system import is_optional
+
 __all__ = [
     "NodeSpec",
     "NodeContext",
@@ -189,17 +191,19 @@ class NodeSpec:
             :class:`ModuleBus` name under the ``"node"`` kind.
         name: Human-readable display name.
         description: One-line description of what the node does.
-        inputs: Mapping of input name to its declared type.  Optional
-            inputs are expressed with ``Optional[T]`` (or ``T | None``).
-        outputs: Mapping of output name to its declared type.
+        inputs: Mapping of input name to its declared port type string
+            (e.g. ``"TEXT"``, ``"IMAGE"``, ``"Optional[SEED]"``).
+            Optional inputs are expressed with the ``Optional[T]``
+            wrapper.
+        outputs: Mapping of output name to its declared port type string.
         tags: Free-form tags used for discovery / filtering.
     """
 
     type: str
     name: str
     description: str = ""
-    inputs: Dict[str, type] = field(default_factory=dict)
-    outputs: Dict[str, type] = field(default_factory=dict)
+    inputs: Dict[str, str] = field(default_factory=dict)
+    outputs: Dict[str, str] = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -211,9 +215,9 @@ class NodeSpec:
         if not isinstance(self.description, str):
             raise ValueError("NodeSpec.description must be a string.")
         if not isinstance(self.inputs, dict):
-            raise ValueError("NodeSpec.inputs must be a dict[str, type].")
+            raise ValueError("NodeSpec.inputs must be a dict[str, str].")
         if not isinstance(self.outputs, dict):
-            raise ValueError("NodeSpec.outputs must be a dict[str, type].")
+            raise ValueError("NodeSpec.outputs must be a dict[str, str].")
         if not isinstance(self.tags, list):
             raise ValueError("NodeSpec.tags must be a list[str].")
 
@@ -328,10 +332,13 @@ class BaseNode(abc.ABC):
         """Validate ``inputs`` against :attr:`spec`.
 
         The base implementation checks that every *required* input
-        (one whose declared type does not accept ``None``) is present,
-        and that every present input matches its declared type.  Unknown
-        inputs are ignored (lenient) so that pipelines can pass extra
-        metadata through a node without erroring.
+        (one whose declared type string is not wrapped in
+        ``Optional[...]``) is present and not ``None``.  Because port
+        types are now opaque strings (e.g. ``"IMAGE"``, ``"INT"``),
+        runtime ``isinstance`` checks are no longer possible; the value
+        is only checked for ``None``.  Unknown inputs are ignored
+        (lenient) so that pipelines can pass extra metadata through a
+        node without erroring.
 
         Subclasses are expected to call ``super().validate_inputs(inputs)``
         first and then append any domain-specific errors.
@@ -344,9 +351,10 @@ class BaseNode(abc.ABC):
         """
         errors: List[str] = []
         spec = self.spec
-        for name, expected_type in spec.inputs.items():
+        for name, type_str in spec.inputs.items():
+            optional = is_optional(type_str)
             if name not in inputs:
-                if not _is_optional(expected_type):
+                if not optional:
                     errors.append(
                         "Missing required input {!r} for node {!r}.".format(
                             name, spec.type
@@ -354,13 +362,10 @@ class BaseNode(abc.ABC):
                     )
                 continue
             value = inputs[name]
-            if not _type_matches(value, expected_type):
+            if value is None and not optional:
                 errors.append(
-                    "Input {!r} for node {!r} expected {}, got {!r}.".format(
-                        name,
-                        spec.type,
-                        expected_type,
-                        type(value).__name__,
+                    "Required input {!r} for node {!r} is None.".format(
+                        name, spec.type
                     )
                 )
         return errors

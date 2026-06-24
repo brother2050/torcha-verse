@@ -87,14 +87,14 @@ class AudioTTSNode(BaseNode):
         name="Audio TTS",
         description="Synthesise speech from text.",
         inputs={
-            "text": str,
-            "voice": str,
-            "speed": float,
-            "emotion": Optional[str],
+            "text": "TEXT",
+            "voice": "TEXT",
+            "speed": "FLOAT",
+            "emotion": "Optional[TEXT]",
         },
         outputs={
-            "audio": Any,
-            "sample_rate": int,
+            "audio": "AUDIO",
+            "sample_rate": "INT",
         },
         tags=["audio", "generation", "tts", "speech"],
     )
@@ -242,11 +242,11 @@ class AudioMusicNode(BaseNode):
         name="Audio Music",
         description="Generate a music clip from a text prompt.",
         inputs={
-            "prompt": str,
-            "duration": float,
+            "prompt": "PROMPT",
+            "duration": "FLOAT",
         },
         outputs={
-            "audio": Any,
+            "audio": "AUDIO",
         },
         tags=["audio", "generation", "music"],
     )

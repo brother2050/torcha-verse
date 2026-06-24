@@ -126,13 +126,13 @@ class CharacterApplyNode(BaseNode):
         name="Character Apply",
         description="Apply a character asset to a prompt to condition an image.",
         inputs={
-            "character": AssetRef,
-            "prompt": str,
-            "width": int,
-            "height": int,
+            "character": "CHARACTER",
+            "prompt": "PROMPT",
+            "width": "INT",
+            "height": "INT",
         },
         outputs={
-            "image": Any,
+            "image": "IMAGE",
         },
         tags=["consistency", "character", "conditioning"],
     )
@@ -251,11 +251,11 @@ class OutfitApplyNode(BaseNode):
         name="Outfit Apply",
         description="Apply an outfit asset to an existing image.",
         inputs={
-            "image": Any,
-            "outfit": AssetRef,
+            "image": "IMAGE",
+            "outfit": "OUTFIT",
         },
         outputs={
-            "image": Any,
+            "image": "IMAGE",
         },
         tags=["consistency", "outfit", "conditioning"],
     )
@@ -339,11 +339,11 @@ class SceneApplyNode(BaseNode):
         name="Scene Apply",
         description="Apply a scene asset to an existing image.",
         inputs={
-            "image": Any,
-            "scene": AssetRef,
+            "image": "IMAGE",
+            "scene": "SCENE",
         },
         outputs={
-            "image": Any,
+            "image": "IMAGE",
         },
         tags=["consistency", "scene", "conditioning"],
     )
@@ -428,11 +428,11 @@ class DepthConditionNode(BaseNode):
         name="Depth Condition",
         description="Extract a depth map from an image or scene.",
         inputs={
-            "image_or_scene": Any,
-            "method": str,
+            "image_or_scene": "IMAGE",
+            "method": "TEXT",
         },
         outputs={
-            "depth_map": Any,
+            "depth_map": "DEPTH",
         },
         tags=["consistency", "depth", "conditioning"],
     )
@@ -533,11 +533,11 @@ class FiveViewNode(BaseNode):
         name="Character Five View",
         description="Generate a 5-view reference sheet for a character.",
         inputs={
-            "reference_image": Any,
-            "character_name": str,
+            "reference_image": "IMAGE",
+            "character_name": "TEXT",
         },
         outputs={
-            "five_views": List[Any],
+            "five_views": "LIST[IMAGE]",
         },
         tags=["consistency", "character", "multiview"],
     )

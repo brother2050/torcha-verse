@@ -38,6 +38,9 @@ Node catalogue
 * **Consistency** -- :class:`CharacterApplyNode`,
   :class:`OutfitApplyNode`, :class:`SceneApplyNode`,
   :class:`DepthConditionNode`, :class:`FiveViewNode`
+* **Digital Human** -- :class:`LipSyncNode`, :class:`TalkingHeadNode`,
+  :class:`PortraitAnimateNode`, :class:`DigitalHumanNode`,
+  :class:`FaceEnhanceNode`, :class:`VoiceCloneNode`
 * **Export** -- :class:`ExportImageNode`, :class:`ExportVideoNode`,
   :class:`ExportAudioNode`
 """
@@ -58,6 +61,7 @@ from .base import (
 # decorators execute and the nodes appear on the ModuleBus.
 from . import audio as audio  # noqa: F401
 from . import consistency as consistency  # noqa: F401
+from . import digital_human as digital_human  # noqa: F401
 from . import export as export  # noqa: F401
 from . import image as image  # noqa: F401
 from . import subtitle as subtitle  # noqa: F401
@@ -72,6 +76,14 @@ from .consistency import (
     FiveViewNode,
     OutfitApplyNode,
     SceneApplyNode,
+)
+from .digital_human import (
+    DigitalHumanNode,
+    FaceEnhanceNode,
+    LipSyncNode,
+    PortraitAnimateNode,
+    TalkingHeadNode,
+    VoiceCloneNode,
 )
 from .export import ExportAudioNode, ExportImageNode, ExportVideoNode
 from .image import (
@@ -122,6 +134,13 @@ __all__ = [
     "SceneApplyNode",
     "DepthConditionNode",
     "FiveViewNode",
+    # Digital human nodes
+    "LipSyncNode",
+    "TalkingHeadNode",
+    "PortraitAnimateNode",
+    "DigitalHumanNode",
+    "FaceEnhanceNode",
+    "VoiceCloneNode",
     # Export nodes
     "ExportImageNode",
     "ExportVideoNode",

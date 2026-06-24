@@ -88,12 +88,12 @@ class ExportImageNode(BaseNode):
         name="Export Image",
         description="Export an image to png / jpg / webp.",
         inputs={
-            "image": Any,
-            "path": str,
-            "format": str,
+            "image": "IMAGE",
+            "path": "TEXT",
+            "format": "TEXT",
         },
         outputs={
-            "path": str,
+            "path": "TEXT",
         },
         tags=["export", "image", "io"],
     )
@@ -207,13 +207,13 @@ class ExportVideoNode(BaseNode):
         name="Export Video",
         description="Export a video to mp4 / gif / webm.",
         inputs={
-            "video": Any,
-            "path": str,
-            "format": str,
-            "fps": int,
+            "video": "VIDEO",
+            "path": "TEXT",
+            "format": "TEXT",
+            "fps": "INT",
         },
         outputs={
-            "path": str,
+            "path": "TEXT",
         },
         tags=["export", "video", "io"],
     )
@@ -336,13 +336,13 @@ class ExportAudioNode(BaseNode):
         name="Export Audio",
         description="Export audio to wav / mp3.",
         inputs={
-            "audio": Any,
-            "path": str,
-            "format": str,
-            "sample_rate": int,
+            "audio": "AUDIO",
+            "path": "TEXT",
+            "format": "TEXT",
+            "sample_rate": "INT",
         },
         outputs={
-            "path": str,
+            "path": "TEXT",
         },
         tags=["export", "audio", "io"],
     )

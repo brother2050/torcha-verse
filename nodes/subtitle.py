@@ -98,14 +98,14 @@ class SubtitleGenerateNode(BaseNode):
         name="Subtitle Generate",
         description="Generate a subtitle track from video, audio or text.",
         inputs={
-            "source": str,
-            "media_path": Optional[str],
-            "text": Optional[str],
-            "language": str,
-            "method": str,
+            "source": "TEXT",
+            "media_path": "Optional[TEXT]",
+            "text": "Optional[TEXT]",
+            "language": "TEXT",
+            "method": "TEXT",
         },
         outputs={
-            "subtitle_track": dict,
+            "subtitle_track": "SUBTITLE",
         },
         tags=["subtitle", "asr", "generation"],
     )
@@ -271,11 +271,11 @@ class SubtitleTranslateNode(BaseNode):
         name="Subtitle Translate",
         description="Translate a subtitle track into a target language.",
         inputs={
-            "subtitle_track": dict,
-            "target_language": str,
+            "subtitle_track": "SUBTITLE",
+            "target_language": "TEXT",
         },
         outputs={
-            "subtitle_track": dict,
+            "subtitle_track": "SUBTITLE",
         },
         tags=["subtitle", "translate", "llm"],
     )
@@ -398,12 +398,12 @@ class SubtitleBurnNode(BaseNode):
         name="Subtitle Burn",
         description="Burn a subtitle track into a video.",
         inputs={
-            "video": Any,
-            "subtitle_track": dict,
-            "style": Optional[dict],
+            "video": "VIDEO",
+            "subtitle_track": "SUBTITLE",
+            "style": "Optional[TEXT]",
         },
         outputs={
-            "video": Any,
+            "video": "VIDEO",
         },
         tags=["subtitle", "video", "postprocess", "burn"],
     )
@@ -509,12 +509,12 @@ class SubtitleExportNode(BaseNode):
         name="Subtitle Export",
         description="Export a subtitle track to srt / vtt / ass.",
         inputs={
-            "subtitle_track": dict,
-            "format": str,
-            "path": str,
+            "subtitle_track": "SUBTITLE",
+            "format": "TEXT",
+            "path": "TEXT",
         },
         outputs={
-            "path": str,
+            "path": "TEXT",
         },
         tags=["subtitle", "export", "srt", "vtt", "ass"],
     )

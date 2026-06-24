@@ -39,6 +39,7 @@ from uuid import uuid4
 
 import yaml
 
+from nodes.type_system import TypeSystem
 from pipeline.composer import Pipeline, PipelineConfig
 from pipeline.dag import DAG, DAGEdge, DAGNode
 
@@ -568,6 +569,59 @@ class Canvas:
         return None
 
     # ------------------------------------------------------------------
+    # Internal helpers for connection validation
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _load_specs() -> Optional[Dict[str, Any]]:
+        """Lazily load node specs from the L4 registry.
+
+        Returns a ``{node_type: NodeSpec}`` mapping, or ``None`` when the
+        node registry is unavailable (e.g. in a minimal environment
+        without the L4 layer).  The result is not cached so that
+        dynamically registered nodes are picked up.
+        """
+        try:
+            from nodes import NodeRegistry  # type: ignore[import-not-found]
+
+            registry = NodeRegistry()
+            return {spec.type: spec for spec in registry.list()}
+        except Exception:
+            return None
+
+    def _would_create_cycle(
+        self, from_node: str, to_node: str
+    ) -> bool:
+        """Return ``True`` if adding ``from_node -> to_node`` creates a cycle.
+
+        A cycle is introduced when ``from_node`` is already reachable from
+        ``to_node`` through the existing connections (i.e. there is a
+        directed path ``to_node -> ... -> from_node``).  The check uses an
+        iterative DFS over the connection graph.
+
+        Args:
+            from_node: The upstream node of the proposed edge.
+            to_node: The downstream node of the proposed edge.
+
+        Returns:
+            ``True`` if the edge would close a cycle.
+        """
+        if from_node == to_node:
+            return True
+        visited: set[str] = set()
+        stack: List[str] = [to_node]
+        while stack:
+            current = stack.pop()
+            if current == from_node:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            for conn in self._state.connections:
+                if conn.from_node == current:
+                    stack.append(conn.to_node)
+        return False
+
+    # ------------------------------------------------------------------
     # Connection operations
     # ------------------------------------------------------------------
     def connect(
@@ -576,8 +630,27 @@ class Canvas:
         from_port: str,
         to_node: str,
         to_port: str,
-    ) -> CanvasConnection:
+    ) -> Union[CanvasConnection, str]:
         """Connect two nodes on the canvas.
+
+        The method performs full validation before creating the connection:
+
+        * **Endpoint / port sanity** -- ``from_node``, ``to_node``,
+          ``from_port`` and ``to_port`` must be non-empty strings.
+        * **Node existence** -- both endpoints must already be on the
+          canvas.
+        * **Self-loop** -- ``from_node`` and ``to_node`` must differ.
+        * **Duplicate** -- the exact same wire must not already exist.
+        * **One-to-one input** -- an input port may receive at most one
+          incoming connection.
+        * **Port existence** (when node specs are available) --
+          ``from_port`` must be a declared output of ``from_node``'s type
+          and ``to_port`` must be a declared input of ``to_node``'s type.
+        * **Type compatibility** (when node specs are available) -- the
+          output port's type must be compatible with the input port's
+          type according to :class:`~nodes.type_system.TypeSystem`.
+        * **Cycle detection** -- the new edge must not introduce a cycle
+          in the connection graph (checked via DFS).
 
         Args:
             from_node: Id of the producing (upstream) node.
@@ -586,18 +659,45 @@ class Canvas:
             to_port: Input port name on the downstream node.
 
         Returns:
-            The newly created :class:`CanvasConnection`.
-
-        Raises:
-            ValueError: If any endpoint or port is empty, or if a duplicate
-                connection already exists.
+            The newly created :class:`CanvasConnection` on success, or
+            a human-readable error string describing why the connection
+            was rejected.
         """
         if not from_node or not to_node:
-            raise ValueError("Connection endpoints must be non-empty strings.")
+            return (
+                "Connection endpoints must be non-empty strings "
+                "(from_node={!r}, to_node={!r}).".format(from_node, to_node)
+            )
         if not from_port or not to_port:
-            raise ValueError("Connection ports must be non-empty strings.")
+            return (
+                "Connection ports must be non-empty strings "
+                "(from_port={!r}, to_port={!r}).".format(
+                    from_port, to_port
+                )
+            )
+
         with self._lock:
-            # Check for duplicate connections.
+            # --- node existence -------------------------------------------------
+            src_node = self._find_node(from_node)
+            if src_node is None:
+                return "Source node {!r} does not exist on the canvas.".format(
+                    from_node
+                )
+            dst_node = self._find_node(to_node)
+            if dst_node is None:
+                return "Target node {!r} does not exist on the canvas.".format(
+                    to_node
+                )
+
+            # --- self-loop ------------------------------------------------------
+            if from_node == to_node:
+                return (
+                    "Connection {}.{!r} -> {}.{!r} is a self-loop.".format(
+                        from_node, from_port, to_node, to_port
+                    )
+                )
+
+            # --- duplicate ------------------------------------------------------
             for conn in self._state.connections:
                 if (
                     conn.from_node == from_node
@@ -605,11 +705,72 @@ class Canvas:
                     and conn.to_node == to_node
                     and conn.to_port == to_port
                 ):
-                    raise ValueError(
+                    return (
                         "Duplicate connection {}.{} -> {}.{}.".format(
                             from_node, from_port, to_node, to_port
                         )
                     )
+
+            # --- one-to-one input ----------------------------------------------
+            for conn in self._state.connections:
+                if conn.to_node == to_node and conn.to_port == to_port:
+                    return (
+                        "Input port {!r} of node {!r} already has an incoming "
+                        "connection from {}.{}; an input may receive at most "
+                        "one wire.".format(
+                            to_port, to_node, conn.from_node, conn.from_port
+                        )
+                    )
+
+            # --- port existence + type compatibility (when specs available) ----
+            specs = self._load_specs()
+            from_spec = specs.get(src_node.type) if specs else None
+            to_spec = specs.get(dst_node.type) if specs else None
+
+            if from_spec is not None and from_port not in from_spec.outputs:
+                available = ", ".join(sorted(from_spec.outputs.keys())) or "(none)"
+                return (
+                    "Port {!r} is not a declared output of node type {!r} "
+                    "(node {!r}). Available output ports: {}.".format(
+                        from_port, src_node.type, from_node, available
+                    )
+                )
+
+            if to_spec is not None and to_port not in to_spec.inputs:
+                available = ", ".join(sorted(to_spec.inputs.keys())) or "(none)"
+                return (
+                    "Port {!r} is not a declared input of node type {!r} "
+                    "(node {!r}). Available input ports: {}.".format(
+                        to_port, dst_node.type, to_node, available
+                    )
+                )
+
+            if from_spec is not None and to_spec is not None:
+                out_type = from_spec.outputs[from_port]
+                in_type = to_spec.inputs[to_port]
+                if not TypeSystem.is_compatible(out_type, in_type):
+                    compatible = TypeSystem.compatible_inputs(out_type)
+                    return (
+                        "Type mismatch: output port {!r} of node {!r} has type "
+                        "{!r} which is not compatible with input port {!r} of "
+                        "node {!r} (type {!r}). Compatible input types: {}.".format(
+                            from_port,
+                            from_node,
+                            out_type,
+                            to_port,
+                            to_node,
+                            in_type,
+                            ", ".join(compatible),
+                        )
+                    )
+
+            # --- cycle detection (DFS) ----------------------------------------
+            if self._would_create_cycle(from_node, to_node):
+                return (
+                    "Connection {}.{} -> {}.{} would create a cycle in the "
+                    "graph.".format(from_node, from_port, to_node, to_port)
+                )
+
             connection = CanvasConnection(
                 id=str(uuid4()),
                 from_node=from_node,
@@ -657,12 +818,15 @@ class Canvas:
         * **Self-loops** -- a connection where ``from_node == to_node``.
         * **Duplicate connections** -- the same ``(from, from_port, to,
           to_port)`` wire declared more than once.
-        * **Type matching** (best-effort) -- when node specs are available
-          (via the L4 node registry), checks that ``from_port`` is a declared
-          output of the upstream node's type and ``to_port`` is a declared
-          input of the downstream node's type.  Specs that cannot be loaded
-          are silently skipped so that validation never fails due to missing
-          optional dependencies.
+        * **Port existence + type matching** -- when node specs are
+          available (via the L4 node registry), checks that ``from_port``
+          is a declared output of the upstream node's type and ``to_port``
+          is a declared input of the downstream node's type, and that the
+          output type is compatible with the input type according to
+          :class:`~nodes.type_system.TypeSystem`.  Error messages include
+          the available ports and the list of compatible input types.
+          Connections whose node specs cannot be loaded are reported with
+          a notice rather than silently skipped.
 
         Returns:
             A list of human-readable error strings.
@@ -710,7 +874,7 @@ class Canvas:
                     )
                 seen.add(key)
 
-        # Best-effort type matching (optional, never raises).
+        # Type matching using the TypeSystem (no longer silently skipped).
         type_errors = self._validate_port_types(node_type_map)
         errors.extend(type_errors)
 
@@ -719,12 +883,18 @@ class Canvas:
     def _validate_port_types(
         self, node_type_map: Dict[str, str]
     ) -> List[str]:
-        """Best-effort port-type validation using the L4 node registry.
+        """Port-type validation using the L4 node registry and TypeSystem.
 
-        This method attempts to lazily import the node registry to obtain
-        :class:`~nodes.base.NodeSpec` objects.  If the import fails or a
-        node type has no spec, the check is silently skipped for that
-        connection.
+        For every connection the method checks, when the node specs are
+        available:
+
+        * ``from_port`` is a declared output of the upstream node's type.
+        * ``to_port`` is a declared input of the downstream node's type.
+        * The output port's type is compatible with the input port's type
+          according to :meth:`TypeSystem.is_compatible`.
+
+        Error messages include the list of available ports and, for type
+        mismatches, the input types compatible with the output type.
 
         Args:
             node_type_map: Mapping of ``node_id -> node_type``.
@@ -733,13 +903,9 @@ class Canvas:
             A list of type-mismatch error strings (may be empty).
         """
         errors: List[str] = []
-        try:
-            from nodes import NodeRegistry  # type: ignore[import-not-found]
-
-            registry = NodeRegistry()
-            specs = {spec.type: spec for spec in registry.list()}
-        except Exception:
-            # Node registry not available -- skip type checking entirely.
+        specs = self._load_specs()
+        if specs is None:
+            # Registry unavailable -- nothing to validate against.
             return errors
 
         with self._lock:
@@ -750,20 +916,68 @@ class Canvas:
                     continue
                 from_spec = specs.get(from_type)
                 to_spec = specs.get(to_type)
+
+                # --- output port existence --------------------------------
                 if from_spec is not None:
                     if conn.from_port not in from_spec.outputs:
+                        available = (
+                            ", ".join(sorted(from_spec.outputs.keys()))
+                            or "(none)"
+                        )
                         errors.append(
                             "Port {!r} is not a declared output of node "
-                            "type {!r} (node {!r}).".format(
-                                conn.from_port, from_type, conn.from_node
+                            "type {!r} (node {!r}). Available output ports: "
+                            "{}.".format(
+                                conn.from_port,
+                                from_type,
+                                conn.from_node,
+                                available,
                             )
                         )
+                        continue  # cannot check type without the port
+
+                # --- input port existence ----------------------------------
                 if to_spec is not None:
                     if conn.to_port not in to_spec.inputs:
+                        available = (
+                            ", ".join(sorted(to_spec.inputs.keys()))
+                            or "(none)"
+                        )
                         errors.append(
                             "Port {!r} is not a declared input of node "
-                            "type {!r} (node {!r}).".format(
-                                conn.to_port, to_type, conn.to_node
+                            "type {!r} (node {!r}). Available input ports: "
+                            "{}.".format(
+                                conn.to_port,
+                                to_type,
+                                conn.to_node,
+                                available,
+                            )
+                        )
+                        continue  # cannot check type without the port
+
+                # --- type compatibility ------------------------------------
+                if (
+                    from_spec is not None
+                    and to_spec is not None
+                    and conn.from_port in from_spec.outputs
+                    and conn.to_port in to_spec.inputs
+                ):
+                    out_type = from_spec.outputs[conn.from_port]
+                    in_type = to_spec.inputs[conn.to_port]
+                    if not TypeSystem.is_compatible(out_type, in_type):
+                        compatible = TypeSystem.compatible_inputs(out_type)
+                        errors.append(
+                            "Type mismatch: output port {!r} of node {!r} "
+                            "(type {!r}) is not compatible with input port "
+                            "{!r} of node {!r} (type {!r}). Compatible input "
+                            "types: {}.".format(
+                                conn.from_port,
+                                conn.from_node,
+                                out_type,
+                                conn.to_port,
+                                conn.to_node,
+                                in_type,
+                                ", ".join(compatible),
                             )
                         )
         return errors

@@ -69,14 +69,14 @@ class TextNode(BaseNode):
         name="Text Chat",
         description="Conversational text generation from a prompt.",
         inputs={
-            "prompt": str,
-            "model": Optional[str],
-            "max_tokens": int,
-            "temperature": float,
+            "prompt": "PROMPT",
+            "model": "Optional[TEXT]",
+            "max_tokens": "INT",
+            "temperature": "FLOAT",
         },
         outputs={
-            "text": str,
-            "usage": dict,
+            "text": "TEXT",
+            "usage": "TEXT",
         },
         tags=["text", "generation", "llm", "chat"],
     )
@@ -225,13 +225,13 @@ class TextCompletionNode(BaseNode):
         name="Text Completion",
         description="Raw prompt completion without a chat template.",
         inputs={
-            "prompt": str,
-            "model": Optional[str],
-            "max_tokens": int,
+            "prompt": "PROMPT",
+            "model": "Optional[TEXT]",
+            "max_tokens": "INT",
         },
         outputs={
-            "text": str,
-            "usage": dict,
+            "text": "TEXT",
+            "usage": "TEXT",
         },
         tags=["text", "generation", "llm", "completion"],
     )

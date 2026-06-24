@@ -76,6 +76,162 @@ class TestCanvas:
 
 
 # ---------------------------------------------------------------------------
+# Canvas connection type validation
+# ---------------------------------------------------------------------------
+class TestCanvasTypeValidation:
+    """connect() and validate() port-type and structural validation."""
+
+    def test_connect_returns_connection_on_success(self):
+        """A type-compatible connection returns a CanvasConnection."""
+        from canvas.canvas import CanvasConnection
+
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("text_chat", id="b", prompt="world")
+        conn = canvas.connect("a", "text", "b", "prompt")
+        assert isinstance(conn, CanvasConnection)
+        assert conn.from_node == "a"
+        assert conn.to_node == "b"
+
+    def test_connect_type_mismatch_returns_error(self):
+        """Connecting IMAGE output to TEXT input returns an error string."""
+        canvas = Canvas("test")
+        canvas.add_node("image_txt2img", id="img", prompt="cat")
+        canvas.add_node("audio_tts", id="tts", text="hello", voice="v1")
+        result = canvas.connect("img", "image", "tts", "text")
+        assert isinstance(result, str)
+        assert "Type mismatch" in result or "not compatible" in result
+        # The connection must not have been created.
+        assert len(canvas.list_connections()) == 0
+
+    def test_connect_compatible_text_to_prompt(self):
+        """TEXT output can connect to PROMPT input."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("image_txt2img", id="b", prompt="cat")
+        conn = canvas.connect("a", "text", "b", "prompt")
+        # TEXT -> PROMPT is compatible.
+        assert not isinstance(conn, str)
+        assert len(canvas.list_connections()) == 1
+
+    def test_connect_image_to_image_compatible(self):
+        """IMAGE output can connect to IMAGE input."""
+        canvas = Canvas("test")
+        canvas.add_node("image_txt2img", id="a", prompt="cat")
+        canvas.add_node("image_upscale", id="b")
+        conn = canvas.connect("a", "image", "b", "image")
+        assert not isinstance(conn, str)
+        assert len(canvas.list_connections()) == 1
+
+    def test_connect_unknown_output_port_returns_error(self):
+        """Connecting from a non-existent output port returns an error."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("text_chat", id="b", prompt="world")
+        result = canvas.connect("a", "nonexistent_port", "b", "prompt")
+        assert isinstance(result, str)
+        assert "not a declared output" in result
+        assert len(canvas.list_connections()) == 0
+
+    def test_connect_unknown_input_port_returns_error(self):
+        """Connecting to a non-existent input port returns an error."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("text_chat", id="b", prompt="world")
+        result = canvas.connect("a", "text", "b", "nonexistent_port")
+        assert isinstance(result, str)
+        assert "not a declared input" in result
+        assert len(canvas.list_connections()) == 0
+
+    def test_connect_one_to_one_input_rejects_second(self):
+        """An input port may receive at most one incoming connection."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("text_chat", id="b", prompt="world")
+        canvas.add_node("text_chat", id="c", prompt="foo")
+        # First connection to b.prompt is fine.
+        conn1 = canvas.connect("a", "text", "b", "prompt")
+        assert not isinstance(conn1, str)
+        # Second connection to the same input should fail.
+        result = canvas.connect("c", "text", "b", "prompt")
+        assert isinstance(result, str)
+        assert "already has an incoming" in result
+        assert len(canvas.list_connections()) == 1
+
+    def test_connect_duplicate_returns_error(self):
+        """A duplicate connection returns an error string."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("text_chat", id="b", prompt="world")
+        canvas.connect("a", "text", "b", "prompt")
+        result = canvas.connect("a", "text", "b", "prompt")
+        assert isinstance(result, str)
+        assert "Duplicate" in result
+        assert len(canvas.list_connections()) == 1
+
+    def test_connect_self_loop_returns_error(self):
+        """A self-loop connection returns an error string."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        result = canvas.connect("a", "text", "a", "prompt")
+        assert isinstance(result, str)
+        assert "self-loop" in result
+        assert len(canvas.list_connections()) == 0
+
+    def test_connect_cycle_detection(self):
+        """Adding an edge that closes a cycle is rejected."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="1")
+        canvas.add_node("text_chat", id="b", prompt="2")
+        canvas.add_node("text_chat", id="c", prompt="3")
+        # a -> b -> c  (all compatible: TEXT -> PROMPT)
+        assert not isinstance(canvas.connect("a", "text", "b", "prompt"), str)
+        assert not isinstance(canvas.connect("b", "text", "c", "prompt"), str)
+        # c -> a would close the cycle a -> b -> c -> a.
+        result = canvas.connect("c", "text", "a", "prompt")
+        assert isinstance(result, str)
+        assert "cycle" in result
+        assert len(canvas.list_connections()) == 2
+
+    def test_connect_missing_node_returns_error(self):
+        """Connecting to a non-existent node returns an error string."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        result = canvas.connect("a", "text", "nonexistent", "prompt")
+        assert isinstance(result, str)
+        assert "does not exist" in result
+
+    def test_validate_detects_type_mismatch(self):
+        """validate() reports type mismatches for pre-existing connections."""
+        canvas = Canvas("test")
+        canvas.add_node("image_txt2img", id="img", prompt="cat")
+        canvas.add_node("audio_tts", id="tts", text="hello", voice="v1")
+        # Manually inject an incompatible connection (bypassing connect()).
+        from canvas.canvas import CanvasConnection
+        from uuid import uuid4
+        canvas._state.connections.append(
+            CanvasConnection(
+                id=str(uuid4()),
+                from_node="img",
+                from_port="image",
+                to_node="tts",
+                to_port="text",
+            )
+        )
+        errors = canvas.validate()
+        assert any("Type mismatch" in e or "not compatible" in e for e in errors)
+
+    def test_validate_clean_canvas_no_errors(self):
+        """A canvas with only compatible connections has no type errors."""
+        canvas = Canvas("test")
+        canvas.add_node("text_chat", id="a", prompt="hello")
+        canvas.add_node("text_chat", id="b", prompt="world")
+        canvas.connect("a", "text", "b", "prompt")
+        errors = canvas.validate()
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
 # CanvasHistory
 # ---------------------------------------------------------------------------
 class TestCanvasHistory:

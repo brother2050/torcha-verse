@@ -109,3 +109,39 @@ video_models:
     latent_channels: 16
     num_frames: 81
     fps: 16
+
+# Digital human models
+digital_human_models:
+  musetalk:
+    path: "TMElyralab/MuseTalk"
+    architecture: "musetalk"
+    source: "huggingface"
+  liveportrait:
+    path: "KwaiVGI/LivePortrait"
+    architecture: "liveportrait"
+    source: "huggingface"
+  sadtalker:
+    path: "OpenTalker/SadTalker"
+    architecture: "sadtalker"
+    source: "huggingface"
+  echo_mimic_v2:
+    path: "antgroup/echomimic_v2"
+    architecture: "echo_mimic"
+    source: "huggingface"
+  face_enhance:
+    gfpgan:
+      path: "TencentARC/GFPGAN"
+      source: "github"
+    codeformer:
+      path: "sczhou/CodeFormer"
+      source: "github"
+  voice_clone:
+    cosyvoice:
+      path: "FunAudioLLM/CosyVoice2-0.5B"
+      source: "modelscope"
+    f5_tts:
+      path: "SWivid/F5-TTS"
+      source: "huggingface"
+    chat_tts:
+      path: "2noise/ChatTTS"
+      source: "huggingface"

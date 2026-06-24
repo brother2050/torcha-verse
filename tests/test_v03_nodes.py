@@ -15,6 +15,7 @@ from nodes import NodeRegistry
 from nodes.base import NodeContext, NodeSpec
 from nodes.image import ImageTxt2ImgNode
 from nodes.text import TextNode
+from nodes.type_system import TypeSystem, is_optional, unwrap_optional
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,114 @@ class TestNodeRegistry:
         assert len(results) >= 1
         # At least one result should have "image" in its type.
         assert any("image" in s.type for s in results)
+
+    def test_spec_inputs_outputs_are_strings(self, registry):
+        """Every NodeSpec input/output value is a type string."""
+        specs = registry.list()
+        for spec in specs:
+            for name, type_str in spec.inputs.items():
+                assert isinstance(type_str, str), (
+                    "Input {!r} of {!r} should be a str, got {!r}".format(
+                        name, spec.type, type(type_str)
+                    )
+                )
+                assert type_str, (
+                    "Input {!r} of {!r} has an empty type string".format(
+                        name, spec.type
+                    )
+                )
+            for name, type_str in spec.outputs.items():
+                assert isinstance(type_str, str), (
+                    "Output {!r} of {!r} should be a str, got {!r}".format(
+                        name, spec.type, type(type_str)
+                    )
+                )
+                assert type_str, (
+                    "Output {!r} of {!r} has an empty type string".format(
+                        name, spec.type
+                    )
+                )
+
+    def test_image_txt2img_uses_expected_type_strings(self, registry):
+        """image_txt2img declares IMAGE/PROMPT/INT/FLOAT/SEED type strings."""
+        spec = registry.get("image_txt2img").spec
+        assert spec.inputs["prompt"] == "PROMPT"
+        assert spec.inputs["width"] == "INT"
+        assert spec.inputs["guidance_scale"] == "FLOAT"
+        assert spec.inputs["seed"] == "Optional[SEED]"
+        assert spec.outputs["image"] == "IMAGE"
+        assert spec.outputs["seed"] == "SEED"
+
+
+# ---------------------------------------------------------------------------
+# TypeSystem
+# ---------------------------------------------------------------------------
+class TestTypeSystem:
+    """TypeSystem compatibility matrix and helpers."""
+
+    def test_self_compatibility(self):
+        """A type is always compatible with itself."""
+        for type_str in TypeSystem.all_types():
+            assert TypeSystem.is_compatible(type_str, type_str)
+
+    def test_image_to_latent(self):
+        """IMAGE outputs can connect to LATENT inputs."""
+        assert TypeSystem.is_compatible("IMAGE", "LATENT")
+
+    def test_text_to_image_incompatible(self):
+        """TEXT outputs cannot connect to IMAGE inputs."""
+        assert not TypeSystem.is_compatible("TEXT", "IMAGE")
+
+    def test_text_to_prompt(self):
+        """TEXT outputs can connect to PROMPT inputs."""
+        assert TypeSystem.is_compatible("TEXT", "PROMPT")
+
+    def test_prompt_to_text(self):
+        """PROMPT outputs can connect to TEXT inputs."""
+        assert TypeSystem.is_compatible("PROMPT", "TEXT")
+
+    def test_int_to_float_and_seed(self):
+        """INT outputs can connect to FLOAT and SEED inputs."""
+        assert TypeSystem.is_compatible("INT", "FLOAT")
+        assert TypeSystem.is_compatible("INT", "SEED")
+
+    def test_float_to_int_incompatible(self):
+        """FLOAT outputs cannot connect to INT inputs."""
+        assert not TypeSystem.is_compatible("FLOAT", "INT")
+
+    def test_character_to_asset_ref(self):
+        """CHARACTER outputs can connect to ASSET_REF inputs."""
+        assert TypeSystem.is_compatible("CHARACTER", "ASSET_REF")
+
+    def test_list_compatibility(self):
+        """LIST[T] is compatible with LIST[T] and LIST[X] -> X is checked."""
+        assert TypeSystem.is_compatible("LIST[IMAGE]", "LIST[IMAGE]")
+        # LIST[IMAGE] -> IMAGE: inner IMAGE -> IMAGE is compatible.
+        assert TypeSystem.is_compatible("LIST[IMAGE]", "IMAGE")
+        # LIST[IMAGE] -> LIST[VIDEO]: inner IMAGE -> VIDEO is incompatible.
+        assert not TypeSystem.is_compatible("LIST[IMAGE]", "LIST[VIDEO]")
+
+    def test_optional_wrapper(self):
+        """Optional[T] unwraps to T for compatibility checks."""
+        assert is_optional("Optional[SEED]")
+        assert not is_optional("SEED")
+        assert unwrap_optional("Optional[SEED]") == "SEED"
+        assert unwrap_optional("SEED") == "SEED"
+        assert TypeSystem.is_compatible("SEED", "Optional[SEED]")
+        assert TypeSystem.is_compatible("INT", "Optional[SEED]")
+
+    def test_compatible_inputs_includes_self(self):
+        """compatible_inputs() always includes the output type itself."""
+        result = TypeSystem.compatible_inputs("IMAGE")
+        assert "IMAGE" in result
+        assert "LATENT" in result
+
+    def test_all_types_non_empty(self):
+        """all_types() returns a non-empty list of registered types."""
+        types = TypeSystem.all_types()
+        assert len(types) >= 10
+        assert "IMAGE" in types
+        assert "TEXT" in types
 
 
 # ---------------------------------------------------------------------------
