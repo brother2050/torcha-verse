@@ -1,0 +1,41 @@
+paper:
+  name: musetalk
+  title: "MuseTalk: Real-Time High Quality Lip Synchronization with Latent Space Inpainting"
+  authors: ["Tencent Music Lyra Lab"]
+  arxiv_id: "2501.01895"
+  github: "https://github.com/TMElyralab/MuseTalk"
+  license: "CC-BY-NC-4.0"
+  published: "2025-01"
+
+integration:
+  type: "node"
+  node_type: "dh_lip_sync"
+  method: "musetalk"
+  category: "digital_human"
+
+models:
+  - name: "musetalk"
+    source: "huggingface"
+    repo: "TMElyralab/MuseTalk"
+    size_gb: 2.5
+    vram_gb: 4
+    dependencies: ["mmcv", "mmdet", "mmpose", "diffusers", "whisper"]
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    face_region_size: 256
+    vae: "sd-vae-ft-mse"
+    whisper_model: "openai/whisper-tiny"
+
+reference_impl:
+  sutskever_30: ""
+  labml: ""
+  karpathy: ""
+  lucidrains: ""
+
+compatibility:
+  min_torcha_verse: "0.3.1"
+  gpu_required: true
+  min_vram_gb: 4

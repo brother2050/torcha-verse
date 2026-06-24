@@ -1,0 +1,42 @@
+paper:
+  name: liveportrait
+  title: "LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control"
+  authors: ["Jianzhu Guo", "Fei Yang", "KwaiVGI Team"]
+  arxiv_id: "2407.06104"
+  github: "https://github.com/KwaiVGI/LivePortrait"
+  license: "MIT"
+  published: "2024-07"
+
+integration:
+  type: "node"
+  node_type: "dh_portrait_animate"
+  method: "liveportrait"
+  category: "digital_human"
+
+models:
+  - name: "liveportrait"
+    source: "huggingface"
+    repo: "KwaiVGI/LivePortrait"
+    size_gb: 1.8
+    vram_gb: 5
+    dependencies: ["torch", "torchvision", "insightface", "onnxruntime"]
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    stitching: true
+    eye_retargeting: true
+    lip_retargeting: true
+    source_feature_size: 256
+
+reference_impl:
+  sutskever_30: ""
+  labml: ""
+  karpathy: ""
+  lucidrains: ""
+
+compatibility:
+  min_torcha_verse: "0.3.1"
+  gpu_required: true
+  min_vram_gb: 5

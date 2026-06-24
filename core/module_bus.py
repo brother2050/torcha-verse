@@ -294,6 +294,39 @@ class ModuleBus:
             )
 
     # ------------------------------------------------------------------
+    # Unregistration
+    # ------------------------------------------------------------------
+    def unregister(self, kind: str, name: str) -> bool:
+        """Remove a module from the registry and drop its cached instances.
+
+        This is the inverse of :meth:`register`.  After the call the
+        ``(kind, name)`` pair is no longer resolvable and any cached
+        instances produced by its factory are discarded.  It is used by
+        the plugin system to unload a plugin's nodes.
+
+        Args:
+            kind: Dot-separated namespace, e.g. ``"node"``.
+            name: Unique name within the kind.
+
+        Returns:
+            ``True`` if a module was removed, ``False`` if nothing was
+            registered for ``(kind, name)``.
+        """
+        nkind = self._normalize(kind)
+        nname = self._normalize(name)
+        with self._lock:
+            existed = (nkind, nname) in self._registry
+            if existed:
+                del self._registry[(nkind, nname)]
+            # Drop cached instances / per-key locks for this pair.
+            self._invalidate_locked(nkind, nname)
+        if existed:
+            self._logger.debug(
+                "Unregistered module kind=%s name=%s.", nkind, nname
+            )
+        return existed
+
+    # ------------------------------------------------------------------
     # Resolution
     # ------------------------------------------------------------------
     def resolve(

@@ -1,0 +1,37 @@
+paper:
+  name: attention_is_all_you_need
+  title: "Attention Is All You Need"
+  authors: ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar", "Jakob Uszkoreit", "Llion Jones", "Aidan N. Gomez", "Lukasz Kaiser", "Illia Polosukhin"]
+  arxiv_id: "1706.03762"
+  github: ""
+  license: ""
+  published: "2017-06"
+
+integration:
+  type: "model"
+  node_type: ""
+  method: "transformer"
+  category: "foundation"
+
+models: []
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    d_model: 512
+    num_heads: 8
+    num_layers: 6
+    d_ff: 2048
+    dropout: 0.1
+
+reference_impl:
+  sutskever_30: "yoko19191/sutskever-30-implementations-zhCN/13_transformer_attention"
+  labml: "labmlai/annotated_deep_learning_paper_implementations/transformers/basic"
+  karpathy: "karpathy/nanoGPT"
+  lucidrains: "lucidrains/x-transformers"
+
+compatibility:
+  min_torcha_verse: "0.3.1"
+  gpu_required: false
+  min_vram_gb: 0

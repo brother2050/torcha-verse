@@ -33,6 +33,9 @@ from infrastructure.logger import get_logger
 # same Pipeline/Node back-end as the REST API and Web UI.
 from serving.api_server import PipelineService
 
+# Plugin management commands (``torcha plugin ...``).
+from plugins.cli import plugin as plugin_group
+
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -755,6 +758,12 @@ def models() -> None:
             str(m.get("description", ""))[:60],
         )
     console.print(table)
+
+
+# ===========================================================================
+# Plugin commands (``torcha plugin ...``)
+# ===========================================================================
+cli.add_command(plugin_group, name="plugin")
 
 
 # ===========================================================================

@@ -495,6 +495,36 @@ def _register_node_class(
     return cls
 
 
+def _unregister_node_class(
+    node_type: str,
+    bus: Optional[ModuleBus] = None,
+) -> bool:
+    """Remove a node class from the bus and the module-level index.
+
+    This is the inverse of :func:`_register_node_class` and is used by the
+    plugin system to unload a plugin's nodes.  After the call the node
+    type is no longer discoverable through :class:`NodeRegistry` /
+    :class:`ModuleBus`.
+
+    Args:
+        node_type: The node type identifier to remove.
+        bus: Optional explicit :class:`ModuleBus`.  When ``None`` the
+            process-wide singleton is used.
+
+    Returns:
+        ``True`` if a node was removed from the bus, ``False`` otherwise.
+    """
+    registry_bus = bus if bus is not None else ModuleBus()
+    existed = registry_bus.unregister(_NODE_KIND, node_type)
+    cls = _NODE_CLASSES.pop(node_type, None)
+    if cls is not None:
+        _logger.debug(
+            "Unregistered node type=%s class=%s.", node_type,
+            getattr(cls, "__name__", "?"),
+        )
+    return existed or cls is not None
+
+
 def register_node(node_type: str) -> Callable[[type[BaseNode]], type[BaseNode]]:
     """Class decorator that registers a :class:`BaseNode` subclass.
 
@@ -581,6 +611,18 @@ class NodeRegistry:
                 ``spec``.
         """
         _register_node_class(node_class, bus=self._bus)
+
+    # ------------------------------------------------------------------
+    def unregister(self, node_type: str) -> bool:
+        """Remove a node from this registry's bus.
+
+        Args:
+            node_type: The node type identifier to remove.
+
+        Returns:
+            ``True`` if a node was removed, ``False`` otherwise.
+        """
+        return _unregister_node_class(node_type, bus=self._bus)
 
     # ------------------------------------------------------------------
     def get(self, node_type: str) -> BaseNode:

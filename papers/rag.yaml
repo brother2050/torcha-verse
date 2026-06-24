@@ -1,0 +1,42 @@
+paper:
+  name: rag
+  title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+  authors: ["Patrick Lewis", "Ethan Perez", "Aleksandra Piktus", "Fabio Petroni", "Vladimir Karpukhin", "et al."]
+  arxiv_id: "2005.11401"
+  github: "https://github.com/facebookresearch/FiD"
+  license: "CC-BY-4.0"
+  published: "2020-05"
+
+integration:
+  type: "pipeline"
+  node_type: ""
+  method: "rag"
+  category: "rag"
+
+models:
+  - name: "rag-token-nq"
+    source: "huggingface"
+    repo: "facebook/rag-token-nq"
+    size_gb: 2.0
+    vram_gb: 4
+    dependencies: ["transformers", "faiss-cpu", "datasets"]
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    index: "wiki_dpr"
+    n_docs: 5
+    generator: "bart-large"
+    query_encoder: "facebook/dpr-question_encoder-multiset-base"
+
+reference_impl:
+  sutskever_30: "yoko19191/sutskever-30-implementations-zhCN/29_rag"
+  labml: ""
+  karpathy: ""
+  lucidrains: ""
+
+compatibility:
+  min_torcha_verse: "0.3.1"
+  gpu_required: true
+  min_vram_gb: 4

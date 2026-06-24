@@ -1,0 +1,42 @@
+paper:
+  name: sadtalker
+  title: "SadTalker: Learning Realistic 3D Motion Coefficients for Stylized Audio-Driven Single Image Talking Head Animation"
+  authors: ["Wenxuan Zhang", "Xiaodong Cun", "et al."]
+  arxiv_id: "2211.12194"
+  github: "https://github.com/OpenTalker/SadTalker"
+  license: "Apache-2.0"
+  published: "2022-11"
+
+integration:
+  type: "node"
+  node_type: "dh_talking_head"
+  method: "sadtalker"
+  category: "digital_human"
+
+models:
+  - name: "sadtalker"
+    source: "github"
+    repo: "OpenTalker/SadTalker"
+    size_gb: 3.2
+    vram_gb: 6
+    dependencies: ["torch", "torchvision", "face-alignment", "gfpgan", "mmpose"]
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    enhancer: "gfpgan"
+    still_mode: false
+    preprocess: "crop"
+    size: 256
+
+reference_impl:
+  sutskever_30: ""
+  labml: ""
+  karpathy: ""
+  lucidrains: ""
+
+compatibility:
+  min_torcha_verse: "0.3.1"
+  gpu_required: true
+  min_vram_gb: 6
