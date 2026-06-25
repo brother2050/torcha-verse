@@ -35,6 +35,28 @@
   `pytest -m eval` 跑 52 个，`pytest -m "not eval"` 跑 417 个，互不干扰。
 - 总测试数：411 → 469（全过）。
 
+### 模型源自动拉取（v0.4.0 路线图 P2）
+- 新建 `models/source/` 子包，提供一行 `fetch()` 拉模型 + 许可证审计：
+  * `license_check.check_license` / `DEFAULT_ALLOW_LICENSE` — SPDX 许可证白名单，
+    支持运行期 `extend_default_allow_license(...)` 一次性 opt-in。
+  * `cache.ModelCache` — `~/.cache/torcha-verse/<source>/<repo_id>/<revision>/`
+    原子写入（tempfile + fsync + os.replace）+ sha256 完整性校验。
+  * `huggingface.HuggingFaceSource` — HF Hub API 包装，注入式 `HttpTransport`
+    让测试零网络跑通，默认用 `urllib.request`。
+  * `civitai.CivitaiSource` — 备选源，同一套 `HttpTransport` 接口。
+  * `fetch.ModelFetcher` / `fetch()` — 统一入口，验证 license、查缓存、
+    拉取、写入、验证 manifest 全部原子化。
+- `models/__init__.py` 重新导出 `fetch` / `FetchResult` / `ModelFetcher` 等
+  公共 API，达成 `from torcha_verse.models import fetch` 简写。
+- 53 个新测试覆盖：SPDX 规范化、allow-list/NC/ND 短路、
+  extend_idempotent、cache 原子写入 / 验证 / 清空、manifest
+  round-trip、HF / Civitai license 解析 + 文件列表 + 下载、
+  SourceRegistry 别名、fetch miss-then-hit、NC 拒绝、
+  cache tampering 检测、自定义 allow_list、模块级 fetch 单例。
+- `pyproject.toml` 注册 `model_source` marker，`pytest -m model_source`
+  跑 53 个，`pytest -m "not model_source"` 跑 469 个，互不干扰。
+- 总测试数：469 → 522（全过）。
+
 ### 工程化
 - 新增 `pyproject.toml`(含 pytest 配置)。
 - `Dockerfile` 改为多阶段构建(builder / test / runtime)。

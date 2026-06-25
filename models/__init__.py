@@ -13,6 +13,10 @@ framework, organised by modality:
 * :mod:`video` -- spatiotemporal VAE, video DiT, motion module, and
   frame interpolator.
 * :mod:`multimodal` -- vision-language and omni-modal models.
+* :mod:`source` -- v0.4.0 model-source auto-fetch and license audit.
+  The headline entry point is :func:`models.source.fetch` which is
+  re-exported here as :func:`fetch` for the ergonomic shorthand
+  ``from torcha_verse.models import fetch``.
 
 All models are implemented with native ``torch.nn`` modules and inherit
 from :class:`BaseModel` (registerable with the
@@ -21,7 +25,14 @@ from :class:`BaseModel` (registerable with the
 
 from __future__ import annotations
 
-from . import audio, components, image, multimodal, text, video
+from . import audio, components, image, multimodal, source, text, video
+from .source import (
+    DEFAULT_ALLOW_LICENSE,
+    FetchResult,
+    ModelFetcher,
+    ModelCache,
+    fetch,
+)
 
 __all__ = [
     "components",
@@ -30,4 +41,11 @@ __all__ = [
     "audio",
     "video",
     "multimodal",
+    "source",
+    # v0.4.0 model source facade
+    "fetch",
+    "FetchResult",
+    "ModelFetcher",
+    "ModelCache",
+    "DEFAULT_ALLOW_LICENSE",
 ]

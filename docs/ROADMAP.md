@@ -18,7 +18,7 @@
 |---|---|---|---:|
 | **P0** | 真模型跑通(Qwen2.5-0.5B + SDXL-Turbo)| **延后**(用户决定) | — |
 | **P1** | 评估模块最小版(FID + prompt 还原率 + CI 集成) | **完成 2026-06-25** | 1-2 周 |
-| **P2** | 模型源自动拉取(HuggingFace + 许可证审计) | 待开始 | 1 周 |
+| **P2** | 模型源自动拉取(HuggingFace + 许可证审计) | **完成 2026-06-25** | 1 周 |
 | **P3** | pass/NotImplementedError 审计 | **完成 2026-06-25** | 0 |
 | **P4** | performance / training 补基础测试 | **完成 2026-06-25** | 1 周 |
 | **P5** | examples 重写(对齐 30 节点) | **完成 2026-06-25** | 1 周 |
@@ -62,25 +62,49 @@ evaluation/
 
 ---
 
-## P2 — 模型源自动拉取 + 许可证审计
+## P2 — 模型源自动拉取 + 许可证审计 ✅ 完成 2026-06-25
 
 **目标**:`from torcha_verse.models import fetch("Qwen/Qwen2.5-0.5B-Instruct")` 一行拉模型
 
-**目录**:`models/source/`(新建)
+**目录**:`models/source/`(从无到新建)
 ```
 models/source/
-├── __init__.py
-├── huggingface.py     # HF Hub API 包装
-├── civitai.py         # 备选源
-├── license_check.py   # SPDX 许可证白名单
-└── cache.py           # 已有 safetensors 缓存
+├── __init__.py        # 公共 API 重导出
+├── huggingface.py     # HF Hub API 包装 (注入式 HttpTransport)
+├── civitai.py         # 备选源 (同样的 HttpTransport 接口)
+├── license_check.py   # SPDX 许可证白名单 (DEFAULT_ALLOW_LICENSE)
+├── cache.py           # ~/.cache/torcha-verse 原子写入 + sha256 校验
+└── fetch.py           # ModelFetcher + fetch() 统一入口
 ```
 
 **最小可用特性**:
-- `fetch(repo_id, allow_license=["apache-2.0", "mit"])` 拉模型
-- 自动落 `~/.cache/torcha-verse/`
+- `fetch(repo_id, allow_license=["apache-2.0", "mit"])` 一行拉模型
+- 自动落 `~/.cache/torcha-verse/<source>/<repo_id>/<revision>/`
 - 默认白名单:apache-2.0 / mit / bsd-3-clause / cc-by-4.0
 - 拒绝:non-commercial / 没有 license / 未知
+- 原子写入:tempfile + fsync + os.replace,失败不留半文件
+- 完整性:sha256 校验,manifest 与实际文件一致
+- 缓存命中:二次 fetch 不发网络请求
+
+**实现要点**:
+- 纯标准库实现 HTTP transport (`urllib.request`),可选 `huggingface_hub` 集成
+  留作未来 opt-in。
+- 注入式 `HttpTransport` 接口让所有 53 个新测试在**零网络**环境下跑通
+  (用 `FakeTransport` 路由 URL 子串到预设响应,按最长子串优先匹配避免重叠)。
+- 默认白名单集中于 `license_check.DEFAULT_ALLOW_LICENSE`,
+  `extend_default_allow_license(...)` 支持运行期一次性 opt-in
+  (e.g. GPL-3.0)。
+- License check 优先级:caller-显式-白名单 > NC 短路 > ND 短路 >
+  默认白名单 > known-OK SPDX 提示 > unknown 拒绝。
+- 53 个新测试覆盖:SPDX 规范化、allow-list/NC/ND 短路、
+  extend_idempotent、cache 原子写入 / 验证 / 清空、manifest
+  round-trip、HF license 解析 / 文件列表 / 下载、
+  Civitai license 解析 / 下载、SourceRegistry 别名、
+  fetch miss-then-hit、NC 拒绝、cache tampering 检测、
+  自定义 allow_list、模块级 fetch 单例。
+- `pyproject.toml` 注册 `model_source` marker,`pytest -m model_source`
+  跑 53 个,`pytest -m "not model_source"` 跑 469 个,互不干扰。
+- 总测试:469 → 522(全过)。
 
 **不做**:自动转换格式 / 量化 / 性能分析
 
