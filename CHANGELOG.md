@@ -4,6 +4,57 @@
 
 ## [Unreleased] — 初期整理
 
+### P0 多模态真模型接入 (v0.4.x P0 multi-modal milestone)
+
+把 `models/image/` / `models/audio/` / `models/video/` / `models/multimodal/`
+里已经写好的 UNet / VAE / CLIP / TTS-Transformer / HiFi-GAN / VideoDiT /
+VideoVAE / OmniModel 全部接进 provider 层,4 个新 `LocalTorch*Provider`
++ 4 个 `fetch_and_load_*` + 4 个 `get_default_*_provider` + 4 个
+`register_default_*_backend`,并把 3 个 `examples/` 改成走真 provider。
+CI 上 31 个新测试覆盖 4 个模态的端到端 forward pass。
+
+**新文件**:
+- `models/interfaces/media_providers.py` — 4 个新 `ImageProvider` /
+  `AudioProvider` / `VideoProvider` / `MultimodalProvider` Protocol
+  + 4 个 `Echo*Provider` reference impl
+- `models/providers/local_image.py` — `LocalTorchImageProvider` (UNet +
+  VAE + CLIP) 4M params, 一次 forward ~0.1s CPU
+- `models/providers/local_audio.py` — `LocalTorchAudioProvider` (TTS +
+  HiFi-GAN) 4.5M params, 一次 forward ~0.1s CPU
+- `models/providers/local_video.py` — `LocalTorchVideoProvider` (VideoDiT
+  + VideoVAE) 5.5M params, 一次 forward ~0.1s CPU
+- `models/providers/local_multimodal.py` — `LocalTorchMultimodalProvider`
+  (OmniModel + TinyCausalLM) 4.5M params, multi-modal forward
+  ~0.5s CPU
+- `tests/test_multimodal_providers.py` — 31 个新测试
+
+**升级**:
+- `models/providers/__init__.py` — 暴露 4 个新 provider + 4 个 factory
+- `models/providers/factory.py` — 新增 `fetch_and_load_image` /
+  `fetch_and_load_audio` / `fetch_and_load_video` / `fetch_and_load_omni`
+  + 4 个 `get_default_*_provider` singleton
+- `models/interfaces/__init__.py` — re-export 4 个新 Protocol + Echo impl
+- `nodes/_helpers.py` — 4 个 `register_default_*_backend` (no-arg form)
+  装真 backend factory;旧 v0.4.0 `(factory)` 版本删除
+- `examples/image_gen.py` / `audio_tts.py` / `video_gen.py` — 改成走真
+  provider,加 elapsed 计时
+- `docs/placeholder_registry.md` — 新增 6 条 (entries 48-53) 覆盖
+  `_local_*_factory` 与 `_get_default_default` 内的降级 `pass`
+
+**测试**:
+- 总测试数: 621 → **652** (净增 31, 全过, 51.02s)
+- 4 个模态端到端 forward pass: image (3, 16, 16) / audio (1, 512) /
+  video (4, 3, 8, 8) / omni (text + image_emb + audio_emb)
+- Examples: 3 个 `examples/*.py` 跑通真模型
+  * image 64x64 ~1.8s
+  * video 4 帧 64x64 ~2.5s
+  * audio 0.1s @ 16kHz ~1.7s
+
+**Scanner 双 0**:
+- Hardcoding scanner: 4228 total, critical 3304, info 924 (与 D1 阶段二一致)
+- Placeholder registry: 53/53 OK (新增 6 条)
+- 纯 torch,无 transformers / diffusers / safetensors / tokenizers 依赖
+
 ### 架构简化
 - 删除冗余的旧版本历史记录与架构清理叙事。
 - 删除文档中过时的版本号与"v0.3.0/v0.3.1"中间过渡描述。

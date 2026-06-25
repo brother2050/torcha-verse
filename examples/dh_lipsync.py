@@ -1,8 +1,10 @@
-"""Digital-human pipeline via the L4 node layer.
+"""Digital-human pipeline via the L4 node layer (v0.4.x P0 real-model path).
 
 Demonstrates ``dh_lip_sync``: re-animate a video's mouth to match a
-driving audio clip.  Without a registered model the node falls back to
-the echo backend in :mod:`nodes._helpers`.
+driving audio clip.  With the project-owned
+:class:`LocalTorchVideoProvider` installed as the fallback backend
+the demo runs a real VideoDiT + VideoVAE forward pass instead of
+the echo stub.
 
 Run with::
 
@@ -15,14 +17,20 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from nodes._helpers import register_default_video_backend
 from nodes.base import NodeContext
 from pipeline.composer import PipelineBuilder
 
 
 def main() -> None:
     print("=" * 60)
-    print("TorchaVerse — L4 Digital Human (dh_lip_sync)")
+    print("TorchaVerse — v0.4.x P0 Digital Human (LocalTorch)")
     print("=" * 60)
+
+    # Install the project-owned real-model backend so the
+    # node exercises an actual VideoDiT + VideoVAE forward
+    # pass (no echo).
+    register_default_video_backend()
 
     pipeline = (
         PipelineBuilder("lipsync_demo")
@@ -37,11 +45,17 @@ def main() -> None:
     )
 
     out = pipeline.run(NodeContext())["lipsync"]
+    video = out.get("video", {})
     print(f"\n[output keys] {sorted(out.keys())}")
-    print(f"[video kind]  {out.get('video', {}).get('kind', '?')}")
-    print(f"[method]      {out.get('video', {}).get('method', '?')}")
-    print(f"[path]        {out.get('video', {}).get('path', '?')}")
+    print(f"[video kind]  {video.get('kind', '?')}")
+    print(f"[method]      {video.get('method', '?')}")
+    print(f"[path]        {video.get('path', '?')}")
     print(f"[sync_score]  {out.get('sync_score', '?')}")
+    # The real LocalTorchVideoProvider returns a torch.Tensor
+    # for the ``frames`` key; the echo stub returns a dict.
+    frames = video.get("frames")
+    if hasattr(frames, "shape"):
+        print(f"[frames]      tensor shape={tuple(frames.shape)}")
 
     print("\nDemo complete!")
 

@@ -1,7 +1,7 @@
 # TorchaVerse 路线图
 
 > 日期:2026-06-25 · 状态:初期(early-stage)→ 准生产(quasi-production)
-> 当前 HEAD: `10e9f90` · 目标 next release: **v0.4.0**
+> 当前 HEAD: `e83aa7e` · 目标 next release: **v0.4.x (P0 multi-modal 已并入)**
 
 ## 定位
 
@@ -17,6 +17,7 @@
 | 优先级 | 范围 | 状态 | 估时 |
 |---|---|---|---:|
 | **P0** | 真模型跑通(项目自有 tiny transformer + 字节级 tokenizer) | **完成 2026-06-25** | 1-2 周 |
+| **P0** | P0 多模态扩展 (image / audio / video / omni 4 个真 provider) | **完成 2026-06-25** | 1 天 |
 | **P1** | 评估模块最小版(FID + prompt 还原率 + CI 集成) | **完成 2026-06-25** | 1-2 周 |
 | **P2** | 模型源自动拉取(HuggingFace + 许可证审计) | **完成 2026-06-25** | 1 周 |
 | **P3** | pass/NotImplementedError 审计 | **完成 2026-06-25** | 0 |
@@ -182,6 +183,88 @@ models/providers/
 - 真实大模型适配(Qwen2.5 / SDXL-Turbo 等)
 - 多模态 / vision-language / speech
 - 量化 / LoRA / 分布式训练
+
+---
+
+## P0 多模态扩展 — image / audio / video / omni 4 个真 provider ✅ 完成 2026-06-25
+
+**目标**:把 v0.4.0 P0 文本真模型扩展到 4 个模态,让 `image_txt2img` /
+`audio_tts` / `video_txt2vid` / `dh_lip_sync` / `character_apply` /
+`character_five_view` 这些 L4 节点**真的**调通项目自有的 multi-modal
+后端,无外部依赖。
+
+**新增文件** (4 provider + 1 interface + 1 tests):
+- `models/interfaces/media_providers.py` — 4 个新 `@runtime_checkable`
+  Protocol: `ImageProvider` / `AudioProvider` / `VideoProvider` /
+  `MultimodalProvider`,每个 `generate(**kwargs) -> Dict[str, Any]`。
+  同文件 4 个 `Echo*Provider` reference impl,作为无模型时的
+  fallback,固定 `[echo-image]` / `[echo-audio]` 前缀方便识别。
+- `models/providers/local_image.py` — `LocalTorchImageProvider`
+  (UNet + VAE + CLIPTextEncoder)。TINY 预设 4M params,一次
+  forward ~0.1s CPU,输出 `(3, H, W)` in `[0, 1]`。`from_random` /
+  `from_file` / `save` 三个 round-trip 入口。DDPM 2D 扩散循环 + CLIP
+  prompt 嵌入,完全复用项目自有 `models/image/*`。
+- `models/providers/local_audio.py` — `LocalTorchAudioProvider`
+  (TTSTransformer + HiFiGAN)。TINY 预设 4.5M params,一次
+  forward ~0.1s CPU,输出 `(1, num_samples)` 16 kHz waveform。
+  字节级 token → TTS → mel → HiFiGAN → 波形 → `clamp(-1, 1)`。
+  HiFiGAN 关键签名:`(in_channels, upsample_rates,
+  upsample_kernel_sizes, hidden_size)`,**不是** `upsample_initial_channel`。
+- `models/providers/local_video.py` — `LocalTorchVideoProvider`
+  (VideoDiT + VideoVAE)。TINY 预设 5.5M params,一次
+  forward ~0.1s CPU,输出 `(T, 3, H, W)`。
+  Noise shrink + DiT forward + VAE decode。
+  自动对齐 VAE down_factor × DiT patch size。
+- `models/providers/local_multimodal.py` — `LocalTorchMultimodalProvider`
+  (OmniModel + 独立 TinyCausalLM)。TINY 4.5M params,multi-modal
+  端到端 ~0.5s CPU。Vision / audio / text 三路融合:
+  * Vision: 16x16 resize → vision_encoder → features `(1, 17, 64)`
+    (16 patches + 1 cls token)
+  * Audio: pad/truncate 到 32 mel channels → audio_encoder → embedding
+  * Text: 字节级 token → 独立 TinyCausalLM → argmax next_id
+    → `% 128` clamp 到 ASCII → `bytes.decode`
+  * 输入三种 mode: `str` / `dict` / `Sequence`
+- `tests/test_multimodal_providers.py` — 31 个新测试
+  (4 Echo + 4 image + 3 audio + 3 video + 4 omni + 8 factory + 5 preset,
+  全部 5.55s 跑通 standalone)。
+
+**升级文件**:
+- `models/interfaces/__init__.py` — re-export 4 个新 Protocol + Echo impl
+- `models/providers/__init__.py` — 暴露 4 个新 provider + 4 个 config + 8 个
+  factory/singleton
+- `models/providers/factory.py` — 新增 `fetch_and_load_image` /
+  `fetch_and_load_audio` / `fetch_and_load_video` / `fetch_and_load_omni`
+  + 4 个 `get_default_*_provider` 双检锁 singleton
+- `nodes/_helpers.py` — 4 个新 `register_default_*_backend` (no-arg form)
+  装真 backend factory;旧的 v0.4.0 `(factory)` 4 个版本删除
+- `nodes/consistency.py` — `character_five_view` 节点加
+  `width` / `height` Optional inputs,允许 demo 改 64x64 不再 5×512
+  OOM(原 hardcode 512 在 CPU UNet 上 attention 4GB 溢出)
+- `examples/image_gen.py` / `audio_tts.py` / `video_gen.py` /
+  `consistency_character.py` / `dh_lipsync.py` — 5 个 example **全部**
+  改走真 provider,加 elapsed 计时 + tensor shape 打印
+- `docs/placeholder_registry.md` — 6 条新 entry (#48-53) 覆盖
+  `_local_*_factory` 与 `_get_default_default` 的 `pass` 降级
+- `CHANGELOG.md` — P0 multi-modal section 详细列出文件 + 测试 + 性能
+
+**端到端真模型跑通** (TINY 预设, CPU):
+- `image_gen.py` 64x64 → (3, 64, 64) tensor, ~6s (含 import + 4 步 DDPM)
+- `video_gen.py` 4 帧 64x64 → (4, 3, 64, 64) tensor, ~7s
+- `audio_tts.py` 0.1s @ 16kHz → (1, 1600) waveform, ~5s
+- `consistency_character.py` 64x96 + 5×64x64 → 全 tensor, ~30s
+- `dh_lipsync.py` (4, 3, 256, 256) frames, ~5s
+- 总测试数:621 → **652** (净增 31,全过,51.02s)
+
+**Scanner 双 0**:
+- Hardcoding scanner: 4228 total, critical 3304, info 924(与 D1 阶段二一致)
+- Placeholder registry: 53/53 OK(新增 6 条)
+- 纯 torch,**无** `transformers` / `diffusers` / `safetensors` / `tokenizers`
+  依赖,完全契合用户"减少其他依赖"的约束
+
+**不做**(留到 v1.0):
+- 真实大模型 (SDXL / Whisper / Wav2Vec / HunyuanVideo) 适配
+- 量化 / LoRA / 分布式训练
+- 流式推理 (real-time WebSocket)
 
 ---
 

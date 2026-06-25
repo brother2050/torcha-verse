@@ -8,6 +8,11 @@ without coupling to a specific model class:
   tool calling / embeddings (with three reference implementations:
   :class:`EchoProvider`, :class:`CallableProvider`, and
   :class:`ChatTemplateProvider`).
+* :mod:`media_providers` -- :class:`ImageProvider` /
+  :class:`AudioProvider` / :class:`VideoProvider` /
+  :class:`MultimodalProvider` for the v0.4.x P0 multi-modal
+  milestone, with matching :class:`Echo*Provider` reference
+  implementations.
 """
 
 from __future__ import annotations
@@ -22,8 +27,19 @@ from .llm_provider import (
     LLMToolCall,
     LLMUsage,
 )
+from .media_providers import (
+    AudioProvider,
+    EchoAudioProvider,
+    EchoImageProvider,
+    EchoMultimodalProvider,
+    EchoVideoProvider,
+    ImageProvider,
+    MultimodalProvider,
+    VideoProvider,
+)
 
 __all__ = [
+    # text
     "LLMProvider",
     "LLMMessage",
     "LLMResponse",
@@ -32,4 +48,13 @@ __all__ = [
     "EchoProvider",
     "CallableProvider",
     "ChatTemplateProvider",
+    # multi-modal
+    "ImageProvider",
+    "AudioProvider",
+    "VideoProvider",
+    "MultimodalProvider",
+    "EchoImageProvider",
+    "EchoAudioProvider",
+    "EchoVideoProvider",
+    "EchoMultimodalProvider",
 ]

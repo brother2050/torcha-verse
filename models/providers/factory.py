@@ -227,3 +227,261 @@ def get_default_provider() -> LocalTorchTextProvider:
                     LocalTorchTextProvider.from_random(TINY_CONFIG)
                 )
     return _default_provider
+
+
+# ---------------------------------------------------------------------------
+# v0.4.x P0 multi-modal: image / audio / video / omni providers
+# ---------------------------------------------------------------------------
+from .local_audio import (  # noqa: E402  (deferred to keep factory self-contained)
+    AudioProviderConfig,
+    LocalTorchAudioProvider,
+    SMALL_AUDIO_CONFIG,
+    TINY_AUDIO_CONFIG,
+)
+from .local_image import (  # noqa: E402
+    ImageProviderConfig,
+    LocalTorchImageProvider,
+    SMALL_IMAGE_CONFIG,
+    TINY_IMAGE_CONFIG,
+)
+from .local_multimodal import (  # noqa: E402
+    LocalTorchMultimodalProvider,
+    MultimodalProviderConfig,
+    SMALL_MULTIMODAL_CONFIG,
+    TINY_MULTIMODAL_CONFIG,
+)
+from .local_video import (  # noqa: E402
+    LocalTorchVideoProvider,
+    SMALL_VIDEO_CONFIG,
+    TINY_VIDEO_CONFIG,
+    VideoProviderConfig,
+)
+
+
+def _fetch_or_random(
+    *,
+    repo_id: str,
+    suffix: str,
+    from_file_fn: Any,
+    from_random_fn: Any,
+    config_name: str,
+    device: Union[str, torch.device],
+) -> Any:
+    """Shared random-vs-cached fetch helper for the multi-modal loaders.
+
+    Mirrors the structure of :func:`fetch_and_load_text` but
+    generalises to any "fetch from local cache or random-init"
+    pair (image / audio / video / omni).
+    """
+    try:
+        from models.source import (
+            fetch as _fetch,
+            FetchResult as _FetchResult,
+            DEFAULT_ALLOW_LICENSE,
+        )
+        result = _fetch(
+            repo_id=repo_id,
+            source="local",
+            allow_license=list(DEFAULT_ALLOW_LICENSE),
+            verify_cache=True,
+        )
+        if isinstance(result, _FetchResult) and result.accepted:
+            candidate = result.location.path() / suffix
+            if candidate.is_file():
+                return from_file_fn(candidate, device=device)
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug(
+            "models.source.fetch did not resolve a checkpoint "
+            "for %s: %s",
+            repo_id, exc,
+        )
+    return from_random_fn(config_name, device=device)
+
+
+def fetch_and_load_image(
+    repo_id: str = "torcha-verse/tiny-image",
+    *,
+    config_name: str = "tiny",
+    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: Union[str, torch.device] = "cpu",
+) -> LocalTorchImageProvider:
+    """Load a project-owned :class:`LocalTorchImageProvider`.
+
+    See :func:`fetch_and_load_text` for the random-vs-cached
+    semantics; this is the image-modality counterpart.
+    """
+    if checkpoint_path is not None:
+        p = Path(checkpoint_path).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(
+                "image checkpoint file not found: {}".format(p)
+            )
+        return LocalTorchImageProvider.from_file(p, device=device)
+    cfg = TINY_IMAGE_CONFIG if config_name == "tiny" else SMALL_IMAGE_CONFIG
+    return _fetch_or_random(
+        repo_id=repo_id,
+        suffix="model.pt",
+        from_file_fn=LocalTorchImageProvider.from_file,
+        from_random_fn=lambda name, device: LocalTorchImageProvider.from_random(
+            TINY_IMAGE_CONFIG if name == "tiny" else SMALL_IMAGE_CONFIG,
+            device=device,
+        ),
+        config_name=cfg.name,
+        device=device,
+    )
+
+
+def fetch_and_load_audio(
+    repo_id: str = "torcha-verse/tiny-audio",
+    *,
+    config_name: str = "tiny",
+    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: Union[str, torch.device] = "cpu",
+) -> LocalTorchAudioProvider:
+    """Load a project-owned :class:`LocalTorchAudioProvider`."""
+    if checkpoint_path is not None:
+        p = Path(checkpoint_path).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(
+                "audio checkpoint file not found: {}".format(p)
+            )
+        return LocalTorchAudioProvider.from_file(p, device=device)
+    cfg = TINY_AUDIO_CONFIG if config_name == "tiny" else SMALL_AUDIO_CONFIG
+    return _fetch_or_random(
+        repo_id=repo_id,
+        suffix="model.pt",
+        from_file_fn=LocalTorchAudioProvider.from_file,
+        from_random_fn=lambda name, device: LocalTorchAudioProvider.from_random(
+            TINY_AUDIO_CONFIG if name == "tiny" else SMALL_AUDIO_CONFIG,
+            device=device,
+        ),
+        config_name=cfg.name,
+        device=device,
+    )
+
+
+def fetch_and_load_video(
+    repo_id: str = "torcha-verse/tiny-video",
+    *,
+    config_name: str = "tiny",
+    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: Union[str, torch.device] = "cpu",
+) -> LocalTorchVideoProvider:
+    """Load a project-owned :class:`LocalTorchVideoProvider`."""
+    if checkpoint_path is not None:
+        p = Path(checkpoint_path).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(
+                "video checkpoint file not found: {}".format(p)
+            )
+        return LocalTorchVideoProvider.from_file(p, device=device)
+    cfg = TINY_VIDEO_CONFIG if config_name == "tiny" else SMALL_VIDEO_CONFIG
+    return _fetch_or_random(
+        repo_id=repo_id,
+        suffix="model.pt",
+        from_file_fn=LocalTorchVideoProvider.from_file,
+        from_random_fn=lambda name, device: LocalTorchVideoProvider.from_random(
+            TINY_VIDEO_CONFIG if name == "tiny" else SMALL_VIDEO_CONFIG,
+            device=device,
+        ),
+        config_name=cfg.name,
+        device=device,
+    )
+
+
+def fetch_and_load_omni(
+    repo_id: str = "torcha-verse/tiny-omni",
+    *,
+    config_name: str = "tiny",
+    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: Union[str, torch.device] = "cpu",
+) -> LocalTorchMultimodalProvider:
+    """Load a project-owned :class:`LocalTorchMultimodalProvider`."""
+    if checkpoint_path is not None:
+        p = Path(checkpoint_path).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(
+                "multimodal checkpoint file not found: {}".format(p)
+            )
+        return LocalTorchMultimodalProvider.from_file(p, device=device)
+    cfg = (
+        TINY_MULTIMODAL_CONFIG
+        if config_name == "tiny"
+        else SMALL_MULTIMODAL_CONFIG
+    )
+    return _fetch_or_random(
+        repo_id=repo_id,
+        suffix="model.pt",
+        from_file_fn=LocalTorchMultimodalProvider.from_file,
+        from_random_fn=lambda name, device: (
+            LocalTorchMultimodalProvider.from_random(
+                TINY_MULTIMODAL_CONFIG
+                if name == "tiny"
+                else SMALL_MULTIMODAL_CONFIG,
+                device=device,
+            )
+        ),
+        config_name=cfg.name,
+        device=device,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-modality default singletons (mirrors ``get_default_provider``)
+# ---------------------------------------------------------------------------
+_default_image_lock: threading.Lock = threading.Lock()
+_default_image: Optional[LocalTorchImageProvider] = None
+_default_audio_lock: threading.Lock = threading.Lock()
+_default_audio: Optional[LocalTorchAudioProvider] = None
+_default_video_lock: threading.Lock = threading.Lock()
+_default_video: Optional[LocalTorchVideoProvider] = None
+_default_omni_lock: threading.Lock = threading.Lock()
+_default_omni: Optional[LocalTorchMultimodalProvider] = None
+
+
+def get_default_image_provider() -> LocalTorchImageProvider:
+    """Return the process-level singleton :class:`LocalTorchImageProvider`."""
+    global _default_image
+    if _default_image is None:
+        with _default_image_lock:
+            if _default_image is None:
+                _default_image = LocalTorchImageProvider.from_random(
+                    TINY_IMAGE_CONFIG,
+                )
+    return _default_image
+
+
+def get_default_audio_provider() -> LocalTorchAudioProvider:
+    """Return the process-level singleton :class:`LocalTorchAudioProvider`."""
+    global _default_audio
+    if _default_audio is None:
+        with _default_audio_lock:
+            if _default_audio is None:
+                _default_audio = LocalTorchAudioProvider.from_random(
+                    TINY_AUDIO_CONFIG,
+                )
+    return _default_audio
+
+
+def get_default_video_provider() -> LocalTorchVideoProvider:
+    """Return the process-level singleton :class:`LocalTorchVideoProvider`."""
+    global _default_video
+    if _default_video is None:
+        with _default_video_lock:
+            if _default_video is None:
+                _default_video = LocalTorchVideoProvider.from_random(
+                    TINY_VIDEO_CONFIG,
+                )
+    return _default_video
+
+
+def get_default_omni_provider() -> LocalTorchMultimodalProvider:
+    """Return the process-level singleton :class:`LocalTorchMultimodalProvider`."""
+    global _default_omni
+    if _default_omni is None:
+        with _default_omni_lock:
+            if _default_omni is None:
+                _default_omni = LocalTorchMultimodalProvider.from_random(
+                    TINY_MULTIMODAL_CONFIG,
+                )
+    return _default_omni

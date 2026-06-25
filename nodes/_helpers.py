@@ -242,6 +242,109 @@ def _set_default(kind: str, factory: Optional[Callable[[], Any]]) -> None:
         raise ValueError(f"Unknown backend kind: {kind!r}")
 
 
+# ---------------------------------------------------------------------------
+# v0.4.x P0 multi-modal: real local backend factories
+# ---------------------------------------------------------------------------
+# These four factories wire the project-owned multi-modal providers
+# (see :mod:`models.providers.local_image` etc.) into the
+# node registry.  They are deliberately *opt-in* -- the default
+# behaviour is still the echo backend (which never raises) and
+# the real backend is only installed when one of
+# ``register_default_image_backend(...)`` etc. is called from an
+# example / script that explicitly asks for the v0.4.x P0 path.
+def _local_image_factory() -> Any:
+    """Factory returning a fresh :class:`LocalTorchImageProvider`.
+
+    The provider is built **on demand** (not at registration time)
+    so that ``register_default_image_backend`` does not pay the
+    ~5M-param build cost until the backend is actually invoked.
+    The provider is created with the TINY preset to keep the
+    default cheap; callers that need a different preset should
+    construct their own :class:`LocalTorchImageProvider` and
+    register *that* as the factory.
+    """
+    try:
+        from models.providers import LocalTorchImageProvider
+    except Exception:  # noqa: BLE001 - fall back to echo
+        return _image_echo_factory()
+    return LocalTorchImageProvider.from_random()
+
+
+def _local_video_factory() -> Any:
+    """Factory returning a fresh :class:`LocalTorchVideoProvider`."""
+    try:
+        from models.providers import LocalTorchVideoProvider
+    except Exception:  # noqa: BLE001
+        return _video_echo_factory()
+    return LocalTorchVideoProvider.from_random()
+
+
+def _local_audio_factory() -> Any:
+    """Factory returning a fresh :class:`LocalTorchAudioProvider`."""
+    try:
+        from models.providers import LocalTorchAudioProvider
+    except Exception:  # noqa: BLE001
+        return _audio_echo_factory()
+    return LocalTorchAudioProvider.from_random()
+
+
+def _local_text_factory() -> Any:
+    """Factory returning a fresh :class:`LocalTorchTextProvider`."""
+    try:
+        from models.providers import LocalTorchTextProvider, TINY_CONFIG
+    except Exception:  # noqa: BLE001
+        return _text_echo_factory()
+    return LocalTorchTextProvider.from_random(TINY_CONFIG)
+
+
+def register_default_image_backend(
+    factory: Optional[Callable[[], Any]] = None,
+) -> None:
+    """Register the fallback image backend factory used by ``call_image_backend``.
+
+    When ``factory`` is ``None`` (the default) a v0.4.x P0
+    :class:`LocalTorchImageProvider` is registered; pass an
+    explicit ``factory`` to plug in a different backend (e.g.
+    one wrapping a remote service).  Pass the explicit
+    :data:`_image_echo_factory` to revert to the echo
+    behaviour.
+    """
+    if factory is None:
+        factory = _local_image_factory
+    _set_default("image", factory)
+
+
+def register_default_video_backend(
+    factory: Optional[Callable[[], Any]] = None,
+) -> None:
+    """Register the fallback video backend factory used by ``call_video_backend``."""
+    if factory is None:
+        factory = _local_video_factory
+    _set_default("video", factory)
+
+
+def register_default_audio_backend(
+    factory: Optional[Callable[[], Any]] = None,
+) -> None:
+    """Register the fallback audio backend factory used by ``call_audio_backend``."""
+    if factory is None:
+        factory = _local_audio_factory
+    _set_default("audio", factory)
+
+
+def register_default_text_backend(
+    factory: Optional[Callable[[], Any]] = None,
+) -> None:
+    """Register the fallback text backend factory used by ``call_text_backend``.
+
+    Preserved for compatibility with v0.4.0 callers; the v0.4.x
+    P0 default is the project-owned
+    :class:`LocalTorchTextProvider` instead of the echo stub.
+    """
+    if factory is None:
+        factory = _local_text_factory
+    _set_default("text", factory)
+
 def _get_default(kind: str) -> Optional[Callable[[], Any]]:
     if kind == "text":
         return _DEFAULT_TEXT_BACKEND
@@ -252,26 +355,6 @@ def _get_default(kind: str) -> Optional[Callable[[], Any]]:
     if kind == "audio":
         return _DEFAULT_AUDIO_BACKEND
     raise ValueError(f"Unknown backend kind: {kind!r}")
-
-
-def register_default_text_backend(factory: Callable[[], Any]) -> None:
-    """Register the fallback text backend factory used by ``call_text_backend``."""
-    _set_default("text", factory)
-
-
-def register_default_image_backend(factory: Callable[[], Any]) -> None:
-    """Register the fallback image backend factory used by ``call_image_backend``."""
-    _set_default("image", factory)
-
-
-def register_default_video_backend(factory: Callable[[], Any]) -> None:
-    """Register the fallback video backend factory used by ``call_video_backend``."""
-    _set_default("video", factory)
-
-
-def register_default_audio_backend(factory: Callable[[], Any]) -> None:
-    """Register the fallback audio backend factory used by ``call_audio_backend``."""
-    _set_default("audio", factory)
 
 
 def reset_default_backends() -> None:

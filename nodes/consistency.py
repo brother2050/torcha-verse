@@ -568,6 +568,8 @@ class FiveViewNode(BaseNode):
         inputs={
             "reference_image": "IMAGE",
             "character_name": "TEXT",
+            "width": "Optional[INT]",
+            "height": "Optional[INT]",
         },
         outputs={
             "five_views": "LIST[IMAGE]",
@@ -627,6 +629,11 @@ class FiveViewNode(BaseNode):
         """
         character_name = str(inputs.get("character_name", ""))
         model = ctx.config.get("default_five_view_model")
+        # Allow callers (and CI demos) to override the per-view
+        # resolution; otherwise fall back to 512 which is the
+        # canonical reference-sheet size.
+        width = _coerce_int(inputs.get("width")) or 512
+        height = _coerce_int(inputs.get("height")) or 512
 
         ctx.logger.debug(
             "character_five_view run_id=%s character=%s",
@@ -662,8 +669,8 @@ class FiveViewNode(BaseNode):
                 ctx.bus,
                 model or f"five-view-{view}",
                 prompt=f"{character_name}, {view} view",
-                width=512,
-                height=512,
+                width=width,
+                height=height,
                 num_inference_steps=int(inputs.get("steps", 25)),
                 guidance_scale=float(inputs.get("guidance_scale", 7.5)),
                 reference_image=inputs.get("reference_image"),
