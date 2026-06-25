@@ -538,3 +538,838 @@ exemptions:
     protocol_format: true
     content_contains: "has no attribute"
     reason: "Python import error message, 协议性文案"
+
+  # =================================================================
+  # Groups 8-15: D1 阶段二批量 protocol exemption (200+ new entries)
+  # =================================================================
+  # 由 scanner 输出的 critical inventory 提取,按"协议/格式/错误消息/超参"
+  # 4 类批量落 exemption。每条都用 content_contains 锁定具体内容,避免
+  # 误伤 (whitelist 是非贪婪匹配, 不会跨文件污染)。
+  # ----------------------------------------------------------------
+  # Group 8: reAct / tool_call agent 协议正则 (协议固定, 改了就坏)
+  # ----------------------------------------------------------------
+  - file: "agents/react_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Thought:"
+    reason: "reAct 协议 Thought: 标签, 模型输出固定格式"
+
+  - file: "agents/react_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Action:"
+    reason: "reAct 协议 Action: 标签, 模型输出固定格式"
+
+  - file: "agents/react_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Action Input:"
+    reason: "reAct 协议 Action Input: 标签, 模型输出固定格式"
+
+  - file: "agents/react_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Final Answer:"
+    reason: "reAct 协议 Final Answer: 标签, 模型输出固定格式"
+
+  - file: "agents/react_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Observation:"
+    reason: "reAct 协议 Observation: 标签, 模型输出固定格式"
+
+  - file: "agents/tool_call_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "FINAL ANSWER:"
+    reason: "tool_call 协议 FINAL ANSWER: 标签, 模型输出固定格式"
+
+  - file: "agents/tool_call_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "```(?:json)?"
+    reason: "tool_call 协议 JSON codeblock 解析正则"
+
+  # ----------------------------------------------------------------
+  # Group 9: agents/flows/ prompt 模板 (LLM prompt 固定文案)
+  # ----------------------------------------------------------------
+  - file: "agents/flows/debate.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "You are the judge of a debate"
+    reason: "debate flow judge prompt 模板"
+
+  - file: "agents/flows/debate.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Final positions:"
+    reason: "debate flow prompt 模板"
+
+  - file: "agents/flows/debate.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Other positions:"
+    reason: "debate flow prompt 模板"
+
+  - file: "agents/flows/debate.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Synthesise the following positions"
+    reason: "debate flow judge prompt 模板"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "You are a task manager"
+    reason: "hierarchical flow task manager prompt 模板"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "subtask_index"
+    reason: "hierarchical flow state slot, 协议绑定"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "output_length"
+    reason: "hierarchical flow state slot, 协议绑定"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "total_steps"
+    reason: "hierarchical flow state slot, 协议绑定"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "num_subtasks"
+    reason: "hierarchical flow state slot, 协议绑定"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Worker results:"
+    reason: "hierarchical flow prompt 模板"
+
+  - file: "agents/flows/hierarchical.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "0123456789.-) "
+    reason: "hierarchical flow task prefix 字符集"
+
+  - file: "agents/flows/sequential.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "agent_results"
+    reason: "sequential flow state slot, 协议绑定"
+
+  # ----------------------------------------------------------------
+  # Group 10: assets/ 协议键名 + 错误消息 (协议/数据格式)
+  # ----------------------------------------------------------------
+  - file: "assets/base.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "content_hash"
+    reason: "Asset metadata 协议键名 (P2 模型源拉取约定)"
+
+  - file: "assets/base.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "NOASSERTION"
+    reason: "SPDX 许可证协议标识符, 协议绑定"
+
+  - file: "assets/base.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "description"
+    reason: "Asset metadata 协议键名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "safetensors"
+    reason: "模型权重格式协议标识符"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "architecture"
+    reason: "ModelAsset metadata 协议键名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "reference_images"
+    reason: "CharacterAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "five_view_sheet"
+    reason: "CharacterAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "embedding_ref"
+    reason: "CharacterAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "consistency_seed"
+    reason: "CharacterAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "outfit_refs"
+    reason: "CharacterAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "style_embedding_ref"
+    reason: "OutfitAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "controlnet_ref"
+    reason: "ControlNetAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "source_image"
+    reason: "ImageAsset 协议字段名"
+
+  - file: "assets/model_asset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "depth_map_path"
+    reason: "ImageAsset 协议字段名"
+
+  - file: "assets/types.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "commercial_use"
+    reason: "Asset 许可证协议字段名 (SPDX 兼容)"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "torcha-verse"
+    reason: "AssetStore 包名, 路径协议"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "metadata.db"
+    reason: "AssetStore SQLite 文件名, 协议"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "PRAGMA"
+    reason: "SQLite PRAGMA 语句, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "SELECT metadata_json"
+    reason: "AssetStore SQL 查询模板, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "INSERT OR REPLACE INTO assets"
+    reason: "AssetStore SQL 写入模板, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: " LIMIT ? OFFSET ?"
+    reason: "SQL 分页协议子句, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: " AND asset_type = ?"
+    reason: "SQL WHERE 协议子句, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: " AND status = ?"
+    reason: "SQL WHERE 协议子句, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: " ORDER BY updated_at DESC"
+    reason: "SQL ORDER BY 协议子句, 协议固定"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "AssetStore is closed"
+    reason: "AssetStore 协议性错误消息"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Asset not found"
+    reason: "AssetStore 协议性错误消息"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Content file not found"
+    reason: "AssetStore 协议性错误消息"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Content blob missing"
+    reason: "AssetStore 协议性错误消息"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "hot_size must be > 0"
+    reason: "AssetStore 协议性错误消息"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "OrderedDict[str, Asset]"
+    reason: "type stub annotation 字符串, 协议性"
+
+  - file: "assets/store.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "tuple[Asset, Path]"
+    reason: "type stub annotation 字符串, 协议性"
+
+  - file: "assets/store.py"
+    type: "numeric_literal"
+    severity: "info"
+    content_contains: "256"
+    reason: "AssetStore hot_size 默认值, 启动超参"
+
+  # ----------------------------------------------------------------
+  # Group 11: nodes/ 协议/格式 + 错误消息
+  # ----------------------------------------------------------------
+  - file: "nodes/image.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "controlnet"
+    reason: "ImageNode controlnet 协议字段名"
+
+  - file: "nodes/digital_human.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "lip_sync"
+    reason: "DigitalHumanNode 协议字段名"
+
+  - file: "nodes/digital_human.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "expression_params"
+    reason: "DigitalHumanNode 协议字段名"
+
+  - file: "nodes/digital_human.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "head_pose_params"
+    reason: "DigitalHumanNode 协议字段名"
+
+  - file: "nodes/consistency.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "consistency_score"
+    reason: "ConsistencyNode 协议字段名"
+
+  - file: "nodes/subtitle.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "subtitle"
+    reason: "SubtitleNode 协议字段名"
+
+  - file: "consistency/profile.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "consistency_profile"
+    reason: "ConsistencyProfile 协议字段名"
+
+  - file: "consistency/profile.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "face_embedding"
+    reason: "ConsistencyProfile 协议字段名"
+
+  - file: "consistency/profile.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "body_proportion"
+    reason: "ConsistencyProfile 协议字段名"
+
+  - file: "consistency/profile.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "voice_signature"
+    reason: "ConsistencyProfile 协议字段名"
+
+  # ----------------------------------------------------------------
+  # Group 12: pipeline/ 模板协议
+  # ----------------------------------------------------------------
+  - file: "pipeline/templates.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "input_schema"
+    reason: "PipelineTemplate 协议字段名"
+
+  - file: "pipeline/templates.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "output_schema"
+    reason: "PipelineTemplate 协议字段名"
+
+  - file: "pipeline/templates.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "node_type"
+    reason: "PipelineTemplate 协议字段名"
+
+  - file: "pipeline/templates.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "canvas_id"
+    reason: "PipelineTemplate 协议字段名"
+
+  # ----------------------------------------------------------------
+  # Group 13: tools/ 操作名协议
+  # ----------------------------------------------------------------
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "file_path"
+    reason: "FileOps tool 协议字段名"
+
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "content_type"
+    reason: "FileOps tool 协议字段名"
+
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "operation"
+    reason: "FileOps tool 协议字段名"
+
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "encoding"
+    reason: "FileOps tool 协议字段名"
+
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "permission denied"
+    reason: "FileOps tool 协议性错误消息"
+
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "is not a file"
+    reason: "FileOps tool 协议性错误消息"
+
+  - file: "tools/file_ops.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "is not a directory"
+    reason: "FileOps tool 协议性错误消息"
+
+  - file: "plugins/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "plugin_name"
+    reason: "plugin CLI 协议字段名"
+
+  - file: "plugins/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "plugin_path"
+    reason: "plugin CLI 协议字段名"
+
+  - file: "plugins/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "entry_point"
+    reason: "plugin 加载协议字段名 (Python entry_points)"
+
+  # ----------------------------------------------------------------
+  # Group 14: serving/ HTTP / 路由协议
+  # ----------------------------------------------------------------
+  - file: "serving/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "host"
+    reason: "serving CLI 协议字段名"
+
+  - file: "serving/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "port"
+    reason: "serving CLI 协议字段名"
+
+  - file: "serving/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "workers"
+    reason: "serving CLI 协议字段名"
+
+  - file: "serving/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "log_level"
+    reason: "serving CLI 协议字段名"
+
+  - file: "serving/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "/health"
+    reason: "HTTP 路由协议 (FastAPI)"
+
+  - file: "serving/cli.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "/v1/"
+    reason: "HTTP 路由协议 (OpenAI 兼容)"
+
+  - file: "serving/app.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Content-Type"
+    reason: "HTTP header 协议名"
+
+  - file: "serving/app.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "application/json"
+    reason: "HTTP MIME type 协议"
+
+  - file: "serving/app.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Authorization"
+    reason: "HTTP header 协议名 (Bearer auth)"
+
+  - file: "serving/app.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "X-Request-ID"
+    reason: "HTTP header 协议名 (request tracing)"
+
+  - file: "serving/web_ui.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "text/html"
+    reason: "HTTP MIME type 协议"
+
+  - file: "serving/web_ui.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "<!DOCTYPE html>"
+    reason: "HTML5 doctype 协议标识"
+
+  - file: "serving/service.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "graceful_shutdown"
+    reason: "serving service 协议字段名"
+
+  - file: "serving/service.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "model_loaded"
+    reason: "serving service 协议字段名"
+
+  # ----------------------------------------------------------------
+  # Group 15: infrastructure/ 协议键名 + 资源约束
+  # ----------------------------------------------------------------
+  - file: "infrastructure/resource_budget.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "max_memory_mb"
+    reason: "ResourceBudget 协议字段名"
+
+  - file: "infrastructure/resource_budget.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "max_cpu_cores"
+    reason: "ResourceBudget 协议字段名"
+
+  - file: "infrastructure/resource_budget.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "max_gpu_count"
+    reason: "ResourceBudget 协议字段名"
+
+  - file: "infrastructure/resource_budget.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "max_disk_mb"
+    reason: "ResourceBudget 协议字段名"
+
+  - file: "infrastructure/config_center.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "TORCHAVERSE_CONFIG_DIR"
+    reason: "环境变量协议名"
+
+  - file: "infrastructure/config_center.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "TORCHAVERSE_SYSTEM_CONFIG_DIR"
+    reason: "环境变量协议名"
+
+  - file: "infrastructure/config_center.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "TORCHAVERSE_USER_CONFIG_DIR"
+    reason: "环境变量协议名"
+
+  - file: "infrastructure/config_center.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "TORCHAVERSE_RUN_DIR"
+    reason: "环境变量协议名"
+
+  - file: "infrastructure/config_center.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "config_snapshot.json"
+    reason: "ConfigCenter run snapshot 协议文件名"
+
+  # ----------------------------------------------------------------
+  # Group 16: examples/ demo 协议 (演示脚本, 非生产)
+  # ----------------------------------------------------------------
+  - file: "examples/agent_demo.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "demo_"
+    reason: "agent demo 变量名前缀, 演示性"
+
+  - file: "examples/rag_demo.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "demo_"
+    reason: "RAG demo 变量名前缀, 演示性"
+
+  - file: "examples/agent_demo.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Hello, world!"
+    reason: "demo 提示词, 演示性"
+
+  - file: "examples/rag_demo.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "What is"
+    reason: "demo 提问, 演示性"
+
+  # ----------------------------------------------------------------
+  # Group 17: numeric_literal 通用超参 (作者层默认)
+  # ----------------------------------------------------------------
+  # 把全项目 numeric 超参 (除 model structural 之外) 统一降级为 info,
+  # 这些是作者层默认值, 用户通过 config/*.yaml 覆盖。
+  - file: "agents/react_agent.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "agent 默认 max_iterations / timeout 等, 作者层超参"
+
+  - file: "agents/tool_call_agent.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "tool_call agent 默认 max_iterations, 作者层超参"
+
+  - file: "assets/store.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "AssetStore 默认缓存大小, 作者层超参"
+
+  - file: "serving/cli.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "serving CLI 默认端口 / workers, 作者层超参"
+
+  - file: "serving/app.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "serving app 默认超时 / buffer, 作者层超参"
+
+  - file: "serving/service.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "serving service 默认 shutdown timeout, 作者层超参"
+
+  - file: "serving/web_ui.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "serving web_ui 默认端口 / token 长度, 作者层超参"
+
+  - file: "tools/file_ops.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "FileOps 默认 max bytes / chunk size, 作者层超参"
+
+  - file: "plugins/cli.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "plugin CLI 默认 timeout, 作者层超参"
+
+  - file: "pipeline/templates.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "PipelineTemplate 默认 timeout, 作者层超参"
+
+  - file: "nodes/image.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "ImageNode 默认推理步数, 作者层超参"
+
+  - file: "nodes/digital_human.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "DigitalHumanNode 默认 FPS / frame count, 作者层超参"
+
+  - file: "nodes/subtitle.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "SubtitleNode 默认 line 长度, 作者层超参"
+
+  - file: "nodes/consistency.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "ConsistencyNode 默认 threshold, 作者层超参"
+
+  - file: "consistency/profile.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "ConsistencyProfile 默认 similarity threshold, 作者层超参"
+
+  # ----------------------------------------------------------------
+  # Group 18: logger 专用批量 exemption (Task D, D1 阶段二)
+  # ----------------------------------------------------------------
+  # 当前 scanner 已通过 is_log_message_format 启发式 (Group: heuristic)
+  # 把 logger.{level}(format) 自动降为 info。这里加一批**显式**
+  # exemption 作为冗余安全网:
+  #
+  # 1. 万一未来启发式被关,这条 exemption 仍能 catch 住 (defence in depth)
+  # 2. 审计: PR review 时能直接看到"这是 log message"的人工 rationale
+  # 3. 不依赖于 "literal 是 logger 调用的第一个参数" 的精确判断
+  #    (例如 kwargs 形式的 logger.bind(...).info(...) 也可命中)
+  #
+  # 范围: 全项目 (file: "*.py"), content_contains 锁定常见 log message
+  # 子串。
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Failed to "
+    reason: "log message 错误前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Successfully "
+    reason: "log message 成功前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Processing "
+    reason: "log message 处理前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Loaded "
+    reason: "log message 加载前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Saved "
+    reason: "log message 保存前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Skipping "
+    reason: "log message 跳过前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Invalid "
+    reason: "log message 校验前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Unknown "
+    reason: "log message 未知前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Cannot "
+    reason: "log message 失败前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Missing "
+    reason: "log message 缺失前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Starting "
+    reason: "log message 启动前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Finished "
+    reason: "log message 完成前缀 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Warning:"
+    reason: "log message Warning 标签 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Error:"
+    reason: "log message Error 标签 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Info:"
+    reason: "log message Info 标签 (scanner 启发式冗余 fallback)"
+
+  - file: "*.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Debug:"
+    reason: "log message Debug 标签 (scanner 启发式冗余 fallback)"

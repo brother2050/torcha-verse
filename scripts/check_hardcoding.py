@@ -47,7 +47,10 @@ Heuristics that *downgrade* a hit from ``critical`` to ``info``:
 * ``is_structural_init`` -- a numeric literal inside ``__init__`` whose
   value is in [2, 10000] *and* whose file lives under ``models/``.
   Model layers / attention dims are structural, not user-tunable.
-* ``is_logging_call`` -- already an exclusion from rule #1.
+* ``is_log_message_format`` -- the string literal is the first
+  positional argument of a ``logger.{level}(...)`` call.  Log
+  format strings are protocol/format identifiers, not runtime
+  config; the scanner still reports them but tags them ``info``.
 * ``is_attribute_access`` -- the literal appears inside an
   ``os.environ[...]`` / ``Path(...).expanduser()`` / ``sys.argv[...]``
   expression (i.e. it is read at runtime, not hardcoded in the
@@ -91,9 +94,11 @@ __all__ = [
     "scan_file",
     "scan_directory",
     "load_whitelist",
+    "filter_by_severity",
     "format_text",
     "format_json",
     "export_critical",
+    "is_log_message_format",
     "main",
 ]
 
@@ -340,6 +345,42 @@ def _is_logging_call(node: ast.Call) -> bool:
     return isinstance(func, ast.Attribute) and func.attr in _LOG_METHODS
 
 
+def is_log_message_format(node: ast.AST) -> bool:
+    """Return ``True`` if ``node`` is a format string of a logger call.
+
+    The heuristic (D1 v0.4.x extension, "log message heuristic"): a
+    string literal is treated as a *log message format* when it appears
+    as the first positional argument of a call whose attribute name is
+    in :data:`_LOG_METHODS` (i.e. ``logger.info(...)``,
+    ``getLogger(__name__).warning(...)``, ``self.logger.debug(...)``,
+    etc.).  The "format" role means the literal is a *protocol/format
+    identifier* (printf-style placeholders, log keys, JSON keys
+    etc.) -- it is **not** a runtime-configurable value, so the
+    scanner auto-downgrades it to ``info`` instead of excluding it.
+
+    The D1 convention documents this as: *log format strings are
+    visible in the audit (we still report them) but they are never
+    CI-failing.*
+
+    Args:
+        node: An ``ast.Constant`` string node.
+
+    Returns:
+        ``True`` if the node is the first positional argument of a
+        logger ``.info()/.warning()/.debug()/.error()/...`` call.
+    """
+    parent = getattr(node, "parent", None)
+    if not isinstance(parent, ast.Call):
+        return False
+    if not parent.args:
+        return False
+    if parent.args[0] is not node:
+        # Only the *first* argument is the format string; subsequent
+        # ``%s``/``{}`` substitution values are dynamic.
+        return False
+    return _is_logging_call(parent)
+
+
 def _is_import_call(node: ast.Call) -> bool:
     """Return ``True`` if ``node`` looks like an import-related call."""
     func = node.func
@@ -449,9 +490,11 @@ def _collect_exclusions(tree: ast.AST) -> tuple[set[int], set[int]]:
             if node.value is not None and _is_all_name(node.target):
                 _collect_str_ids(node.value, excluded_str_ids)
 
-    # Logging-call and import-call string arguments.
+    # Import-call string arguments are *fully* excluded (D1 section 2.2):
+    # import paths are protocol identifiers that the scanner cannot
+    # reasonably judge.
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and (_is_logging_call(node) or _is_import_call(node)):
+        if isinstance(node, ast.Call) and _is_import_call(node):
             for arg in node.args:
                 _collect_str_ids(arg, excluded_str_ids)
             for kw in node.keywords:
@@ -545,12 +588,32 @@ class _HardcodingVisitor(ast.NodeVisitor):
             and len(value) > STRING_MIN_LENGTH
             and not is_exempt
         ):
-            severity = SEVERITY_INFO if _is_runtime_attr(node) else SEVERITY_CRITICAL
+            severity = self._string_severity(node)
             self._add(node, STRING_LITERAL, _truncate(repr(value)), severity=severity)
         # Rule #3: path-like string literal (checked everywhere).
         if not is_exempt and _looks_like_path(value):
-            severity = SEVERITY_INFO if _is_runtime_attr(node) else SEVERITY_CRITICAL
+            severity = self._string_severity(node)
             self._add(node, PATH_LITERAL, _truncate(repr(value)), severity=severity)
+
+    def _string_severity(self, node: ast.Constant) -> str:
+        """Decide the severity of a string violation.
+
+        Order of precedence:
+
+        1. :func:`is_log_message_format` -- the string is a logger
+           format string.  Log messages are protocol/format
+           identifiers, so the violation is downgraded to ``info``.
+        2. :func:`_is_runtime_attr` -- the string is read from a
+           runtime source (env var, ``Path(...)``, ``sys.argv``).
+           Also downgraded to ``info``.
+        3. Otherwise ``critical`` (the default; the developer should
+           move this constant to ConfigCenter or whitelist it).
+        """
+        if is_log_message_format(node):
+            return SEVERITY_INFO
+        if _is_runtime_attr(node):
+            return SEVERITY_INFO
+        return SEVERITY_CRITICAL
 
     def _check_numeric(self, node: ast.Constant, value: Any) -> None:
         # Rule #2: numeric literal inside __init__ (0, 1, -1 excluded).

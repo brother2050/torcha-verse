@@ -7,9 +7,9 @@
 
 ## D1 — Hardcoding 规约化与扫描器校准
 
-**状态**:✅ **阶段一完成 2026-06-25**。规约文档 + scanner severity 分级 + 首批
-~90 条 exemption 已落地;剩余 D1 阶段二(把 critical 3352 进一步人工分批
-落 exemption + 写 `docs/config_access.md`)待启动。
+**状态**:✅ **阶段一 + 阶段二均完成 2026-06-25**。规约文档 + scanner severity
+分级 + log message 启发式 + 211 条 exemption + ConfigCenter 用户文档全部
+落地;剩余 D1 阶段三(拆 scanner 规则 + CI gating)待 weekly PR 节奏继续。
 
 **已完成的阶段一(2026-06-25)**
 - `docs/hardcoding_convention.md` 落地,定义 3 类常量边界 (RUNTIME_CONFIG /
@@ -27,18 +27,44 @@
 - Scanner 升级后分级: 3740 total → critical 3352, info 438
   (98 条被 whitelist 进一步降级)。
 
-**D1 阶段二待做的事** (重启条件)
-1. 把 critical 3352 中明显是协议/格式的 (例如 JSON 协议字段、SQL 关键字、
-   编译器字面量) 继续人工分批落 exemption。每周一次 PR 节奏, 每次 ≤ 200 条。
-2. scanner 增 "log message" 启发式: `logger.info("...")` 的 format string
-   应当 info (而不是 critical)。
-3. 写 `docs/config_access.md` 用户文档 (ConfigCenter / defaults API), 让
-   "规约里引用的 API" 真的可查。
+**已完成的阶段二(2026-06-25, 本次 commit)**
+- `scripts/check_hardcoding.py` 新增 `is_log_message_format` 启发式: logger
+  调用的**第一个字符串参数** 自动降为 `info` (不再完全 exclude, 让 audit
+  仍能看到 log format 串)。
+- `config/hardcoded_whitelist.yaml` 阶段一 90 条 → **211 条** (净增 117):
+  * Group 8: reAct / tool_call agent 协议正则 (Thought: / Action: / ...)
+  * Group 9: agents/flows/ prompt 模板 (debate / hierarchical / sequential)
+  * Group 10: assets/ 协议键名 + SQL 字面量 (PRAGMA / SELECT metadata_json)
+  * Group 11: nodes/ 协议/格式 (controlnet / lip_sync / face_embedding)
+  * Group 12: pipeline/ 模板协议
+  * Group 13: tools/ + plugins/ 协议
+  * Group 14: serving/ HTTP 协议 (Content-Type / X-Request-ID)
+  * Group 15: infrastructure/ 协议 (TORCHAVERSE_*_DIR / config_snapshot.json)
+  * Group 16: examples/ demo 协议
+  * Group 17: numeric_literal 通用超参 (14 个文件全项目 numeric → info)
+  * Group 18: logger 专用批量 exemption (16 个常见 log message 前缀,
+    作 heuristic 的 defence-in-depth fallback)
+- `docs/config_access.md` — ConfigCenter / defaults 用户文档, 16 节
+  (4 层配置模型 / 90 秒上手 / 读 API / 写 API / 加载顺序 / 环境变量 /
+  平台差异 / 快照与重放 / ResourceBudget / `infrastructure.defaults` /
+  环境切换 / 完整示例 / 反模式 / 故障排查 / D1 规约关系 / 速查表)。
+- 7 个新测试 (TestLogMessageFormat): info/warning/error 各一例 + 后续参数
+  仍 critical + keyword arg 不算 format string + helper 直接单测。
+- 总测试数 614 → **621** (全过, 46.98s)。
+- Scanner 升级后分级: 3740 total → 4157 total (log 启发式让之前 excluded
+  的 log 字符串进 inventory, 但 severity=info) → critical **3235**, info **922**。
+- Critical inventory 重新导出: 3420 unique → **3235 unique** (净降 185 条
+  已批量落 exemption)。
+
+**D1 阶段三待做的事** (重启条件)
+1. 拆 scanner:把 `string_literal` / `numeric_literal` 拆成两个独立规则,
+   允许结构超参 opt-out (目前是启发式自动判断, 不能逐项 opt-out)。
+2. 在 `pyproject.toml` 里把"critical 违规"设为 CI 必过项, non-critical 仍 warn。
+3. weekly PR 节奏:把剩余 critical 3235 继续分批落 exemption, 目标 0 critical。
 
 **再次启动条件(任一)**
-1. weekly PR 节奏稳定(每周一次 D1-exempt PR)。
-2. `infrastructure/config_center.py` 与 `infrastructure/defaults.py` 文档化。
-3. 用户报"CI 误判"案例 ≥ 1 个 → 修启发式或加 exemption。
+1. weekly PR 节奏稳定(每周一次 D1-exempt PR, 把 critical 3235 逐步 → 0)。
+2. 用户报"CI 误判"案例 ≥ 1 个 → 修启发式或加 exemption。
    - 哪些常量属于"运行时配置"(提进 YAML / ConfigCenter)
    - 哪些属于"模型结构超参"(保留在源码)
    - 哪些属于"协议/格式标识"(白名单)

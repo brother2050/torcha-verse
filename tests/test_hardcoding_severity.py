@@ -37,6 +37,7 @@ from scripts.check_hardcoding import (
     Violation,
     export_critical,
     filter_by_severity,
+    is_log_message_format,
     load_whitelist,
     scan_directory,
     scan_file,
@@ -275,6 +276,150 @@ class TestRuntimeAttrHeuristic:
         for viol in v:
             if "a-plain-constant-string-literal" in viol.content:
                 assert viol.severity == SEVERITY_CRITICAL
+
+
+class TestLogMessageFormat:
+    """D1 phase 2 -- "log message" heuristic.
+
+    The D1 convention says: a string literal that is the *first*
+    positional argument of a ``logger.{level}(...)`` call is a
+    log-format string.  Log format strings are protocol/format
+    identifiers (printf placeholders, log keys, JSON keys), not
+    user-tunable runtime config, so the scanner downgrades them to
+    ``info`` while still emitting them in the report.
+    """
+
+    def test_logger_info_format_is_info(self, tmp_path: Path) -> None:
+        p = _write(tmp_path, "fake.py", "\
+            from infrastructure.logger import get_logger\n\
+            logger = get_logger(__name__)\n\
+            def f():\n\
+                logger.info('a-pretty-long-format-string')\n\
+        ")
+        v = scan_file(p, tmp_path)
+        hits = [
+            viol for viol in v
+            if "a-pretty-long-format-string" in viol.content
+        ]
+        assert len(hits) == 1, hits
+        assert hits[0].severity == SEVERITY_INFO
+
+    def test_logger_warning_format_is_info(self, tmp_path: Path) -> None:
+        p = _write(tmp_path, "fake.py", "\
+            from infrastructure.logger import get_logger\n\
+            logger = get_logger(__name__)\n\
+            def f():\n\
+                logger.warning('something-bad-happened-here-ok')\n\
+        ")
+        v = scan_file(p, tmp_path)
+        hits = [
+            viol for viol in v
+            if "something-bad-happened-here-ok" in viol.content
+        ]
+        assert len(hits) == 1
+        assert hits[0].severity == SEVERITY_INFO
+
+    def test_logger_error_format_is_info(self, tmp_path: Path) -> None:
+        p = _write(tmp_path, "fake.py", "\
+            from infrastructure.logger import get_logger\n\
+            logger = get_logger(__name__)\n\
+            def f():\n\
+                logger.error('failed-to-process-input-please')\n\
+        ")
+        v = scan_file(p, tmp_path)
+        hits = [
+            viol for viol in v
+            if "failed-to-process-input-please" in viol.content
+        ]
+        assert len(hits) == 1
+        assert hits[0].severity == SEVERITY_INFO
+
+    def test_subsequent_args_stay_critical(self, tmp_path: Path) -> None:
+        """Only the FIRST positional argument is the format string;
+        subsequent ``%s``/``{}`` substitution values must remain
+        critical (they are dynamic by construction, so the scanner
+        won't even see them as literals, but other long constants
+        such as ``'a-very-long-constant-payload'`` after the format
+        string stay critical).
+        """
+        p = _write(tmp_path, "fake.py", "\
+            from infrastructure.logger import get_logger\n\
+            logger = get_logger(__name__)\n\
+            def f():\n\
+                logger.info('format-msg-okay', 'a-plain-constant-string-literal')\n\
+        ")
+        v = scan_file(p, tmp_path)
+        fmt_hits = [
+            viol for viol in v
+            if "format-msg-okay" in viol.content
+        ]
+        plain_hits = [
+            viol for viol in v
+            if "a-plain-constant-string-literal" in viol.content
+        ]
+        # Format string -> info
+        assert any(h.severity == SEVERITY_INFO for h in fmt_hits)
+        # Subsequent plain literal -> critical
+        assert any(h.severity == SEVERITY_CRITICAL for h in plain_hits)
+
+    def test_log_method_only_when_first_arg(self, tmp_path: Path) -> None:
+        """The heuristic must only apply when the literal is the
+        *first* positional argument; a long string in
+        ``logger.info(extra=...)`` keyword is not a format string.
+        """
+        p = _write(tmp_path, "fake.py", "\
+            from infrastructure.logger import get_logger\n\
+            logger = get_logger(__name__)\n\
+            def f():\n\
+                logger.info(extra='a-very-long-keyword-string-here')\n\
+        ")
+        v = scan_file(p, tmp_path)
+        hits = [
+            viol for viol in v
+            if "a-very-long-keyword-string-here" in viol.content
+        ]
+        # Keyword arg, not format string -> critical
+        if hits:
+            assert hits[0].severity == SEVERITY_CRITICAL
+
+    def test_is_log_message_format_helper(self, tmp_path: Path) -> None:
+        """Direct unit test for the helper exported from the module."""
+        import ast as _ast
+        src = "logger.info('a-very-long-format-string-here-ok')\n"
+        tree = _ast.parse(src)
+        # The string Constant's parent isn't attached by parse() alone;
+        # we walk and attach a parent so the helper can read it.
+        for parent in _ast.walk(tree):
+            for child in _ast.iter_child_nodes(parent):
+                child.parent = parent  # type: ignore[attr-defined]
+        # Find the string constant.
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.Constant)
+                and isinstance(node.value, str)
+                and "a-very-long-format-string-here-ok" in node.value
+            ):
+                assert is_log_message_format(node) is True
+                return
+        pytest.fail("test setup could not find the string constant")
+
+    def test_is_log_message_format_false_for_unrelated(self) -> None:
+        """A bare string literal (not inside a logger call) returns False."""
+        import ast as _ast
+        src = "x = 'a-very-long-plain-string-here-okay'\n"
+        tree = _ast.parse(src)
+        for parent in _ast.walk(tree):
+            for child in _ast.iter_child_nodes(parent):
+                child.parent = parent  # type: ignore[attr-defined]
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.Constant)
+                and isinstance(node.value, str)
+                and "a-very-long-plain-string-here-okay" in node.value
+            ):
+                assert is_log_message_format(node) is False
+                return
+        pytest.fail("test setup could not find the string constant")
 
 
 # ---------------------------------------------------------------------------

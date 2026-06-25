@@ -52,6 +52,51 @@
 - 顺手修正: `placeholder_registry.md` 中 `scripts/check_hardcoding.py`
   位置 (行号 338 → 526 因 scanner 重写), 仍 47 entries 全部注册。
 
+### Hardcoding 规约化（D1）— 阶段二
+
+- **log message 启发式** (`scripts/check_hardcoding.py:is_log_message_format`):
+  把 logger 调用的**第一个字符串参数**自动降为 `info` (不再是完全 exclude),
+  让 audit 仍能看到 log format 串 (PR review 时可看), 但永不 CI-fail。
+  * 触发条件: 字符串 literal 是 `logger.{debug,info,warning,warn,error,
+    critical,exception,log,fatal}(...)` 的 **第一个位置参数**。
+  * 7 个新测试: info/warning/error 各一例 + 后续位置参数仍 critical +
+    keyword arg 不算 format string + helper 直接单测。
+- **批量 200+ protocol exemption** (`config/hardcoded_whitelist.yaml`):
+  从阶段一 ~90 条 → **211 条** (净增 117), 新增 11 个 group:
+  * Group 8: reAct / tool_call agent 协议正则 (Thought: / Action: /
+    Action Input: / Final Answer: / Observation: / FINAL ANSWER: /
+    ```(?:json)?...)
+  * Group 9: agents/flows/ prompt 模板 (debate / hierarchical / sequential)
+  * Group 10: assets/ 协议键名 + 错误消息 + SQL 字面量 (NOASSERTION /
+    PRAGMA / SELECT metadata_json / INSERT OR REPLACE...)
+  * Group 11: nodes/ 协议/格式 (controlnet / lip_sync / expression_params
+    / consistency_score / face_embedding / voice_signature...)
+  * Group 12: pipeline/ 模板协议 (input_schema / output_schema / node_type)
+  * Group 13: tools/ + plugins/ 协议 (file_path / entry_point / plugin_name)
+  * Group 14: serving/ HTTP 协议 (Content-Type / Authorization / X-Request-ID
+    / /v1/ / /health / text/html)
+  * Group 15: infrastructure/ 协议 (max_memory_mb / max_cpu_cores /
+    TORCHAVERSE_*_DIR / config_snapshot.json)
+  * Group 16: examples/ demo 协议 (demo_ 前缀 / Hello, world!)
+  * Group 17: numeric_literal 通用超参 (14 个文件全项目 numeric → info)
+  * Group 18: logger 专用批量 exemption (16 个常见 log message 前缀, 作
+    heuristic 的 defence-in-depth fallback)
+- **`docs/config_access.md`** — ConfigCenter / defaults 用户文档, 16 节:
+  4 层配置模型 / 90 秒上手 / 读 API / 写 API / 加载顺序 / 环境变量覆盖 /
+  平台差异 / 快照与重放 / ResourceBudget / `infrastructure.defaults`
+  懒加载 / 环境切换 / 完整示例 / 反模式 / 故障排查 / D1 规约关系 / 速查表。
+- **7 个新测试** 覆盖 log message 启发式: TestLogMessageFormat 7 个 case
+  (info / warning / error / 后续参数 / keyword arg / helper 正/反例)。
+- 总测试数: 614 → **621** (全过, 46.98s)。
+- Scanner 升级后分级效果: 3740 total → **4157 total** (log 启发式让
+  之前 excluded 的 log 字符串进 inventory, 但 severity=info) →
+  **critical 3235**, **info 922** (之前 critical 3352, info 438)。
+- Critical inventory (`config/hardcoding_critical_inventory.yaml`) 重新
+  导出: 3420 unique → **3235 unique** (净降 185 条已批量落 exemption)。
+- `pyproject.toml` 不变 (`hardcoding_severity` marker 仍有效)。
+- 顺手修正: `placeholder_registry.md` 行号 526 → 569 (因 `is_log_message_format`
+  method 插入, scanner 内的 `pass` 位置下移), 47 entries 仍全部注册。
+
 ### Placeholder Registry（D3 工作流集中化阶段）
 - 新建 `docs/placeholder_registry.md` 作为**占位单一来源**（single source of truth）:
   47 处 `pass` / `NotImplementedError` 全部按 5 类（`protocol` / `tp_pp` /
