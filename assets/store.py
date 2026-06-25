@@ -450,6 +450,11 @@ class AssetStore:
         if status is not None:
             query += " AND status = ?"
             params.append(status.value)
+        if tags is not None and tags:
+            # 将 tags 过滤下推到 SQL：每个 tag 必须在 tags_json 中出现
+            for tag in tags:
+                query += " AND tags_json LIKE ?"
+                params.append(f'%"{tag}"%')
         query += " ORDER BY updated_at DESC;"
 
         self._ensure_open()  # S2-7
@@ -459,8 +464,6 @@ class AssetStore:
         results: List[Asset] = []
         for (meta_json,) in rows:
             asset = Asset.from_dict(json.loads(meta_json))
-            if tags is not None and not all(t in asset.tags for t in tags):
-                continue
             results.append(asset)
         return results
 
@@ -647,41 +650,6 @@ class AssetStore:
     def _content_path(self, content_hash: str) -> Path:
         """Return the on-disk path for a content hash (sharded 2 deep)."""
         return self._objects_dir / content_hash[:2] / content_hash
-
-    def _store_content(self, src: Path, content_hash: str) -> None:
-        """Copy ``src`` into the object store under ``content_hash``.
-
-        Deduplicated: if the target blob already exists nothing is done.
-
-        This method may be called *outside* the manager lock.  To keep
-        the object store consistent in the presence of concurrent writers
-        it writes to a uniquely-named temporary file in the destination
-        directory and then performs an atomic ``os.replace`` rename, so
-        that a partially-written blob is never observable.
-        """
-        dst = self._content_path(content_hash)
-        if dst.exists():
-            return
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        # Unique temp file in the same directory to allow an atomic rename.
-        tmp = dst.with_name("." + dst.name + "." + uuid4().hex + ".tmp")
-        try:
-            with open(src, "rb") as fsrc, open(tmp, "wb") as fdst:
-                while True:
-                    chunk = fsrc.read(_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    fdst.write(chunk)
-                fdst.flush()
-                os.fsync(fdst.fileno())
-            os.replace(tmp, dst)
-        except BaseException:
-            # Clean up the temp file on any failure.
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
 
     def _copy_to_staging(self, src: Path, staging_path: Path) -> None:
         """Copy ``src`` to a staging path (S1-3 Phase 2, lock-free).

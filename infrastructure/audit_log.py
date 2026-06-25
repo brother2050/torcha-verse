@@ -351,7 +351,31 @@ class AuditLogger:
 
         # 1. On-disk events.
         if self._log_dir.exists():
-            for jsonl_file in sorted(self._log_dir.glob("*.jsonl")):
+            jsonl_files = sorted(self._log_dir.glob("*.jsonl"))
+            # 按日期过滤文件
+            if start_utc is not None or end_utc is not None:
+                filtered_files = []
+                for f in jsonl_files:
+                    # 文件名格式: YYYY-MM-DD.jsonl
+                    date_str = f.stem  # "YYYY-MM-DD"
+                    try:
+                        file_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        filtered_files.append(f)  # 无法解析日期的文件保留
+                        continue
+                    # 如果 start_time 在某天之后，跳过该天之前的文件
+                    if start_utc is not None:
+                        # 文件日期的结束（当天23:59:59）
+                        file_end = file_date.replace(hour=23, minute=59, second=59)
+                        if file_end < start_utc:
+                            continue
+                    # 如果 end_time 在某天之前，跳过该天之后的文件
+                    if end_utc is not None:
+                        if file_date > end_utc:
+                            continue
+                    filtered_files.append(f)
+                jsonl_files = filtered_files
+            for jsonl_file in jsonl_files:
                 results.extend(self._read_file(jsonl_file))
 
         # 2. In-memory buffered events (not yet flushed).

@@ -50,6 +50,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from core.module_bus import ModuleBus
 from security.sandbox import ASTAnalyzer
@@ -854,13 +855,21 @@ class PluginManager:
 
     # ------------------------------------------------------------------
     def _save_state(self) -> None:
-        """Persist enable/disable state to disk (best-effort)."""
+        """Persist enable/disable state to disk atomically (best-effort)."""
         if self._state_file is None:
             return
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._state_file, "w", encoding="utf-8") as fh:
+            # Atomic write: write to a unique temp file, then os.replace
+            # (which is atomic on POSIX and Windows).  This avoids leaving a
+            # partially-written / corrupt state file if the process crashes
+            # mid-write.
+            tmp = self._state_file.with_name(
+                "." + self._state_file.name + "." + uuid4().hex + ".tmp"
+            )
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self._enabled_state, fh, indent=2)
+            os.replace(str(tmp), str(self._state_file))
         except OSError as exc:
             self._logger.debug("Could not persist plugin state: %s", exc)
 

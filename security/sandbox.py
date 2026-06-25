@@ -15,7 +15,8 @@ Components
   ``__import__``), sensitive file operations (``open`` of ``/proc``,
   ``/etc``, ``/sys``) and network access (``socket``).
 * :class:`SandboxExecutor` -- runs code in a restricted namespace with
-  timeout (:class:`threading.Timer`) and memory limits
+  timeout (``signal.SIGALRM`` on Unix, ``threading.Timer`` fallback on
+  Windows) and memory limits
   (:func:`resource.setrlimit` on Unix).  When the optional
   ``RestrictedPython`` package is installed it is used to compile the
   source with its safe-policy; otherwise a hand-curated restricted
@@ -59,6 +60,16 @@ try:  # pragma: no cover - import guard
     _HAS_RESOURCE: bool = True
 except ImportError:  # pragma: no cover - Windows
     _HAS_RESOURCE: bool = False
+
+try:  # pragma: no cover - import guard
+    import signal
+
+    # ``signal`` exists on Windows but ``SIGALRM`` / ``alarm`` do not, so we
+    # gate on their availability to decide whether a real timeout interrupt is
+    # possible.  When unavailable we fall back to ``threading.Timer``.
+    _HAS_SIGNAL: bool = hasattr(signal, "SIGALRM") and hasattr(signal, "alarm")
+except ImportError:  # pragma: no cover - Windows
+    _HAS_SIGNAL: bool = False
 
 try:  # pragma: no cover - import guard
     from RestrictedPython import compile_restricted  # type: ignore
@@ -257,7 +268,8 @@ class SandboxConfig:
         max_memory_mb: Address-space limit enforced via
             ``resource.setrlimit`` (Unix only).
         timeout_seconds: Wall-clock timeout enforced via
-            :class:`threading.Timer`.
+            ``signal.SIGALRM`` (Unix) or :class:`threading.Timer`
+            (Windows fallback).
     """
 
     allowed_imports: list[str] = field(default_factory=list)
@@ -443,7 +455,8 @@ class SandboxExecutor:
     violation is found a :class:`SandboxViolationError` is raised and
     the code is **not** executed.  Otherwise the code is compiled and
     executed inside a restricted namespace with a wall-clock timeout
-    (:class:`threading.Timer`) and, on Unix, CPU/memory limits
+    (``signal.SIGALRM`` on Unix, :class:`threading.Timer` on Windows)
+    and, on Unix, CPU/memory limits
     (:func:`resource.setrlimit`).
 
     When the optional ``RestrictedPython`` package is available its
@@ -560,36 +573,56 @@ class SandboxExecutor:
         return compile(code, "<sandbox>", "exec")
 
     def _run_with_limits(self, compiled: Any, namespace: dict[str, Any]) -> Any:
-        """Execute ``compiled`` with timeout and resource limits."""
+        """Execute ``compiled`` with timeout and resource limits.
+
+        On Unix a real timeout interrupt is achieved via ``signal.SIGALRM``
+        which raises :class:`SandboxTimeoutError` from inside the running
+        ``exec`` call (unlike :class:`threading.Timer` which cannot interrupt
+        a blocking ``exec``).  On platforms without ``SIGALRM`` we fall back
+        to a best-effort :class:`threading.Timer`.
+        """
         timeout = self._config.timeout_seconds
-        timer: Optional[threading.Timer] = None
         error_box: list[BaseException] = []
 
-        def _on_timeout() -> None:
-            error_box.append(SandboxTimeoutError(
-                f"Execution exceeded timeout of {timeout}s."
-            ))
-
-        timer = threading.Timer(timeout, _on_timeout)
-        timer.daemon = True
-
+        # Apply CPU and memory limits (Unix).
         old_limits = self._apply_resource_limits()
         try:
-            timer.start()
-            exec(compiled, namespace)  # noqa: S102 - intentional sandboxed exec
-        except SandboxTimeoutError:
-            raise
-        except Exception as exc:
-            if error_box and isinstance(error_box[0], SandboxTimeoutError):
-                raise error_box[0] from exc
-            raise
-        finally:
-            if timer is not None:
-                timer.cancel()
-            self._restore_resource_limits(old_limits)
+            if _HAS_SIGNAL:
+                # Real timeout interrupt via SIGALRM (Unix only).
+                def _timeout_handler(signum, frame):  # noqa: ARG001
+                    raise SandboxTimeoutError(
+                        f"Execution exceeded timeout of {timeout}s."
+                    )
 
-        if error_box:
-            raise error_box[0]
+                old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(timeout)
+                try:
+                    exec(compiled, namespace)  # noqa: S102 - sandboxed exec
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, old_handler)
+            else:
+                # Windows fallback: threading.Timer (best effort -- cannot
+                # actually interrupt a running exec, but records the timeout).
+                timer = threading.Timer(
+                    timeout,
+                    lambda: error_box.append(
+                        SandboxTimeoutError(
+                            f"Execution exceeded timeout of {timeout}s."
+                        )
+                    ),
+                )
+                timer.daemon = True
+                timer.start()
+                try:
+                    exec(compiled, namespace)  # noqa: S102 - sandboxed exec
+                finally:
+                    timer.cancel()
+
+                if error_box:
+                    raise error_box[0]
+        finally:
+            self._restore_resource_limits(old_limits)
 
         with self._lock:
             self._namespace = namespace
@@ -601,11 +634,13 @@ class SandboxExecutor:
         if not _HAS_RESOURCE:
             return None
         try:
-            old_cpu = resource.getrusage(resource.RUSAGE_SELF).ru_utime
+            old_cpu = resource.getrlimit(resource.RLIMIT_CPU)
             old_mem = resource.getrlimit(resource.RLIMIT_AS)
             mem_bytes = self._config.max_memory_mb * 1024 * 1024
+            cpu_seconds = self._config.max_cpu_seconds
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-            return old_mem
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+            return (old_cpu, old_mem)
         except (ValueError, OSError):
             return None
 
@@ -615,7 +650,9 @@ class SandboxExecutor:
         if not _HAS_RESOURCE or old is None:
             return
         try:
-            resource.setrlimit(resource.RLIMIT_AS, old)
+            old_cpu, old_mem = old
+            resource.setrlimit(resource.RLIMIT_CPU, old_cpu)
+            resource.setrlimit(resource.RLIMIT_AS, old_mem)
         except (ValueError, OSError):
             pass
 

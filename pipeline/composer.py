@@ -151,6 +151,7 @@ class Pipeline:
         self._config: PipelineConfig = config
         self._dag: DAG = dag
         self._logger: logging.Logger = _logger
+        self._executor: Optional[ThreadPoolExecutor] = None
 
         # Run-control primitives.
         self._cancel_event: threading.Event = threading.Event()
@@ -204,6 +205,12 @@ class Pipeline:
         """Reset run-control primitives before a fresh run."""
         self._cancel_event.clear()
         self._pause_event.set()
+
+    def close(self) -> None:
+        """Clean up resources (thread pool)."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
 
     # ------------------------------------------------------------------
     # Execution
@@ -277,66 +284,71 @@ class Pipeline:
                 break
 
             # Run the layer concurrently.
-            workers = min(ctx.max_workers, len(group)) if group else 1
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                future_map: Dict[Future, str] = {}
-                for node_id in group:
-                    if progress_callback is not None:
-                        progress_callback(step, total, node_id, "start")
-                    fut = pool.submit(self._run_node, node_id, ctx)
-                    future_map[fut] = node_id
+            # 使用可复用线程池
+            max_workers = max(ctx.max_workers, max((len(g) for g in groups), default=1))
+            if self._executor is None or self._executor._max_workers < max_workers:
+                if self._executor is not None:
+                    self._executor.shutdown(wait=False)
+                self._executor = ThreadPoolExecutor(max_workers=max_workers)
+            pool = self._executor
+            future_map: Dict[Future, str] = {}
+            for node_id in group:
+                if progress_callback is not None:
+                    progress_callback(step, total, node_id, "start")
+                fut = pool.submit(self._run_node, node_id, ctx)
+                future_map[fut] = node_id
 
-                for fut in future_map:
-                    node_id = future_map[fut]
-                    try:
-                        outputs = fut.result()
-                    except Exception as exc:
-                        if progress_callback is not None:
-                            progress_callback(step, total, node_id, "error")
-                        self._logger.error(
-                            "Node %r failed: %s", node_id, exc
-                        )
-                        # R0-7: 节点失败时保留部分结果。
-                        # 等待同层其余 future 全部完成,收集已完成节点的输出,
-                        # 写入 ctx 的输出存储,然后抛出 RuntimeError。
-                        remaining = [
-                            f
-                            for f in future_map
-                            if f is not fut and not f.done()
-                        ]
-                        if remaining:
-                            wait(remaining, return_when=ALL_COMPLETED)
-                        for other_fut, other_id in future_map.items():
-                            if other_fut is fut:
-                                continue
-                            if other_id in results:
-                                continue
-                            if not other_fut.done():
-                                continue
-                            try:
-                                other_outputs = other_fut.result()
-                            except Exception:
-                                # 该 future 也失败了,跳过(不保留失败结果)。
-                                self._logger.debug(
-                                    "Future %r also failed: %s",
-                                    other_id, exc,
-                                )
-                                continue
-                            results[other_id] = other_outputs
-                            ctx.set_output(other_id, other_outputs)
-                            step += 1
-                            if progress_callback is not None:
-                                progress_callback(
-                                    step, total, other_id, "done"
-                                )
-                        raise RuntimeError(
-                            "Node {!r} failed: {}".format(node_id, exc)
-                        ) from exc
-                    results[node_id] = outputs
-                    ctx.set_output(node_id, outputs)
-                    step += 1
+            for fut in future_map:
+                node_id = future_map[fut]
+                try:
+                    outputs = fut.result()
+                except Exception as exc:
                     if progress_callback is not None:
-                        progress_callback(step, total, node_id, "done")
+                        progress_callback(step, total, node_id, "error")
+                    self._logger.error(
+                        "Node %r failed: %s", node_id, exc
+                    )
+                    # R0-7: 节点失败时保留部分结果。
+                    # 等待同层其余 future 全部完成,收集已完成节点的输出,
+                    # 写入 ctx 的输出存储,然后抛出 RuntimeError。
+                    remaining = [
+                        f
+                        for f in future_map
+                        if f is not fut and not f.done()
+                    ]
+                    if remaining:
+                        wait(remaining, return_when=ALL_COMPLETED)
+                    for other_fut, other_id in future_map.items():
+                        if other_fut is fut:
+                            continue
+                        if other_id in results:
+                            continue
+                        if not other_fut.done():
+                            continue
+                        try:
+                            other_outputs = other_fut.result()
+                        except Exception:
+                            # 该 future 也失败了,跳过(不保留失败结果)。
+                            self._logger.debug(
+                                "Future %r also failed: %s",
+                                other_id, exc,
+                            )
+                            continue
+                        results[other_id] = other_outputs
+                        ctx.set_output(other_id, other_outputs)
+                        step += 1
+                        if progress_callback is not None:
+                            progress_callback(
+                                step, total, other_id, "done"
+                            )
+                    raise RuntimeError(
+                        "Node {!r} failed: {}".format(node_id, exc)
+                    ) from exc
+                results[node_id] = outputs
+                ctx.set_output(node_id, outputs)
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total, node_id, "done")
 
         return results
 
