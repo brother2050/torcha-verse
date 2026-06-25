@@ -66,6 +66,7 @@ markers = [
     "placeholder_registry: marks placeholder-registry scanner / parser tests",
     "hardcoding_severity: marks hardcoding-scanner severity tests (D1)",
     "hardcoding_rules: marks hardcoding-scanner pluggable-rule tests (D1 stage three)",
+    "examples: marks examples/*.py smoke tests (import + main() presence)",
 ]
 
 # ---------------------------------------------------------------------------
