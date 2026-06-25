@@ -655,17 +655,129 @@ tests/test_training_synthetic_data.py    # ~80 行
 
 ## v1.0.0 — 生产化(后续,2026 Q4 之后)
 
-> 这部分**不**在本期路线图,只列纲要,避免忘记。
+> 这部分**不**在本期路线图,但 v1.0.0 启动前必须有 M0-M3 的
+> 落地评估 + acceptance criteria 锁定。下列 4 个 milestone 把
+> "v1.0.0 纲要" 拆成可独立排期的小段, 避免 Q4 启动时找不到
+> 起点。
 
-| 主题 | 内容 |
-|---|---|
-| ResourceBudget | 真实接调度,GPU 满了排队 |
-| RuntimeScheduler | 统一线程/异步/GPU 流 |
-| 分布式训练 | FSDP / DeepSpeed |
-| 监控 | Prometheus metrics + Grafana 面板 |
-| 多租户 | 用户隔离、配额、审计 |
-| 完整评估 | 大规模数据集、模型排行榜 |
-| 真实部署 | K8s operator、Helm chart |
+### v1.0.0 现状盘点(2026-06-25)
+
+| 主题 | v0.4.x 现状 | v1.0.0 缺口 |
+|---|---|---|
+| ResourceBudget | `infrastructure/resource_budget.py` 695 行,`ResourceBudget` + `BudgetTracker` + `AllocationHandle` + `BudgetExceededError` + `FeasibilityEstimate` 5 个类齐全,纯 stdlib。**纯同步 + fail-fast**: `allocate()` 满了立刻抛 `BudgetExceededError`,无队列/通知/超时。 | M0: 真实调度,GPU 满了排队,带超时 + notify |
+| RuntimeScheduler | 无独立模块;节点执行走 `nodes/base.py._safe_execute`(同步)。 | M0 / M1: 统一线程/异步/GPU 流; `RuntimeScheduler` 抽象(独立模块) |
+| 分布式训练 | 仅 `infrastructure/device_manager._tensor_parallel_impl` / `_pipeline_parallel_impl` 是 `safe_call` 包装的占位(待 D3 阶段三);无 FSDP / DeepSpeed 集成。 | M2: 选 backend (NCCL / Gloo / Ray), 落地 TP/PP, 不引入 DDP 之外的库 |
+| 监控 | `infrastructure/audit_log.py` 562 行(应用事件审计);`infrastructure/rate_limiter.py` 209 行(速率限制);**无** metrics endpoint / Prometheus 集成。 | M1: Prometheus `/metrics` endpoint + 自定义指标; M2: Grafana 面板 JSON 模板 |
+| 多租户 | 无独立模块;`audit_log` 已经有 user_id 字段但只做审计不做隔离。 | M3: 租户隔离(进程级 / 命名空间级) + 配额(per-tenant ResourceBudget) + 配额耗尽审计 |
+| 完整评估 | `evaluation/` 子系统(2 个 node: `evaluate_clip_score` / `evaluate_fid_score`) + 24 个 eval 测试;小数据集 + toy metric。 | M3: 大规模评估管道(批量推理 + 异步 metric) + 模型排行榜数据格式 |
+| 真实部署 | 无 Dockerfile / K8s manifest。`docs/operations.md` 第 9 节有 Docker 部署章节但只到 Dockerfile 草稿。 | M2 / M3: Dockerfile → K8s operator / Helm chart(独立仓库?) |
+
+### v1.0.0 启动条件(任一)
+
+1. 出现真实 v0.4.x 用户报"多任务并发时 OOM" / "缺 metrics 看不清利用率" / "租户互相影响" ≥ 1 个 → 立即启动对应 milestone。
+2. v0.4.x 真大模型 e2e (P6) 在 CI 跑通后 → 启动 M0(把 ResourceBudget 接到真模型加载, 验证 fail-fast vs queue 的真实差距)。
+3. 2026 Q4 时间节点到 → 强制启动 M0 (即使没有用户报问题, 也要从生产化角度收口)。
+
+### v1.0.0 Milestone 拆分
+
+#### M0 — ResourceBudget 真实调度(预计 1 周)
+
+**目标**: 把 `BudgetTracker.allocate()` 从"纯同步 fail-fast"升级为"带超时 + 排队"。
+
+**子任务**:
+1. `BudgetTracker.allocate_or_wait(name, ..., timeout_s=30.0, polling_interval=0.1) -> AllocationHandle`
+   - 满了不立即抛, 而是在 `_lock` 上 `wait(timeout_s / polling_interval)` 轮询
+   - 超时后抛 `BudgetTimeoutError(BudgetExceededError 的子类)`, 消息含 "等了 N 秒, still 缺 X GB"
+2. `BudgetTracker.notify_release()` — `release()` 释放后 `notify_all()`
+3. `AsyncBudgetTracker` — 给 `asyncio` 用的版本: `await tracker.allocate_async(...)`
+4. **新加测试**(目标 30+):
+   - 满了→等→释放→能抢到(线程级)
+   - 多个并发 wait 都被唤醒(公平性)
+   - 超时后正确抛 `BudgetTimeoutError`
+   - `with tracker.allocate_or_wait(...) as h:` 异常路径仍释放
+
+**Acceptance criteria**:
+- `tests/test_resource_budget.py` 加 30+ 排队/超时测试
+- 真模型加载失败时 (`M0 demo`): 第一个请求占 16GB, 第二个请求再要 8GB 应该等; 第一个释放后第二个拿到
+- CI smoke: `python examples/budget_queueing_demo.py` 跑通 (新增示例)
+
+**不做**: 真 GPU 满载检测(GPU 0 的 _used_vram 来自 `pynvml` / `torch.cuda.mem_get_info`); M0 只在 vRAM 数值层排队, 不真实 poll GPU。
+
+#### M1 — RuntimeScheduler 抽象(预计 1-2 周)
+
+**目标**: 把节点执行从"同步 + 隐式 GPU 流"显式化为可插拔 scheduler。
+
+**子任务**:
+1. `infrastructure/runtime_scheduler.py` 新模块(目标 ~400 行):
+   - `Scheduler` 协议(抽象): `submit(node_callable, *args, **kwargs) -> Future`
+   - `ThreadPoolScheduler` (默认, 复用 `concurrent.futures.ThreadPoolExecutor`)
+   - `ProcessPoolScheduler` (CPU 密集 fallback)
+   - `GPUScheduler` (走 `torch.cuda.Stream`, 同一 device 的 kernel 串行)
+2. `nodes/base.py._safe_execute` 改为 `scheduler.submit(node_fn, ctx)`
+3. `L4 节点` 加 `scheduler: Optional[Scheduler]` 字段(默认 None = 同步)
+4. 监控 hook: 每个 `submit()` 记录 `latency_s` / `queue_wait_s` 到 `audit_log`
+5. **新加测试**(目标 40+):
+   - 3 种 scheduler 各自的正确性
+   - 跨 scheduler 的 cancel / timeout
+   - 节点跑在 ThreadPool 上时的 GIL 行为(只验不死锁)
+   - metrics 收集(为 M2 准备)
+
+**Acceptance criteria**:
+- `tests/test_runtime_scheduler.py` 40+ 测试
+- 现有 747 个测试 0 回归(节点同步执行路径必须与之前完全一致)
+- 新加 `examples/scheduler_demo.py`: 4 个并发节点, ThreadPool + GPUScheduler 各跑 2 个
+
+#### M2 — 分布式 + 监控 + Docker(预计 2-3 周,可并行 3 个子流)
+
+**2a. 分布式**:
+- 选 backend: **Gloo**(单机能跑, 不需要 NCCL 编译), NCCL 二期
+- 落地 D3 阶段三的 TP/PP (重启 D3 deferred task): `infrastructure/device_manager._tensor_parallel_impl` 用 Gloo backend 跑通 2 卡 split
+- 不引入 `torch.distributed.fsdp` / `deepspeed` (保持纯 torch 约束)
+
+**2b. 监控**:
+- `infrastructure/metrics.py` 新模块(目标 ~300 行): `Counter` / `Gauge` / `Histogram` (用 dict 实现, 纯 stdlib)
+- `serving/app.py` 加 `/metrics` endpoint, 输出 Prometheus text format
+- 自定义指标: `tv_requests_total{node,status}` / `tv_node_latency_seconds{node,quantile}` / `tv_resource_budget_wait_seconds` / `tv_active_allocations`
+- `docs/grafana_dashboard.json` (新文件): 4 panel 模板
+
+**2c. Docker**:
+- 完善 `Dockerfile` (基于 `python:3.10-slim`, 不引入额外系统包)
+- `docker-compose.yml` (开发用): API + 一台 worker
+- 文档: `docs/deployment_docker.md`
+
+**Acceptance criteria**:
+- 分布式: `tests/test_distributed_gloo.py` (2-process 跑通, 模拟 2 卡)
+- 监控: `curl localhost:8000/metrics` 返回 200 + Prometheus text
+- Docker: `docker build .` 成功, image < 1.5 GB
+
+#### M3 — 多租户 + 大评估(预计 2 周)
+
+**3a. 多租户**:
+- `infrastructure/multi_tenant.py` 新模块: `TenantContext` / `TenantRegistry`
+- 进程内隔离: 每个 tenant 一个 `BudgetTracker` 实例(per-tenant 配额)
+- 命名空间隔离: `assets/`, `cache/`, `logs/` 按 tenant_id 分目录
+- 配额耗尽事件: 写 `audit_log` (severity=warn)
+- 鉴权: 简单 `X-Tenant-Id` header(MVP, 真实鉴权留 v1.1)
+
+**3b. 完整评估**:
+- `evaluation/leaderboard.py` 新模块: 把多次 `evaluate_*` 结果落 `evaluation/leaderboard/<model_id>.json`
+- 数据格式: `{model_id, metric_name, score, dataset, timestamp, git_sha}`
+- `examples/leaderboard_demo.py` 跑 2 个模型 toy 评估并写入 leaderboard
+
+**Acceptance criteria**:
+- 多租户: `tests/test_multi_tenant.py` 20+ 测试
+- 评估: `tests/test_evaluation.py` 加 10+ leaderboard 测试
+- 端到端: 2 个 tenant 同时跑 1 个 node, 不互相影响, 配额独立
+
+### v1.0.0 风险登记
+
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| 引入 DDP 之外的分布式库, 破坏纯 torch 约束 | 高 | 强制只用 `torch.distributed` + Gloo; 任何 PR 引入 `deepspeed` / `accelerate` 等会被硬编码扫描拦截 |
+| M0 排队 vs 真 GPU 满载不一致 | 中 | M0 文档明确 "vRAM 数值层排队, 不 poll GPU"; 真 GPU 满载检测留 v1.1 |
+| 多租户隔离走纯进程/目录, 容易被绕过 | 中 | MVP 阶段接受; v1.1 接 K8s namespace 隔离 |
+| Grafana 面板 JSON 难维护 | 低 | 只给 4 个核心 panel, 不上 templating |
+| 评估大规模数据集触发版权问题 | 中 | 用 COCO / 现有公开子集, 不爬新数据 |
 
 ---
 
