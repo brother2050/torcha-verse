@@ -191,16 +191,16 @@ class PDFLoader(BaseDocumentLoader):
             import PyPDF2  # type: ignore[import-untyped]
 
             return self._load_with_pypdf2(path, PyPDF2)
-        except ImportError:
-            pass
+        except ImportError as exc:
+            self._logger.debug("PyPDF2 unavailable, falling back to pdfplumber: %s", exc)
 
         # Fall back to pdfplumber.
         try:
             import pdfplumber  # type: ignore[import-untyped]
 
             return self._load_with_pdfplumber(path, pdfplumber)
-        except ImportError:
-            pass
+        except ImportError as exc:
+            self._logger.debug("pdfplumber unavailable, skipping PDF %s: %s", path, exc)
 
         raise ImportError(
             "PDF loading requires PyPDF2 or pdfplumber. "

@@ -42,6 +42,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from infrastructure.logger import get_logger
+
 __all__ = [
     "SandboxConfig",
     "ASTAnalyzer",
@@ -70,6 +72,10 @@ try:  # pragma: no cover - import guard
     _HAS_SIGNAL: bool = hasattr(signal, "SIGALRM") and hasattr(signal, "alarm")
 except ImportError:  # pragma: no cover - Windows
     _HAS_SIGNAL: bool = False
+
+
+#: Module-level logger for sandbox lifecycle events.
+_logger = get_logger("security.sandbox")
 
 try:  # pragma: no cover - import guard
     from RestrictedPython import compile_restricted  # type: ignore
@@ -662,8 +668,8 @@ class SandboxExecutor:
             old_cpu, old_mem = old
             resource.setrlimit(resource.RLIMIT_CPU, old_cpu)
             resource.setrlimit(resource.RLIMIT_DATA, old_mem)
-        except (ValueError, OSError):
-            pass
+        except (ValueError, OSError) as exc:
+            _logger.debug("Failed to restore resource limits: %s", exc)
 
     def __repr__(self) -> str:
         return (

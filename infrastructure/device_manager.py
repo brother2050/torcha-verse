@@ -604,7 +604,7 @@ class DeviceManager:
             if cls._instance is not None:
                 try:
                     cls._instance.cleanup_ddp()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("DDP cleanup during reset failed: %s", exc)
             cls._instance = None
             cls._initialized = False

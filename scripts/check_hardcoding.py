@@ -20,8 +20,17 @@ Detected patterns
         are excluded as they are commonly used for initialisation.
 
 3. ``path_literal``
-        String literals that look like filesystem paths (contain ``/``
-        or ``\\`` and resemble a path).
+        String literals that look like filesystem paths.  The
+        heuristic in :func:`_looks_like_path` requires the string
+        to be at least 2 chars long, to contain ``/`` or ``\\``,
+        *and* to match the :data:`_PATH_RE` strong-indicator
+        regex (absolute / home / relative-dot prefix, Windows
+        drive letter, 2+ forward-slash path segments, or a
+        forward/back-slash followed by a file extension).
+        Single-character separators such as ``"/"``, ``"\\"``,
+        ``"."``, ``"~"`` are intentionally excluded so that
+        common idiom literals like ``"/" not in value`` are not
+        misclassified.
 
 4. ``list_literal``
         List literals with more than three elements that appear inside a

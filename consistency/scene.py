@@ -130,8 +130,8 @@ def _to_tensor(image: Any) -> torch.Tensor:
         if isinstance(image, PILImage.Image):
             arr = np.array(image.convert("RGB")).astype("float32") / 255.0
             return torch.from_numpy(arr).permute(2, 0, 1)
-    except ImportError:
-        pass
+    except ImportError as exc:
+        _logger.debug("PIL/numpy import unavailable, using tensor path: %s", exc)
 
     import numpy as np
 

@@ -22,6 +22,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
+from infrastructure.logger import get_logger
+
+_logger = get_logger("nodes._helpers")
+
 __all__ = [
     "_MEGAPIXEL_PIXELS",
     "coerce_dim",
@@ -384,8 +388,8 @@ def _resolve_via_bus_or_default(
     if bus is not None and name:
         try:
             return bus.resolve(kind, name)
-        except Exception:  # noqa: BLE001 - missing kind/name is non-fatal
-            pass
+        except Exception as exc:  # noqa: BLE001 - missing kind/name is non-fatal
+            _logger.debug("ModuleBus.resolve failed for kind=%s name=%s: %s", kind, name, exc)
     factory = _get_default(default_kind)
     if factory is None:
         # Lazy install an echo backend so the framework never raises

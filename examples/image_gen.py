@@ -76,14 +76,16 @@ def main() -> None:
     print(f"    steps:        {out1.get('steps')}")
     print(f"    elapsed:      {elapsed1:.2f}s")
 
-    # --- 2. chained pipeline (skip when source_image chain is
-    # affected by the pre-existing image_upscale tensor-or
-    # logic, see nodes/image.py:612 -- the v0.4.x P0 path here
-    # is the single-node demo above) ---
-    print("\n[2] image_txt2img (chained pipeline -- disabled due")
-    print("     to a pre-existing upstream tensor/bool check)")
-    print("     in image_upscale; v0.4.x P0 single-node demo above")
-    print("     is the supported entry point for now.")
+    # --- 2. (chained pipeline omitted) ---
+    # A previous version of this demo ran an
+    # ``image_txt2img -> image_upscale`` chained pipeline, but the
+    # upstream ``image_upscale`` node has a pre-existing
+    # tensor/bool check (see ``nodes/image.py:612``) that breaks
+    # the chain when the source image is a dict.  This v0.4.x P0
+    # example intentionally focuses on the single-node demo
+    # above; the chained pipeline is a known gap (see
+    # ``docs/open_items.md`` D5) and will be revisited in v0.4.1+
+    # once the upscale node accepts both tensor and dict inputs.
 
     print("\nDemo complete!")
 

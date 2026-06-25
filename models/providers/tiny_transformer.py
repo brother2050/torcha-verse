@@ -441,8 +441,8 @@ def save_tiny_transformer(
     except Exception:
         try:
             os.unlink(tmp_name)
-        except OSError:
-            pass
+        except OSError as exc:
+            _logger.debug("Failed to remove temp file %s: %s", tmp_name, exc)
         raise
 
     _logger.info(

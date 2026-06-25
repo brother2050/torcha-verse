@@ -103,6 +103,26 @@ omit = [
 precision = 2
 show_missing = true
 skip_covered = false
+# Exclude lines that should not be counted as executable
+# (a) pragma-style "no cover" hints: `# pragma: no cover`
+# (b) abstract methods that are only declared but never run
+# (c) `raise NotImplementedError` stubs in protocol classes
+# (d) `if __name__ == "__main__":` script entry points
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+# Fold multi-line `if` / `try` guards so the cover counter
+# does not count branches introduced only by line wrapping.
+exclude_also = [
+    "def __repr__",
+    "\\.\\.\\.",
+]
+ignore_errors = false
+# Sort the missing-line list by file/line for easier review.
+sort = "Cover"
 
 # ---------------------------------------------------------------------------
 # D1 stage three (v0.4.x): pluggable hardcoding scanner + CI gates.

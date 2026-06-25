@@ -666,8 +666,8 @@ class SFTTrainer:
 
                 merge_lora(self.model)
                 self._logger.info("Merged LoRA weights before saving.")
-            except ImportError:
-                pass
+            except ImportError as exc:
+                self._logger.debug("LoRA merge unavailable, saving raw weights: %s", exc)
 
         return self.checkpoint_manager.save_weights_only(self.model, path)
 

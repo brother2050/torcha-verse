@@ -1,0 +1,78 @@
+name: Nightly
+
+# 跑 v0.4.x 默认跳过的 53 个测试 (slow / gpu / eval markers)。
+# 触发: 每天 UTC 02:00 一次 + workflow_dispatch 手动触发。
+# 不阻塞 PR, 仅在 main 推送后调度。
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tests/**"
+      - ".github/workflows/nightly.yml"
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsndfile1
+
+      - name: Install PyTorch (CPU)
+        run: |
+          pip install --no-cache-dir \
+            torch==2.1.0+cpu \
+            torchvision==0.16.0+cpu \
+            torchaudio==2.1.0+cpu \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install project + dev extras
+        run: |
+          pip install --no-cache-dir -e ".[dev]"
+          pip install --no-cache-dir open_clip_torch
+
+      - name: CI Gates (hardcoding + placeholders)
+        run: |
+          python scripts/check_ci_gates.py
+
+      - name: Nightly tests (slow + gpu + eval)
+        # 跑默认被 -m "not gpu" 跳过的 53 个, 验证 slow 路径
+        # 不会随时间回归。gpu 标记在 CPU runner 上大多会 mark
+        # skip (缺 CUDA), 这是预期。
+        run: |
+          python -m pytest tests/ -q --no-header \
+            -m "slow or gpu or eval" \
+            --tb=short \
+            --maxfail=10
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-failure-log
+          path: |
+            pytest-*.log
+            .pytest_cache/v/cache/lastfailed
+          if-no-files-found: ignore
+          retention-days: 7

@@ -918,8 +918,8 @@ class PluginManager:
             try:
                 if tmp is not None:
                     tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._logger.debug("Failed to remove temp plugin state file: %s", exc)
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
