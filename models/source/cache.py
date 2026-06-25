@@ -547,8 +547,8 @@ class ModelCache:
         except Exception:
             try:
                 os.unlink(tmp)
-            except OSError:
-                pass
+            except OSError as exc:
+                _logger.debug("Cache: temp file cleanup %s failed: %s", tmp, exc)
             raise
 
     # ------------------------------------------------------------------
@@ -616,12 +616,12 @@ class ModelCache:
                 elif entry.is_dir():
                     try:
                         entry.rmdir()
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        _logger.debug("Cache cleanup: rmdir %s failed: %s", entry, exc)
             try:
                 target.rmdir()
-            except OSError:
-                pass
+            except OSError as exc:
+                _logger.debug("Cache cleanup: rmdir %s failed: %s", target, exc)
             return True
 
     def __repr__(self) -> str:

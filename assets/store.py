@@ -38,6 +38,10 @@ from uuid import uuid4
 
 from infrastructure.logger import get_logger
 
+#: Module-level logger for free functions / static helpers in
+#: this module that do not have a ``self`` to attach a logger to.
+_logger = get_logger("assets.store")
+
 from .base import Asset, AssetRef, AssetRev
 from .types import AssetStatus, AssetType
 
@@ -711,9 +715,9 @@ class AssetStore:
         try:
             staging_path.unlink()
         except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+            return
+        except OSError as exc:
+            _logger.debug("Failed to remove staging file %s: %s", staging_path, exc)
 
     @staticmethod
     def _hash_file(path: Path) -> str:

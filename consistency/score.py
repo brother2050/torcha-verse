@@ -312,8 +312,8 @@ def _try_load_real_extractors(device: torch.device) -> Dict[str, Any]:
                 return F.normalize(self.visual(x), dim=-1)
 
         result["clip"] = _OpenCLIPAdapter(model)
-    except Exception:  # noqa: BLE001 - any failure keeps the placeholder
-        pass
+    except Exception as exc:  # noqa: BLE001 - any failure keeps the placeholder
+        _logger.debug("open_clip initialization failed: %s", exc)
 
     # ---- DINOv2 via torch.hub (fallback) ---------------------------------
     try:
@@ -331,8 +331,8 @@ def _try_load_real_extractors(device: torch.device) -> Dict[str, Any]:
                 return F.normalize(self.model(x), dim=-1)
 
         result["dino"] = _DINOv2Adapter(backbone)
-    except Exception:  # noqa: BLE001 - any failure keeps the placeholder
-        pass
+    except Exception as exc:  # noqa: BLE001 - any failure keeps the placeholder
+        _logger.debug("DINOv2 backbone init failed: %s", exc)
 
     return result
 

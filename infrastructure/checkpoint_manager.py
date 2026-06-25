@@ -29,6 +29,11 @@ import torch.nn as nn
 
 from .logger import get_logger
 
+#: Module-level logger for module-level helpers and the
+#: ``random_state`` / ``rng`` section that operates outside
+#: the class scope.
+_logger = get_logger("infrastructure.checkpoint_manager")
+
 __all__ = ["CheckpointManager", "CheckpointBackend", "LocalCheckpointBackend"]
 
 # Optional safetensors dependency.
@@ -577,8 +582,8 @@ class CheckpointManager:
             import numpy as np
 
             states["numpy"] = np.random.get_state()
-        except Exception:  # pragma: no cover - numpy optional
-            pass
+        except Exception as exc:  # pragma: no cover - numpy optional
+            _logger.debug("Skipping numpy RNG state capture: %s", exc)
         states["torch"] = torch.get_rng_state()
         if torch.cuda.is_available():
             states["torch_cuda"] = torch.cuda.get_rng_state_all()
@@ -596,8 +601,8 @@ class CheckpointManager:
                 import numpy as np
 
                 np.random.set_state(states["numpy"])
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as exc:  # pragma: no cover
+                _logger.debug("Skipping numpy RNG state restore: %s", exc)
         if "torch" in states:
             torch.set_rng_state(states["torch"])
         if "torch_cuda" in states and torch.cuda.is_available():

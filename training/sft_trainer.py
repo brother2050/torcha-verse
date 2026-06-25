@@ -739,6 +739,6 @@ class SFTTrainer:
         if self.lr_scheduler is not None:
             try:
                 return self.lr_scheduler.get_last_lr()[0]
-            except (AttributeError, IndexError):
-                pass
+            except (AttributeError, IndexError) as exc:
+                self._logger.debug("lr_scheduler.get_last_lr() failed, falling back: %s", exc)
         return self.optimizer.param_groups[0]["lr"]

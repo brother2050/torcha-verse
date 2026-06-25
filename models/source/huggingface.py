@@ -621,8 +621,8 @@ class HuggingFaceSource:
                             finished=False,
                         )
                     )
-                except Exception:  # noqa: BLE001 - progress must never break the download
-                    pass
+                except Exception as exc:  # noqa: BLE001 - progress must never break the download
+                    _logger.debug("progress update (started) suppressed: %s", exc)
             try:
                 body, resp_headers = self._transport.get_bytes(
                     url, headers=self._auth_headers()
@@ -664,8 +664,8 @@ class HuggingFaceSource:
                                 error=last_error,
                             )
                         )
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        _logger.debug("progress update (retry failure) suppressed: %s", exc)
                 continue
             # HF exposes the blob sha256 via x-linked-etag (the
             # Git LFS pointer) and the git blob sha via the
@@ -701,8 +701,8 @@ class HuggingFaceSource:
                                 error="checksum mismatch",
                             )
                         )
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        _logger.debug("progress update (checksum mismatch) suppressed: %s", exc)
                 raise ChecksumMismatch(
                     source="huggingface",
                     repo_id=repo_id,
@@ -723,8 +723,8 @@ class HuggingFaceSource:
                             error="",
                         )
                     )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    _logger.debug("progress update (finished) suppressed: %s", exc)
             return FileDownload(
                 name=name,
                 data=body,

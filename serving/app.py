@@ -259,8 +259,8 @@ def create_app() -> FastAPI:
                 if not filter_result.passed:
                     yield f"data: {json.dumps({'error': 'Output filtered'})}\n\n"
                     return
-            except Exception:
-                pass  # filter errors should not block the stream
+            except Exception as exc:
+                svc._logger.debug("filter (SSE chunk) failed; passing through: %s", exc)
 
             data = {
                 "id": _generate_id(),
@@ -394,8 +394,8 @@ def create_app() -> FastAPI:
                 if not filter_result.passed:
                     yield f"data: {json.dumps({'error': 'Output filtered'})}\n\n"
                     return
-            except Exception:
-                pass  # filter errors should not block the stream
+            except Exception as exc:
+                svc._logger.debug("filter (SSE chunk) failed; passing through: %s", exc)
 
             data = {
                 "id": _generate_id(),
@@ -912,8 +912,8 @@ def create_app() -> FastAPI:
                 if not filter_result.passed:
                     yield f"data: {json.dumps({'error': 'Output filtered'})}\n\n"
                     return
-            except Exception:
-                pass  # filter errors should not block the stream
+            except Exception as exc:
+                svc._logger.debug("filter (SSE chunk) failed; passing through: %s", exc)
 
             data = {
                 "id": _generate_id(),

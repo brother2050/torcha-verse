@@ -46,6 +46,10 @@ import yaml
 from .logger import get_logger
 from .resource_budget import ResourceBudget
 
+#: Module-level logger for module-scope helpers (e.g. nested
+#: ``_get_float`` / ``_get_int`` inside ``_make_budget``).
+_logger = get_logger("infrastructure.config_center")
+
 __all__ = ["ConfigCenter", "ResourceBudget", "get_config"]
 
 
@@ -706,8 +710,12 @@ class ConfigCenter:
                 if candidate in section:
                     try:
                         return float(section[candidate])
-                    except (TypeError, ValueError):
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        _logger.debug(
+                            "budget[%s] float conversion failed, using default: %s",
+                            candidate,
+                            exc,
+                        )
             return default
 
         def _get_int(key: str, default: int) -> int:
@@ -715,8 +723,12 @@ class ConfigCenter:
                 if candidate in section:
                     try:
                         return int(section[candidate])
-                    except (TypeError, ValueError):
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        _logger.debug(
+                            "budget[%s] int conversion failed, using default: %s",
+                            candidate,
+                            exc,
+                        )
             return default
 
         return ResourceBudget(
@@ -813,8 +825,10 @@ class ConfigCenter:
                 if acquired and instance is not None:
                     try:
                         instance._lock.release()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _logger.debug(
+                            "Failed to release config_center singleton lock: %s", exc
+                        )
 
 
 # ---------------------------------------------------------------------------

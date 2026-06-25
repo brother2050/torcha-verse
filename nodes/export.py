@@ -31,6 +31,11 @@ from typing import Any, Dict, List, Optional
 from security.input_sanitizer import InputSanitizer
 
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+from infrastructure.logger import get_logger
+
+#: Module-level logger for module-scope helpers / fallback
+#: encoders in this file.
+_logger = get_logger("nodes.export")
 
 
 # ---------------------------------------------------------------------------
@@ -561,8 +566,8 @@ def _encode_image(image: Any, fmt: str) -> bytes:
             buf = BytesIO()
             pil_image.save(buf, format=pil_format)
             return buf.getvalue()
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            _logger.debug("PIL image encoding for %s failed: %s", pil_format, exc)
     # Fallback: 32-byte stub.  The first 8 bytes identify the format so
     # downstream readers can distinguish the placeholder.
     return f"STUB-{pil_format:>4}".encode("ascii") + b"\x00" * 24
@@ -608,10 +613,10 @@ def _encode_video(video: Any, fmt: str, fps: int) -> bytes:
                 writer.release()
                 with open(tmp, "rb") as handle:
                     return handle.read()
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                _logger.debug("OpenCV video encoding failed, will return stub: %s", exc)
+    except Exception as exc:
+        _logger.debug("Video encode outer fallback: %s", exc)
     return f"STUB-{fmt_norm:>4}".encode("ascii") + b"\x00" * 24
 
 
@@ -640,16 +645,17 @@ def _encode_audio(audio: Any, fmt: str, sample_rate: int) -> bytes:
                 buf = BytesIO()
                 wavfile.write(buf, sample_rate, data.astype("int16"))
                 return buf.getvalue()
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as exc:  # pragma: no cover
+                _logger.debug("scipy.io.wavfile encoding failed, will hand-roll: %s", exc)
             # Hand-rolled RIFF/WAVE header (44 bytes) + zeros fallback.
             try:
                 pcm = data.astype("<i2").tobytes()
-            except Exception:
+            except Exception as exc:
+                _logger.debug("WAV: int16 cast failed, using zeros: %s", exc)
                 pcm = b"\x00" * (sample_rate * 2)
             return _wav_header(len(pcm), sample_rate, 1, 16) + pcm
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Audio encode outer fallback: %s", exc)
     return f"STUB-{fmt_norm:>4}".encode("ascii") + b"\x00" * 24
 
 

@@ -4,7 +4,35 @@
 
 ## [Unreleased]
 
-## [v0.4.0] - 2026-06-25
+## [v0.4.1] - 2026-06-25
+
+### B 档: silent degrade 全清 (B1, 38 → 0)
+
+v0.4.0 后 38 处 silent degrade 全部补 `_logger.debug` (或
+`self._logger.debug` / `svc._logger.debug`):
+
+- **B1 跨 11 个文件**:
+  - `nodes/export.py` (5 处: PIL/BytesIO / OpenCV / scipy.io.wavfile / int16 cast / outer fallback)
+  - `models/source/huggingface.py` (4 处: progress update retry/checksum/started/finished)
+  - `consistency/score.py` (3 处: open_clip / DINOv2 / PIL/numpy)
+  - `infrastructure/config_center.py` (3 处: budget float / int conversion / lock release)
+  - `models/source/cache.py` (3 处: tmp file unlink / rmdir entry / rmdir target)
+  - `serving/app.py` (3 处: SSE chunk filter x3)
+  - `tools/python_executor.py` (3 处: tmp file unlink / RLIMIT_AS / outer)
+  - `assets/store.py` (2 处: staging FileNotFoundError / OSError)
+  - `infrastructure/checkpoint_manager.py` (2 处: numpy RNG capture / restore)
+  - `rag/loaders/document_loader.py` (2 处: PyPDF2 / pdfplumber fallback)
+  - `training/sft_trainer.py` (2 处: LoRA merge / lr_scheduler.get_last_lr)
+  - `consistency/scene.py` (1 处: PIL/numpy fallback)
+  - `models/providers/tiny_transformer.py` (1 处: tmp file unlink in except)
+  - `infrastructure/device_manager.py` (1 处: cleanup_ddp during reset)
+  - `plugins/manager.py` (1 处: tmp plugin state file)
+  - `security/sandbox.py` (1 处: resource limit restore)
+  - `nodes/_helpers.py` (1 处: ModuleBus.resolve non-fatal)
+
+总计 38 处全部补 warning, scanner 计数 38 → 0。
+
+### 之前的历史记录
 
 ### A 档: 工程规约失约收口 (CI 入口 / 文档口径 / 文档索引)
 
@@ -722,3 +750,4 @@ CI 上 31 个新测试覆盖 4 个模态的端到端 forward pass。
 ---
 
 [v0.4.0]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.0
+[v0.4.1]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.1

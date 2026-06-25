@@ -347,8 +347,8 @@ class PythonExecutorTool(BaseTool):
         finally:
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as exc:
+                self._logger.debug("Python exec: tmp file cleanup %s failed: %s", tmp_path, exc)
 
     # ------------------------------------------------------------------
     # Internals
@@ -385,12 +385,12 @@ class PythonExecutorTool(BaseTool):
             mem_bytes = self.memory_limit_mb * 1024 * 1024
             try:
                 resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-            except (ValueError, OSError):
+            except (ValueError, OSError) as exc:
                 # RLIMIT_AS may be unavailable on some platforms.
-                pass
-        except Exception:
+                self._logger.debug("RLIMIT_AS setrlimit failed (best-effort): %s", exc)
+        except Exception as exc:
             # Resource limits are best-effort; never crash the child.
-            pass
+            self._logger.debug("Resource limit setup failed: %s", exc)
 
     @staticmethod
     def _extract_return_value(stdout: str) -> Any:
