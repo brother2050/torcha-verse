@@ -55,24 +55,48 @@
 
 ## D3 — device_manager TP/PP 占位与 placeholder 集中化
 
-**现状**
-- `infrastructure/device_manager.py` 中存在 `raise NotImplementedError`,在单 GPU 环境下调用会直接抛错,影响开发期体验。
-- D2 审计出的 42 处 `pass` / `NotImplementedError` 分散在 18 个文件,缺少集中视图,后续维护成本高。
+**状态**:阶段一(device_manager `safe_call` 包装) + 阶段二
+(`docs/placeholder_registry.md` 集中化 + CI 闸口) **均已完成
+2026-06-25**。剩余 D3 阶段三(集中化迁移到 `infrastructure/error_helper`
+之外的统一 API 化)待分布式 backend 选定后重启。
 
-**为什么延后**
+**现状**
+- `infrastructure/device_manager.py` 中 `raise NotImplementedError` 已通过
+  `safe_call` 包装,在单 GPU 环境下调用不抛错。
+- D2 审计出的 47 处 `pass` / `NotImplementedError` 已集中到
+  `docs/placeholder_registry.md`,按 5 类(protocol / tp_pp / protocol_stub
+  / degrade_try_except / degrade_noop)登记。`scripts/check_placeholders.py`
+  CI 闸口可拦截未登记的新占位。
+- 22 个新测试覆盖 scanner / parser / 差集查询 + 端到端(真实 project
+  scan 0 unregistered)。
+
+**为什么延后(阶段三)**
 - TP/PP 的实际实现依赖分布式调度框架(目前尚未选定 backend:NCCL / Gloo / Ray),提前实现会带来返工。
-- placeholder 集中化需要先有统一的 `infrastructure/error_helper.py` 的 `safe_call` API,以及降级协议约定。
+- placeholder 集中化已经做完了"集中视图 + 闸口",但"统一降级协议"仍在
+  `infrastructure/error_helper.safe_call` 单点。阶段三要把分散的
+  `try: ... except Exception: pass` 也迁到 `safe_call` 风格(目前仍是
+  best-effort 降级路径,因为很多 try/except 是合理的资源清理)。
 
 **再次启动条件(任一)**
-1. 分布式 backend 选定,单卡/多卡策略明确。
-2. `safe_call` API 稳定并文档化,接入 ≥ 1 个真实模块。
-3. 准备好投入 ≥ 1 个工作日做"集中化 → 灰度 → 收口"。
+1. 分布式 backend 选定,单卡/多卡策略明确 → 重启 TP/PP 实现。
+2. 用户报告的"降级路径中 `pass` 应改显式 raise"案例 ≥ 1 个 → 重启阶段三
+   集中降级协议。
 
 **重启时要做的事**
-1. 在 `infrastructure/device_manager.py` 中把 `raise NotImplementedError` 替换为 `from .error_helper import safe_call` + 原样返回 `model` + 警告日志,保证单 GPU 环境下调用不爆。
-2. 建立 `docs/placeholder_registry.md`,集中列出所有 `pass` / `NotImplementedError`,按"协议占位 / 分布式未实现 / 降级路径"分类。
-3. 统一相关 docstring,统一指向 D3,让所有占位都有单一来源的说明。
-4. 在 `pyproject.toml` 里把"未在 placeholder_registry 注册的 pass/NotImplementedError"设为 lint 必过项。
+1. 在 `infrastructure/device_manager.py` 中把 `_tensor_parallel_impl` /
+   `_pipeline_parallel_impl` 由 `safe_call` 包装升级为真实 TP/PP 实现
+   (NCCL / Gloo / Ray backend)。同步从 `docs/placeholder_registry.md`
+   删除对应条目 #8 / #9。
+2. 对 D2 审计中 32 处 `degrade_try_except` 进行逐个复审:有用户报错的
+   改成显式 raise,继续 best-effort 的标记到 `safe_call` 风格并补充测试。
+3. 升级 `scripts/check_placeholders.py`,对 `degrade_try_except` 类别
+   增加"必须包含 `logger.warning`"的强制约束(目前无此约束)。
+
+**已完成(2026-06-25)**
+- 阶段一:`infrastructure/device_manager.py` 已走 `safe_call` 包装,单卡环境不爆。
+- 阶段二:`docs/placeholder_registry.md` + `infrastructure/placeholder_registry.py`
+  + `scripts/check_placeholders.py` + `tests/test_placeholder_registry.py`
+  (22 个测试)全部上线,581 个全量测试 + scanner 双 0 失败。
 
 ---
 

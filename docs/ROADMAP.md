@@ -23,11 +23,46 @@
 | **P4** | performance / training 补基础测试 | **完成 2026-06-25** | 1 周 |
 | **P5** | examples 重写(对齐 30 节点) | **完成 2026-06-25** | 1 周 |
 | **P5** | ROADMAP + DEFERRED_TASKS 维护 | 进行中 | 持续 |
+| **D3 阶段二** | Placeholder Registry 集中化 | **完成 2026-06-25** | 1 天 |
 
 > P0 实际改为"项目自有 tiny transformer + 字节级 tokenizer"路线(纯 torch,
 > 不引入 transformers / diffusers 等外部依赖,见 `docs/DEFERRED_TASKS.md`)。
 > 真实大模型(Qwen2.5 / SDXL-Turbo)拉取仍归 P2 fetch 子系统,但 v0.4.x
 > 周期不参与 e2e 跑通,留待 v1.0.0。
+
+---
+
+## D3 阶段二 — Placeholder Registry 集中化 ✅ 完成 2026-06-25
+
+**目标**:把 D2 审计出的 47 处 `pass` / `NotImplementedError` 集中到
+`docs/placeholder_registry.md` 单一来源,加 CI 闸口拦截未登记的新占位。
+
+**新增文件**:
+- `docs/placeholder_registry.md` — 47 条占位分 5 类
+  (protocol / tp_pp / protocol_stub / degrade_try_except / degrade_noop) 登记。
+- `infrastructure/placeholder_registry.py` — 解析器 + 扫描器 + 差集查询
+  (纯 stdlib,无依赖)。
+- `scripts/check_placeholders.py` — CI 入口,扫描全项目并与 registry 求
+  差集,`exit 1` 失败。
+- `tests/test_placeholder_registry.py` — 22 个测试,含**端到端**:真实
+  project registry + 真实 project scan 应当 0 unregistered。
+
+**升级文件**:
+- `infrastructure/device_manager.py` 顶部注释 — 显式引用 registry 中
+  `_tensor_parallel_impl` / `_pipeline_parallel_impl` 的条目编号 (#8 / #9)
+  + D3 重启条件,让"占位在哪儿"和"何时重启"解耦。
+- `pyproject.toml` 注册 `placeholder_registry` marker。
+
+**关键能力**:
+- 行内 `# placeholder-registry: ignore` 标记:写文档 / docstring 时
+  可以提及关键字不被 scanner 误报。
+- docstring 反引号包裹的 `\`pass\`` / `\`NotImplementedError\`` 关键字
+  自动跳过(描述性引用 ≠ 真占位)。
+- `--list` / `--stats` 子命令:审计时可列出所有注册条目或统计。
+
+**测试**:
+- 总测试数:559 → 581(全过,46.76s)。
+- `python scripts/check_placeholders.py` 项目级扫描 47 命中, 0 unregistered。
 
 ---
 

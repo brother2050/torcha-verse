@@ -63,6 +63,7 @@ markers = [
     "eval: marks evaluation tests (FID / CLIP-score / PSNR / SSIM / LPIPS)",
     "model_source: marks model-source tests (license check, cache, fetch)",
     "model_provider: marks local-torch model provider tests (tiny Transformer, training, L4 wiring)",
+    "placeholder_registry: marks placeholder-registry scanner / parser tests",
 ]
 
 # ---------------------------------------------------------------------------

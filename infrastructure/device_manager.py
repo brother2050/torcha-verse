@@ -22,8 +22,13 @@ from .error_helper import safe_call
 
 
 # ---------------------------------------------------------------------------
-# Distributed-parallelism placeholders (see DEFERRED_TASKS D3)
+# Distributed-parallelism placeholders
 # ---------------------------------------------------------------------------
+# These two placeholders are part of the v0.4.0 **D3** work-stream.  They
+# are documented as items #8 and #9 in :doc:`/docs/placeholder_registry`
+# (the single source of truth for all ``pass`` / ``NotImplementedError``
+# occurrences in the repo).  See also ``DEFERRED_TASKS D3`` for the
+# restart conditions.
 def _tensor_parallel_impl(
     model: nn.Module, num_devices: int
 ) -> nn.Module:
@@ -47,7 +52,8 @@ def _pipeline_parallel_impl(
 ) -> nn.Module:
     """Module-level placeholder for pipeline parallelism.
 
-    See :func:`_tensor_parallel_impl` for the rationale.
+    See :func:`_tensor_parallel_impl` for the rationale.  Registered as
+    item #9 in :doc:`/docs/placeholder_registry`.
     """
     raise NotImplementedError(
         "Pipeline parallelism is not yet implemented. See "

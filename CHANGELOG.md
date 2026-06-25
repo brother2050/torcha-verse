@@ -18,6 +18,33 @@
   视觉特征;未安装时回退到项目内的轻量占位特征提取器(随机投影,固定维度)。
 - 评分指标与 `ConsistencyScore` 数据结构保持不变,接口兼容现有调用方。
 
+### Placeholder Registry（D3 工作流集中化阶段）
+- 新建 `docs/placeholder_registry.md` 作为**占位单一来源**（single source of truth）:
+  47 处 `pass` / `NotImplementedError` 全部按 5 类（`protocol` / `tp_pp` /
+  `protocol_stub` / `degrade_try_except` / `degrade_noop`）登记，含
+  文件:行 / 上下文 / 理由。
+- 新建 `infrastructure/placeholder_registry.py`:
+  * `PlaceholderCategory` 枚举 + `PlaceholderEntry` dataclass
+  * `load_registry` 解析 markdown 表（按 heading 推断类别，宽容处理坏行）
+  * `scan_source` 扫描 Python 源文件（跳过 `tests/`、`__pycache__`、`.git/`、
+    `.venv/` 等;支持行内 `# placeholder-registry: ignore` 豁免;自动跳过
+    docstring 中用反引号引用的关键字描述）
+  * `find_unregistered` 计算 scanner - registry 差集
+  * `registry_index` 建 `(file, line) -> entry` 快速查找
+- 新建 `scripts/check_placeholders.py` CI CLI:扫描 / 校验 / 报告未注册占位
+  + 退出码 1 用于 CI gating。
+- 升级 `infrastructure/device_manager.py` 注释：`_tensor_parallel_impl` /
+  `_pipeline_parallel_impl` 现在显式引用 `placeholder_registry.md` 中
+  的条目编号 (#8 / #9) + D3 重启条件,让"占位在哪儿"和"何时重启"解耦。
+- 22 个新测试覆盖：枚举完整性 / `PlaceholderEntry.matches` / `load_registry`
+  多种格式 / heading → category 推断 / 坏行宽容 / scanner 各分支（pass /
+  NotImplementedError / ignore marker / docstring 引用 / 单文件 target /
+  不存在 target）/ `find_unregistered` 差集 / `registry_index` 查表 /
+  **端到端**（真实 project registry + 真实 project scan 应当 0 unregistered）。
+- `pyproject.toml` 注册 `placeholder_registry` marker。
+- 总测试数：559 → 581（全过，46.76s）。
+- `python scripts/check_placeholders.py` 全项目扫描 47 命中, 0 unregistered。
+
 ### 真模型跑通（v0.4.0 路线图 P0）
 - 新建 `models/providers/` 子包，纯 torch 实现项目自有 tiny Transformer LM，
   不引入 `transformers` / `diffusers` / `safetensors` 等外部依赖：
