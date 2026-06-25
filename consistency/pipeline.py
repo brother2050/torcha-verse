@@ -573,9 +573,15 @@ class ConsistencyPipeline:
                 ``[_DIM_MIN, _DIM_MAX]``。
         """
         from pipeline.composer import PipelineBuilder
+        from infrastructure.config_center import ConfigCenter
 
         self._validate_dimensions(width, height)
         builder = PipelineBuilder("consistency_generate")
+
+        # 从 ConfigCenter 读取 diffusion 默认参数（inference_config.yaml）。
+        cfg = ConfigCenter()
+        default_steps = cfg.get("diffusion.default_steps", 30)
+        default_guidance = cfg.get("diffusion.default_guidance_scale", 7.5)
 
         # 基础图像生成节点（当 character 未激活时创建）。
         # 当 character 激活时，character_apply 直接作为链的起点，
@@ -587,8 +593,9 @@ class ConsistencyPipeline:
         }
         base_inputs.update(kwargs)
         # 为必填输入提供默认值，确保 validate_inputs 校验通过。
-        base_inputs.setdefault("steps", 20)
-        base_inputs.setdefault("guidance_scale", 7.0)
+        # 优先使用 kwargs 传入值 > ConfigCenter 配置值 > 硬编码兜底值。
+        base_inputs.setdefault("steps", default_steps)
+        base_inputs.setdefault("guidance_scale", default_guidance)
 
         character_active = (
             self._character is not None
