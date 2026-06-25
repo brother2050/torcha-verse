@@ -31,9 +31,9 @@ from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
-# Reuse the PipelineService from the API server so the Web UI and the
+# Reuse the PipelineService from the service layer so the Web UI and the
 # REST API share the same Pipeline/Node back-end.
-from serving.api_server import PipelineService
+from serving.service import PipelineService
 
 try:
     import gradio as gr
@@ -43,7 +43,7 @@ except ImportError as _exc:  # pragma: no cover - dependency guard
         "Install it with: pip install gradio"
     ) from _exc
 
-__all__ = ["create_interface", "create_ui", "launch", "WebUI"]
+__all__ = ["create_interface", "launch", "WebUI"]
 
 logger = get_logger("web_ui")
 
@@ -757,10 +757,6 @@ def create_interface(
         )
 
     return demo
-
-
-# Alias kept for callers that use the ``create_ui`` name.
-create_ui = create_interface
 
 
 def launch(

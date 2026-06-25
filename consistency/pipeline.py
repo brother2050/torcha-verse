@@ -13,9 +13,6 @@ Capabilities:
   :class:`~pipeline.composer.Pipeline`。
 * :meth:`ConsistencyPipeline.to_pipeline` -- 将一致性生成流程编译为
   L5 :class:`~pipeline.composer.Pipeline`。
-* :meth:`ConsistencyPipeline.generate` -- （已弃用）直接生成单张图像。
-* :meth:`ConsistencyPipeline.generate_batch` -- （已弃用）批量生成。
-* :meth:`ConsistencyPipeline.generate_video` -- （已弃用）生成视频。
 * :meth:`ConsistencyPipeline.score` -- 评估生成输出的一致性。
 
 The pipeline delegates the actual conditioning to the three engines
@@ -40,8 +37,7 @@ calculator) and the L1/L2/L6 layers.
 
 from __future__ import annotations
 
-import warnings
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from assets.model_asset import CharacterAsset, DepthAsset, OutfitAsset, SceneAsset
 from assets.store import AssetStore
@@ -73,23 +69,11 @@ _DEFAULT_WIDTH: int = 1024
 #: Default image height for generation.
 _DEFAULT_HEIGHT: int = 1024
 
-#: Default number of video frames.
-_DEFAULT_NUM_FRAMES: int = 16
-
 #: Lower bound for image dimensions.
 _DIM_MIN: int = 64
 
 #: Upper bound for image dimensions.
 _DIM_MAX: int = 2048
-
-#: Lower bound for the number of video frames.
-_FRAMES_MIN: int = 1
-
-#: Upper bound for the number of video frames.
-_FRAMES_MAX: int = 1024
-
-#: Default consistency seed for video generation.
-_DEFAULT_VIDEO_SEED: int = 42
 
 #: Module-level logger.
 _logger = get_logger("consistency.pipeline")
@@ -207,319 +191,6 @@ class ConsistencyPipeline:
         return self._scorer
 
     # ------------------------------------------------------------------
-    # Single-image generation (已弃用，推荐使用 generate_via_pipeline)
-    # ------------------------------------------------------------------
-    def generate(
-        self,
-        prompt: str,
-        width: int = _DEFAULT_WIDTH,
-        height: int = _DEFAULT_HEIGHT,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Generate a single image with all consistency conditioning applied.
-
-        .. deprecated::
-            请改用 :meth:`generate_via_pipeline`，它通过 L5 Pipeline
-            执行生成，是推荐的一致性生成入口。
-
-        The conditioning signals (character / outfit / scene / depth)
-        are applied according to the weights in the
-        :class:`ConsistencyProfile`.  Only the assets that are
-        configured (non-``None``) and have a non-zero weight are
-        applied.
-
-        Args:
-            prompt: The text prompt describing the desired image.
-            width: Output width in pixels.  Defaults to ``1024``.
-            height: Output height in pixels.  Defaults to ``1024``.
-            **kwargs: Additional generation parameters (e.g. ``seed``,
-                ``steps``, ``guidance_scale``).
-
-        Returns:
-            A dictionary with keys:
-
-            * ``image`` -- the generated image descriptor.
-            * ``consistency_scores`` -- a :class:`ConsistencyScore`
-              (as a dict) for the output.
-            * ``metadata`` -- generation metadata (prompt, dimensions,
-              applied conditioning, profile).
-
-        Raises:
-            ValueError: If ``width`` or ``height`` are outside
-                ``[_DIM_MIN, _DIM_MAX]``.
-        """
-        warnings.warn(
-            "ConsistencyPipeline.generate() 已弃用，请改用 "
-            "generate_via_pipeline() 通过 L5 Pipeline 执行一致性生成。",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._validate_dimensions(width, height)
-        seed = kwargs.get("seed", _DEFAULT_VIDEO_SEED)
-
-        applied: Dict[str, Any] = {}
-        image: Any = {
-            "kind": "consistency_generated_image",
-            "prompt": prompt,
-            "width": width,
-            "height": height,
-            "seed": seed,
-        }
-
-        # --- Character conditioning ---
-        if (
-            self._character is not None
-            and self._profile.character_weight > 0.0
-        ):
-            char_result = self._apply_character_conditioning(
-                image, self._character, self._profile.character_weight
-            )
-            applied["character"] = char_result
-
-        # --- Outfit conditioning ---
-        if (
-            self._outfit is not None
-            and self._profile.outfit_weight > 0.0
-        ):
-            outfit_result = self._apply_outfit_conditioning(
-                image, self._outfit, self._profile.outfit_weight
-            )
-            applied["outfit"] = outfit_result
-
-        # --- Scene conditioning ---
-        if (
-            self._scene is not None
-            and self._profile.scene_weight > 0.0
-        ):
-            scene_result = self._apply_scene_conditioning(
-                image, self._scene, self._profile.scene_weight
-            )
-            applied["scene"] = scene_result
-
-        # --- Depth conditioning ---
-        if (
-            self._depth is not None
-            and self._profile.depth_weight > 0.0
-        ):
-            depth_result = self._apply_depth_conditioning(
-                image, self._depth, self._profile.depth_weight
-            )
-            applied["depth"] = depth_result
-
-        image["applied_conditioning"] = applied
-
-        # --- Consistency scoring ---
-        references = self._build_references()
-        score = self._scorer.calculate(image, references)
-
-        result = {
-            "image": image,
-            "consistency_scores": score.to_dict(),
-            "metadata": {
-                "prompt": prompt,
-                "width": width,
-                "height": height,
-                "seed": seed,
-                "profile": self._profile.to_dict(),
-                "applied_conditioning": list(applied.keys()),
-                "kwargs": dict(kwargs),
-            },
-        }
-        self._logger.debug(
-            "Generated image (prompt=%r, %dx%d, score=%s).",
-            prompt[:48], width, height, score,
-        )
-        return result
-
-    # ------------------------------------------------------------------
-    # Batch generation (已弃用，推荐使用 generate_via_pipeline)
-    # ------------------------------------------------------------------
-    def generate_batch(
-        self,
-        prompts: Sequence[str],
-        **kwargs: Any,
-    ) -> List[Dict[str, Any]]:
-        """Generate a batch of images while maintaining consistency.
-
-        .. deprecated::
-            请改用 :meth:`generate_via_pipeline`，逐个提示词调用即可。
-
-        Each prompt is generated independently but with the same
-        conditioning assets and profile, so that identity / outfit /
-        scene consistency is preserved across the batch.
-
-        Args:
-            prompts: A list of text prompts.
-            **kwargs: Additional generation parameters forwarded to
-                :meth:`generate`.
-
-        Returns:
-            A list of generation result dictionaries (one per prompt).
-        """
-        warnings.warn(
-            "ConsistencyPipeline.generate_batch() 已弃用，请改用 "
-            "generate_via_pipeline() 逐个执行。",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        results: List[Dict[str, Any]] = []
-        for prompt in prompts:
-            result = self.generate(prompt, **kwargs)
-            results.append(result)
-        self._logger.info(
-            "Generated batch of %d images.", len(results)
-        )
-        return results
-
-    # ------------------------------------------------------------------
-    # Video generation (已弃用)
-    # ------------------------------------------------------------------
-    def generate_video(
-        self,
-        prompt: str,
-        num_frames: int = _DEFAULT_NUM_FRAMES,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Generate a video with temporal consistency.
-
-        .. deprecated::
-            该方法仍保留但已弃用，未来将通过 L5 Pipeline 的视频节点
-            提供等效功能。
-
-        The generation enforces temporal consistency across frames:
-
-        1. The consistency seed is locked to a single value for the
-           entire video so that the base noise is correlated.
-        2. Every ``reframe_interval`` frames the conditioning features
-           are re-written to prevent drift.
-        3. Frame-to-frame drift is detected via CLIP-I distance; when
-           the drift exceeds :attr:`ConsistencyProfile.drift_threshold`
-           the offending frame is locally re-generated.
-
-        The current implementation is a placeholder that returns
-        descriptor dictionaries for each frame, but the full temporal
-        logic (seed locking, reframe intervals, drift detection +
-        re-generation) is exercised.
-
-        Args:
-            prompt: The text prompt describing the desired video.
-            num_frames: Number of frames to generate.  Defaults to
-                ``16``.
-            **kwargs: Additional generation parameters (e.g. ``seed``,
-                ``width``, ``height``).
-
-        Returns:
-            A dictionary with keys:
-
-            * ``frames`` -- a list of frame descriptors.
-            * ``consistency_scores`` -- a :class:`ConsistencyScore`
-              (as a dict) for the video.
-            * ``metadata`` -- video generation metadata (prompt,
-              num_frames, seed, drift_log, reframe_log).
-
-        Raises:
-            ValueError: If ``num_frames`` is outside
-                ``[_FRAMES_MIN, _FRAMES_MAX]``.
-        """
-        warnings.warn(
-            "ConsistencyPipeline.generate_video() 已弃用，未来将通过 "
-            "L5 Pipeline 的视频节点提供等效功能。",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if num_frames < _FRAMES_MIN or num_frames > _FRAMES_MAX:
-            raise ValueError(
-                "num_frames must be in [{}, {}], got {}.".format(
-                    _FRAMES_MIN, _FRAMES_MAX, num_frames
-                )
-            )
-
-        seed = kwargs.get("seed", _DEFAULT_VIDEO_SEED)
-        width = kwargs.get("width", _DEFAULT_WIDTH)
-        height = kwargs.get("height", _DEFAULT_HEIGHT)
-        reframe_interval = self._profile.reframe_interval
-        drift_threshold = self._profile.drift_threshold
-
-        frames: List[Dict[str, Any]] = []
-        drift_log: List[Dict[str, Any]] = []
-        reframe_log: List[int] = []
-        prev_frame: Optional[Dict[str, Any]] = None
-
-        for frame_idx in range(num_frames):
-            # --- Feature re-write every reframe_interval frames ---
-            if frame_idx % reframe_interval == 0:
-                reframe_log.append(frame_idx)
-                self._reframe_features(frame_idx, seed)
-
-            # --- Generate the frame (placeholder) ---
-            frame = {
-                "kind": "consistency_generated_frame",
-                "prompt": prompt,
-                "frame_index": frame_idx,
-                "width": width,
-                "height": height,
-                "seed": seed,
-            }
-
-            # --- Apply conditioning ---
-            if self._character is not None:
-                frame["character"] = self._character.id
-            if self._outfit is not None:
-                frame["outfit"] = self._outfit.id
-            if self._scene is not None:
-                frame["scene"] = self._scene.id
-
-            # --- Drift detection ---
-            if prev_frame is not None:
-                drift = self._detect_frame_drift(
-                    prev_frame, frame, frame_idx
-                )
-                if drift["distance"] > drift_threshold:
-                    drift_log.append(drift)
-                    # --- Local re-generation ---
-                    frame = self._regenerate_frame(
-                        prompt, frame_idx, seed, width, height
-                    )
-                    drift["regenerated"] = True
-                else:
-                    drift["regenerated"] = False
-
-            frames.append(frame)
-            prev_frame = frame
-
-        # --- Consistency scoring ---
-        references = self._build_references()
-        references["frames"] = frames
-        score = self._scorer.calculate(
-            frames[0] if frames else None, references
-        )
-
-        result = {
-            "frames": frames,
-            "consistency_scores": score.to_dict(),
-            "metadata": {
-                "prompt": prompt,
-                "num_frames": num_frames,
-                "seed": seed,
-                "width": width,
-                "height": height,
-                "temporal_consistency": self._profile.temporal_consistency,
-                "drift_threshold": drift_threshold,
-                "reframe_interval": reframe_interval,
-                "drift_log": drift_log,
-                "reframe_log": reframe_log,
-                "kwargs": dict(kwargs),
-            },
-        }
-        self._logger.info(
-            "Generated video (%d frames, %d drifts, %d reframes).",
-            num_frames,
-            len(drift_log),
-            len(reframe_log),
-        )
-        return result
-
-    # ------------------------------------------------------------------
     # Scoring
     # ------------------------------------------------------------------
     def score(self, output: Any) -> ConsistencyScore:
@@ -531,7 +202,8 @@ class ConsistencyPipeline:
 
         Args:
             output: The generation output to score (an image, a frame,
-                or a result dictionary from :meth:`generate`).
+                or a result dictionary from
+                :meth:`generate_via_pipeline`).
 
         Returns:
             A :class:`ConsistencyScore` with all six fields populated.
@@ -717,87 +389,6 @@ class ConsistencyPipeline:
                     )
                 )
 
-    def _apply_character_conditioning(
-        self,
-        image: Dict[str, Any],
-        character: CharacterAsset,
-        weight: float,
-    ) -> Dict[str, Any]:
-        """Apply character conditioning to an image.
-
-        Delegates to the :class:`CharacterEngine` when available;
-        otherwise returns a descriptor dictionary.
-        """
-        if self._character_engine is not None:
-            return self._character_engine.apply_character(
-                image, character, weight=weight
-            )
-        return {
-            "kind": "character_conditioned_image",
-            "character_id": character.id,
-            "weight": weight,
-        }
-
-    def _apply_outfit_conditioning(
-        self,
-        image: Dict[str, Any],
-        outfit: OutfitAsset,
-        weight: float,
-    ) -> Dict[str, Any]:
-        """Apply outfit conditioning to an image.
-
-        Delegates to the :class:`OutfitEngine` when available;
-        otherwise returns a descriptor dictionary.
-        """
-        if self._outfit_engine is not None:
-            return self._outfit_engine.apply_outfit(
-                image, outfit, weight=weight
-            )
-        return {
-            "kind": "outfit_conditioned_image",
-            "outfit_id": outfit.id,
-            "weight": weight,
-        }
-
-    def _apply_scene_conditioning(
-        self,
-        image: Dict[str, Any],
-        scene: SceneAsset,
-        weight: float,
-    ) -> Dict[str, Any]:
-        """Apply scene conditioning to an image.
-
-        Delegates to the :class:`SceneEngine` when available;
-        otherwise returns a descriptor dictionary.
-        """
-        if self._scene_engine is not None:
-            return self._scene_engine.apply_scene(
-                image, scene, weight=weight
-            )
-        return {
-            "kind": "scene_conditioned_image",
-            "scene_id": scene.id,
-            "weight": weight,
-        }
-
-    def _apply_depth_conditioning(
-        self,
-        image: Dict[str, Any],
-        depth: DepthAsset,
-        weight: float,
-    ) -> Dict[str, Any]:
-        """Apply depth conditioning to an image.
-
-        Returns a descriptor dictionary encoding the depth asset id,
-        method and weight.
-        """
-        return {
-            "kind": "depth_conditioned_image",
-            "depth_id": depth.id,
-            "depth_method": depth.method,
-            "weight": weight,
-        }
-
     def _build_references(self) -> Dict[str, Any]:
         """Build the references dictionary for scoring.
 
@@ -814,92 +405,6 @@ class ConsistencyPipeline:
         if self._depth is not None:
             references["depth"] = self._depth
         return references
-
-    def _reframe_features(
-        self, frame_idx: int, seed: int
-    ) -> Dict[str, Any]:
-        """Re-write conditioning features for temporal consistency.
-
-        Args:
-            frame_idx: The current frame index.
-            seed: The locked consistency seed.
-
-        Returns:
-            A descriptor dictionary for the reframe operation.
-        """
-        self._logger.debug(
-            "Reframing features at frame %d (seed=%d).",
-            frame_idx, seed,
-        )
-        return {
-            "kind": "feature_reframe",
-            "frame_index": frame_idx,
-            "seed": seed,
-        }
-
-    def _detect_frame_drift(
-        self,
-        prev_frame: Dict[str, Any],
-        curr_frame: Dict[str, Any],
-        frame_idx: int,
-    ) -> Dict[str, Any]:
-        """Detect drift between two consecutive frames.
-
-        Uses a deterministic pseudo-distance derived from the frame
-        indices as a placeholder for the real CLIP-I distance.
-
-        Args:
-            prev_frame: The previous frame descriptor.
-            curr_frame: The current frame descriptor.
-            frame_idx: The current frame index.
-
-        Returns:
-            A descriptor dictionary with keys ``frame_index``,
-            ``distance`` and ``threshold``.
-        """
-        # Placeholder: deterministic pseudo-distance based on the
-        # frame index so that the drift logic is exercised.
-        # Values span [0, 0.18] so drift exceeds the default threshold
-        # of 0.15 when frame_idx % 10 >= 8, triggering re-generation.
-        distance = (frame_idx % 10) / 50.0
-        return {
-            "frame_index": frame_idx,
-            "distance": distance,
-            "threshold": self._profile.drift_threshold,
-        }
-
-    def _regenerate_frame(
-        self,
-        prompt: str,
-        frame_idx: int,
-        seed: int,
-        width: int,
-        height: int,
-    ) -> Dict[str, Any]:
-        """Locally re-generate a frame that drifted.
-
-        Args:
-            prompt: The text prompt.
-            frame_idx: The frame index to re-generate.
-            seed: The locked consistency seed.
-            width: Frame width.
-            height: Frame height.
-
-        Returns:
-            A re-generated frame descriptor.
-        """
-        self._logger.debug(
-            "Re-generating drifted frame %d.", frame_idx
-        )
-        return {
-            "kind": "consistency_regenerated_frame",
-            "prompt": prompt,
-            "frame_index": frame_idx,
-            "width": width,
-            "height": height,
-            "seed": seed,
-            "regenerated": True,
-        }
 
     # ------------------------------------------------------------------
     # 资源释放与上下文管理器协议

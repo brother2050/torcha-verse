@@ -7,7 +7,7 @@
 * :func:`node_ctx` -- 预配置的 L4 :class:`~nodes.base.NodeContext`,含临时
   ``AssetStore`` 与默认模型配置,供节点 ``execute()`` 使用。
 * :func:`mock_model` -- 返回确定性输出的假模型对象。
-* :func:`pipeline_service` -- :class:`~serving.api_server.PipelineService` 实例。
+* :func:`pipeline_service` -- :class:`~serving.service.PipelineService` 实例。
 * :func:`pipeline_ctx` -- 编排层 :class:`~pipeline.composer.NodeContext`,其
   ``executors`` 将每个节点类型派发到对应的 L4 节点(返回占位数据,无需 GPU)。
 
@@ -100,7 +100,7 @@ def mock_model():
 @pytest.fixture
 def pipeline_service():
     """:class:`PipelineService` 实例(惰性导入,避免影响其余测试的收集速度)。"""
-    from serving.api_server import PipelineService
+    from serving.service import PipelineService
 
     return PipelineService()
 

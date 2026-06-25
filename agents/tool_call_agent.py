@@ -6,8 +6,7 @@ function calling via the model's ``chat`` interface instead of parsing
 free-text ReAct traces.
 
 The agent maintains a conversation message list, sends it to the model
-along with tool schemas, and processes any returned
-:class:`~torcha_verse.engines.text_engine.ToolCall` objects.
+along with tool schemas, and processes any returned ``ToolCall`` objects.
 """
 
 from __future__ import annotations

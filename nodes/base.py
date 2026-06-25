@@ -198,7 +198,7 @@ class NodeContext:
         logger: 节点诊断用的日志器。
         audit: 安全 / 运维事件的审计日志器。
         config: 自由格式的运行配置字典。节点从此读取默认值
-            (如 ``"default_text_model"``)。同时也是 L5 ``metadata`` 的别名。
+            (如 ``"default_text_model"``)。
         run_id: 当前运行的唯一标识。
         executors: ``node_type -> 可调用对象`` 的显式映射。每个可调用对象
             接收 ``(inputs, ctx)`` 并返回输出字典。
@@ -228,14 +228,6 @@ class NodeContext:
         self._outputs: Dict[str, Dict[str, Any]] = {}
         # 规范化 max_workers,保证至少为 1。
         self.max_workers = max(1, int(self.max_workers))
-
-    # ------------------------------------------------------------------
-    # L5 兼容属性
-    # ------------------------------------------------------------------
-    @property
-    def metadata(self) -> Dict[str, Any]:
-        """``config`` 的别名,保留 L5 管道层的历史调用习惯。"""
-        return self.config
 
     # ------------------------------------------------------------------
     # 输出存储

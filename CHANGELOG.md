@@ -3,6 +3,44 @@
 本文件记录 TorchaVerse 框架各版本的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-06-25
+
+### 架构清理 — 移除过时代码与文档
+
+本轮聚焦于移除历史遗留的孤儿模块、兼容层与过时文档，并补齐架构与操作文档，
+在保持全部测试通过的前提下完成代码库瘦身与文档对齐。
+
+#### 删除过时代码
+
+- 删除 `evaluation/` 孤儿模块（无引用的废弃评估代码）。
+- 删除 `config_manager.py` 别名（统一使用 `config_center.py`）。
+- 删除 `api_server.py` 兼容层（历史 API 入口已迁移）。
+- 删除 `consistency/pipeline.py` 中的 deprecated 方法。
+
+#### 删除过时文档
+
+- 删除 `docs/plans/` 历史规划文档（含 4.2MB 二进制字体与 JS 资源），
+  对应版本均已完成。
+
+#### 新增文档
+
+- 创建 `architecture.md` 设计文档。
+- 创建 `operations.md` 操作文档。
+- 更新 `README.md`。
+
+#### 配置与文档引用修正
+
+- 修复 `.dockerignore`：移除不存在的 `r*-deep-review/` 条目。
+- 修复 `.gitignore`：移除未使用的 `config.dev.yaml` / `config.prod.yaml` 条目。
+- 修复 `rag/retrievers/retriever.py` docstring 中对不存在
+  `torcha_verse.engines.TextEngine` 的交叉引用。
+- 修复 `agents/tool_call_agent.py` docstring 中对不存在
+  `torcha_verse.engines.text_engine.ToolCall` 的交叉引用。
+- 更新 `examples/rag_demo.py` 示例文档内容：四层架构描述更新为六层架构
+  （L1 Infrastructure → L2 Assets → L3 Core → L4 Nodes → L5 Pipeline → L6 Consistency），
+  旧组件名（ModelRegistry/TokenizerHub/KVCacheManager/MemoryManager）更新为当前组件名
+  （ModuleBus/Sampler/MemoryPool/PagedKVCache）。
+
 ## [0.3.1] - 2026-06-24
 
 ### 第二轮修复 (R0-R3) — 基础设施 / 资产 / 安全 / 插件层

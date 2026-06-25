@@ -382,7 +382,7 @@ class QueryRewriter:
 
     Args:
         model: An object with a ``generate(prompt, max_tokens) -> str``
-            method (e.g. a :class:`~torcha_verse.engines.TextEngine`).
+            method (e.g. a text generation engine).
     """
 
     def __init__(self, model: Optional[Any] = None) -> None:

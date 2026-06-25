@@ -13,4 +13,3 @@ scripts/
 Dockerfile
 .dockerignore
 .gitignore
-r*-deep-review/

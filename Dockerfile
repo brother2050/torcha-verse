@@ -30,4 +30,4 @@ RUN pip install -e .
 EXPOSE 8000
 
 # Default command
-CMD ["python", "-m", "serving.api_server", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "serving.app", "--host", "0.0.0.0", "--port", "8000"]

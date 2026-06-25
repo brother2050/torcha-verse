@@ -36,9 +36,9 @@ from infrastructure.defaults import (
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
-# Reuse the PipelineService from the API server so the CLI shares the
+# Reuse the PipelineService from the service layer so the CLI shares the
 # same Pipeline/Node back-end as the REST API and Web UI.
-from serving.api_server import PipelineService
+from serving.service import PipelineService
 
 # Plugin management commands (``torcha plugin ...``).
 from plugins.cli import plugin as plugin_group

@@ -19,7 +19,6 @@ ordered layers, each with a strictly increasing precedence:
 :class:`ConfigCenter` 提供完整的配置访问接口（``get`` / ``set`` /
 ``has`` / ``merge`` / ``to_dict``，支持点号分隔的键访问），并在此基础上
 添加分层加载、快照序列化以及 :class:`ResourceBudget` 访问器。
-``ConfigManager`` 现已合并为本类的薄别名。
 
 Example:
     >>> cc = ConfigCenter()
@@ -51,7 +50,7 @@ __all__ = ["ConfigCenter", "ResourceBudget", "get_config"]
 
 
 # ---------------------------------------------------------------------------
-# Helpers (合并自 config_manager，ConfigCenter 不再继承 ConfigManager)
+# Helpers
 # ---------------------------------------------------------------------------
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     """递归地将 ``override`` 合并到 ``base`` 中。

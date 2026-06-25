@@ -154,18 +154,20 @@ class TestConsistencyPipeline:
         assert pipe.character is None
         assert pipe.outfit is None
 
-    def test_generate_returns_expected_keys(self):
-        """generate() returns image, consistency_scores and metadata."""
+    def test_generate_via_pipeline_returns_node_outputs(self):
+        """generate_via_pipeline() returns a mapping of node_id -> outputs."""
         profile = ConsistencyProfile()
         pipe = ConsistencyPipeline(profile=profile)
-        result = pipe.generate("a cat", width=64, height=64)
-        assert "image" in result
-        assert "consistency_scores" in result
-        assert "metadata" in result
+        result = pipe.generate_via_pipeline("a cat", width=64, height=64)
+        # generate_via_pipeline returns pipeline.run(ctx): a dict mapping
+        # node IDs to their outputs.  A profile-only pipeline builds a
+        # single "base" image_txt2img node.
+        assert isinstance(result, dict)
+        assert "base" in result
 
-    def test_generate_invalid_dimensions_raises(self):
-        """generate() raises ValueError for out-of-range dimensions."""
+    def test_generate_via_pipeline_invalid_dimensions_raises(self):
+        """generate_via_pipeline() raises ValueError for out-of-range dimensions."""
         profile = ConsistencyProfile()
         pipe = ConsistencyPipeline(profile=profile)
         with pytest.raises(ValueError):
-            pipe.generate("test", width=0, height=64)
+            pipe.generate_via_pipeline("test", width=0, height=64)

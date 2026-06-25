@@ -28,7 +28,6 @@ from typing import Any, Dict, Iterator, Optional
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
-from serving.metrics import MetricsCollector  # noqa: F401 -- re-exported surface
 from serving.models import (
     AgentRequest,
     AudioRequest,
@@ -972,7 +971,7 @@ def main() -> None:
         import uvicorn
 
         uvicorn.run(
-            "serving.api_server:create_app",
+            "serving.app:create_app",
             factory=True,
             host=args.host,
             port=args.port,
@@ -987,7 +986,7 @@ def main() -> None:
 
 # Lazy app creation to avoid import side-effects (e.g. binding ports,
 # loading config at import time).  Use ``get_app()`` to obtain the
-# singleton, or reference ``serving.api_server:create_app`` with
+# singleton, or reference ``serving.app:create_app`` with
 # ``factory=True`` in uvicorn.
 app: Optional[FastAPI] = None
 

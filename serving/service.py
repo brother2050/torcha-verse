@@ -22,7 +22,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from infrastructure.cache_store import CacheStore
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.defaults import (
     DIFFUSION_GUIDANCE_SCALE,
     DIFFUSION_STEPS,
@@ -100,7 +100,7 @@ class PipelineService:
     """
 
     def __init__(self) -> None:
-        self._cfg: ConfigManager = ConfigManager()
+        self._cfg: ConfigCenter = ConfigCenter()
         self._device_manager: DeviceManager = DeviceManager()
         self._error_handler: ErrorHandler = ErrorHandler()
         self._logger = get_logger("PipelineService")

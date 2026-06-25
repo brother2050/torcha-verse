@@ -44,8 +44,6 @@ logs/
 .ipynb_checkpoints/
 
 # Environment
-config.dev.yaml
-config.prod.yaml
 .env.local
 
 # Test

@@ -46,8 +46,8 @@ Example::
     mgr = ConsistencyManager()
     profile = mgr.create_profile("default", character_weight=0.85)
     pipeline = ConsistencyPipeline(profile=profile)
-    result = pipeline.generate("a portrait of the character")
-    print(result["consistency_scores"])
+    result = pipeline.generate_via_pipeline("a portrait of the character")
+    print(result)
 """
 
 from __future__ import annotations

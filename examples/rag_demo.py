@@ -36,15 +36,15 @@ def main() -> None:
             metadata={"source": "overview.txt", "page": 1},
         ),
         Document(
-            content="The framework uses a four-layer architecture: Infrastructure, "
-                    "Core, Capability, and Application layers. Each layer is "
-                    "independently composable based on project requirements.",
+            content="The framework uses a six-layer architecture: L1 Infrastructure, "
+                    "L2 Assets, L3 Core, L4 Nodes, L5 Pipeline, and L6 Consistency. "
+                    "Each layer is independently composable based on project requirements.",
             metadata={"source": "architecture.txt", "page": 1},
         ),
         Document(
-            content="The Core Layer contains ModelRegistry, TokenizerHub, "
-                    "KVCacheManager, DiffusionScheduler, and MemoryManager. "
-                    "These components are shared across all modalities.",
+            content="The Core Layer contains ModuleBus, Sampler, MemoryPool, "
+                    "and PagedKVCache. These components are shared across "
+                    "all modalities.",
             metadata={"source": "core.txt", "page": 1},
         ),
         Document(
@@ -97,9 +97,9 @@ def main() -> None:
     # --- 6. Simulate RAG answer ---
     print("\n[6] Simulated RAG answer:")
     print("    Based on retrieved context:")
-    print("    TorchaVerse uses a four-layer architecture: Infrastructure, Core,")
-    print("    Capability, and Application layers. The Core Layer contains")
-    print("    ModelRegistry, TokenizerHub, KVCacheManager, and other shared")
+    print("    TorchaVerse uses a six-layer architecture: L1 Infrastructure, L2 Assets,")
+    print("    L3 Core, L4 Nodes, L5 Pipeline, and L6 Consistency. The Core Layer contains")
+    print("    ModuleBus, Sampler, MemoryPool, PagedKVCache, and other shared")
     print("    components for all modalities.")
 
     print("\n" + "=" * 60)

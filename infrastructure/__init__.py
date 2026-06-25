@@ -34,7 +34,6 @@ from typing import Any
 __all__ = [
     # config
     "ConfigCenter",
-    "ConfigManager",
     "get_config",
     # inference defaults
     "DIFFUSION_STEPS",
@@ -89,9 +88,7 @@ __all__ = [
 _LAZY_IMPORTS: dict[str, str] = {
     # config_center
     "ConfigCenter": "config_center",
-    # config_manager
-    "ConfigManager": "config_manager",
-    "get_config": "config_manager",
+    "get_config": "config_center",
     # defaults (the defaults module is itself lazy via __getattr__)
     "DIFFUSION_STEPS": "defaults",
     "DIFFUSION_GUIDANCE_SCALE": "defaults",
