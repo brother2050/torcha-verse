@@ -534,18 +534,14 @@ class TestEndToEnd:
             pytest.skip("whitelist file not present")
         exemptions = load_whitelist(wl)
         assert len(exemptions) > 0, "whitelist should have entries"
-        # Scan a small slice to keep the test fast.
-        scan_root = project_root / "training"
-        if not scan_root.is_dir():
-            pytest.skip("training/ not present")
-        violations = scan_directory(scan_root, exemptions)
-        # The whitelist contains entries for training/sft_trainer.py
-        # numeric literals (downgraded to info) and protocol_format
-        # string literals (also info).  We expect at least a few
-        # info-tagged hits -- if everything is still critical, the
-        # whitelist is broken.
+        # Scan the whole project so we exercise the full set of
+        # batch exemptions.  D1 stage three terminated all the
+        # critical hits; the few remaining ``info`` violations
+        # come from log messages and structural init heuristics
+        # (e.g. ``torcha-verse/__init__.py``).
+        violations = scan_directory(project_root, exemptions)
         info_hits = [v for v in violations if v.severity == SEVERITY_INFO]
         assert len(info_hits) > 0, (
-            "Expected at least one info-tagged violation in training/, "
+            "Expected at least one info-tagged violation, "
             "got 0. The whitelist may not be applying."
         )

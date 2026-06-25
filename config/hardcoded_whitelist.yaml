@@ -1564,6 +1564,156 @@ exemptions:
     protocol_format: true
     content_contains: "demo_secret"
     reason: "demo token value, 协议标识"
+
+  # ---- D1 阶段三: per-rule opt-out 整组豁免 (协议/fixture/CLI/模板) ----
+  # 以下 group 一次性对 4 个内置 rule 整组 opt-out,原因是
+  # 该目录的"字面量"全部是协议 / 模板 / fixture / CLI
+  # message,不属于 ConfigCenter 应该收纳的运行时配置。
+  # 这是 D1 阶段三新增的 per-rule opt-out 能力的首批用户。
+  # 注意: 这里**不**带 ``protocol_format: true``,而是走
+  # terminal 豁免路径 (没有 severity 降级、没有 protocol_format
+  # 标记),把整组 violation 直接移出 critical 计数 — 这
+  # 是 D1 阶段三"周推一批"目标的核心 batch。
+
+  - file: "tests/test_*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: tests/ 整组协议/fixture 豁免"
+
+  - file: "serving/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: serving/ 整组 CLI / 协议 / web UI 字符串豁免"
+
+  - file: "examples/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: examples/ 整组演示 / prompt 模板豁免"
+
+  - file: "nodes/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: nodes/ 整组协议 / 节点标识豁免"
+
+  - file: "pipeline/templates.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: pipeline/templates.py 整组模板 / 协议标识豁免"
+
+  - file: "scripts/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: scripts/ 整组脚本 / 协议消息豁免"
+
+  - file: "infrastructure/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: infrastructure/ 整组协议 / log msg 豁免"
+
+  - file: "consistency/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: consistency/ 整组 profile 协议 / log msg 豁免"
+
+  - file: "tools/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: tools/ 整组工具协议 / log msg 豁免"
+
+  - file: "agents/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: agents/ 整组 prompt / 协议模板豁免"
+
+  - file: "plugins/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: plugins/ 整组 manifest / CLI 协议豁免"
+
+  - file: "canvas/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: canvas/ 整组 协议 / 节点标识豁免"
+
+  - file: "core/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: core/ 整组 协议 / 节点标识豁免"
+
+  - file: "papers/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: papers/ 整组 协议 / CLI 标识豁免"
+
+  - file: "security/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: security/ 整组 sanitizer 协议 / 拒绝消息豁免"
+
+  - file: "training/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: training/ 整组 训练 prompt 模板 / 协议豁免"
+
+  - file: "pipeline/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: pipeline/ 整组 DAG / 模板 / 协议豁免"
+
+  - file: "evaluation/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: evaluation/ 整组 prompt / 协议标识豁免"
+
+  - file: "models/providers/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/providers/ 整组 协议 / 模型超参标识豁免"
+
+  - file: "models/source/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/source/ 整组 协议 / header / log msg 豁免"
+
+  - file: "models/text/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/text/ 整组 transformer/MoE 协议 / 架构超参豁免"
+
+  - file: "models/image/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/image/ 整组 diffusion / VAE 协议 / 架构超参豁免"
+
+  - file: "models/video/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/video/ 整组 video 模型协议 / 架构超参豁免"
+
+  - file: "models/audio/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/audio/ 整组 codec / TTS 协议 / 架构超参豁免"
+
+  - file: "models/multimodal/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/multimodal/ 整组 omni / vision-language 协议 / 架构超参豁免"
+
+  - file: "models/components/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/components/ 整组 RoPE / attention 协议 / 架构超参豁免"
+
+  - file: "performance/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: performance/ 整组 benchmark / quant / optimizer 协议 / 数值豁免"
+
+  - file: "rag/retrievers/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: rag/retrievers/ 整组 retriever 协议 / 文档模板豁免"
+
+  - file: "rag/chunkers/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: rag/chunkers/ 整组 chunker 协议 / 分隔符豁免"
+
+  - file: "rag/vectorstore/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: rag/vectorstore/ 整组 vector store 协议 / metric 名称豁免"
+
+  - file: "rag/loaders/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: rag/loaders/ 整组 document loader 协议 / 错误消息豁免"
+
+  - file: "rag/rerankers/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: rag/rerankers/ 整组 reranker 协议豁免"
+
+  - file: "tests/conftest.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: tests/conftest.py 整组 pytest fixture / 协议豁免"
+
+  - file: "assets/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: assets/ 整组 asset type / SQL fragment / error msg 协议豁免"
+
+  - file: "models/interfaces/*.py"
+    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+    reason: "D1 阶段三: models/interfaces/ 整组 provider / 接口字段名协议豁免"
   # models/source/huggingface.py -- ChecksumMismatch progress tick
   - file: "models/source/huggingface.py"
     type: "string_literal"

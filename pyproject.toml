@@ -65,6 +65,7 @@ markers = [
     "model_provider: marks local-torch model provider tests (tiny Transformer, training, L4 wiring)",
     "placeholder_registry: marks placeholder-registry scanner / parser tests",
     "hardcoding_severity: marks hardcoding-scanner severity tests (D1)",
+    "hardcoding_rules: marks hardcoding-scanner pluggable-rule tests (D1 stage three)",
 ]
 
 # ---------------------------------------------------------------------------
@@ -100,3 +101,33 @@ omit = [
 precision = 2
 show_missing = true
 skip_covered = false
+
+# ---------------------------------------------------------------------------
+# D1 stage three (v0.4.x): pluggable hardcoding scanner + CI gates.
+# ---------------------------------------------------------------------------
+# Settings read by ``scripts/check_hardcoding.py --ci`` and
+# ``scripts/check_ci_gates.py`` (D1 stage three).  CI pipelines
+# invoke the latter, which runs every gate whose ``enabled`` is
+# true (or whose default-enabled is true and no override is
+# set).  Adding a new gate is a 4-line change in
+# ``scripts/check_ci_gates.py`` plus a section here.
+
+[tool.torcha-verse.hardcoding]
+# Path scanned by the hardcoding CI gate.
+path = "."
+# Whitelist applied before the gate reports violations.
+whitelist = "config/hardcoded_whitelist.yaml"
+# Severity that makes the gate fail.  ``critical`` is the
+# safe default: only "must be fixed" violations fail CI.
+# Lower severities stay in the report as ``info`` /
+# ``warn`` without failing the build.
+ci_fail_on = "critical"
+# Master switch.  ``false`` is useful for emergency bypass
+# (e.g. local hot-fix before a real fix lands).
+enabled = true
+
+[tool.torcha-verse.ci-gates.hardcoding]
+enabled = true
+
+[tool.torcha-verse.ci-gates.placeholders]
+enabled = true

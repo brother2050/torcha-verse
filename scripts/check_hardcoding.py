@@ -84,9 +84,28 @@ import fnmatch
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, List, Optional, Set, Tuple
+
+try:
+    from check_hardcoding_rules import (  # type: ignore[no-redef]
+        DEFAULT_RULES,
+        Rule,
+        RuleContext,
+        ViolationCandidate,
+        get_rule,
+        list_rule_names,
+    )
+except ImportError:
+    from scripts.check_hardcoding_rules import (  # type: ignore[no-redef]
+        DEFAULT_RULES,
+        Rule,
+        RuleContext,
+        ViolationCandidate,
+        get_rule,
+        list_rule_names,
+    )
 
 __all__ = [
     "Violation",
@@ -99,6 +118,7 @@ __all__ = [
     "format_json",
     "export_critical",
     "is_log_message_format",
+    "list_rule_names",
     "main",
 ]
 
@@ -243,6 +263,13 @@ class Exemption:
         protocol_format: When ``True``, mark the violation as
             ``severity=info`` (protocol-bound literal, see D1
             convention section 1.3).
+        rules: Optional set of *rule names* this exemption applies
+            to.  ``None`` (the default) matches every rule.  Set this
+            to opt out of a *specific* rule without affecting the
+            other rules' behaviour on the same file/line -- e.g.
+            opt out of :class:`NumericLiteralRule` for a model
+            dimension that lives outside the
+            ``[_STRUCTURAL_MIN, _STRUCTURAL_MAX]`` heuristic range.
         reason: Optional human-readable rationale, persisted in
             exports.
     """
@@ -253,6 +280,7 @@ class Exemption:
     content_contains: Optional[str] = None
     severity: Optional[str] = None
     protocol_format: bool = False
+    rules: Optional[Set[str]] = None
     reason: Optional[str] = None
 
     def matches(self, violation: Violation) -> bool:
@@ -262,7 +290,9 @@ class Exemption:
         ``severity`` is *downgraded* to ``info`` but the violation is
         still returned (for audit).  When ``severity`` is set on the
         exemption, the matching violation's severity is set to that
-        level.
+        level.  When ``rules`` is set, the exemption only matches
+        violations whose ``type`` is in the set (this is the
+        *per-rule opt-out* path).
         """
         if not fnmatch.fnmatch(violation.file, self.file):
             return False
@@ -271,6 +301,8 @@ class Exemption:
         if self.line is not None and violation.line != self.line:
             return False
         if self.content_contains is not None and self.content_contains not in violation.content:
+            return False
+        if self.rules is not None and violation.type not in self.rules:
             return False
         return True
 
@@ -434,19 +466,13 @@ def _is_runtime_attr(node: ast.AST) -> bool:
 
 
 def _is_structural_init(relpath: str, value: Any) -> bool:
-    """Return ``True`` if ``value`` looks like a model structural hyperparam.
+    """Deprecated: moved to :mod:`scripts.check_hardcoding_rules`.
 
-    The current heuristic is *file-path + value range*:
-
-    * The file lives under one of :data:`_STRUCTURAL_PACKAGES`.
-    * The value is an integer (not bool) in
-      ``[_STRUCTURAL_MIN, _STRUCTURAL_MAX]``.
-
-    This deliberately errs on the side of *under*-tagging: a numeric
-    literal in a model ``__init__`` outside this range (e.g. ``1e6``
-    max-seq-len) keeps its default ``critical`` severity and is
-    surfaced for the developer's attention.
+    Kept as a re-export so any third-party call site that
+    imported the helper from the historical location still
+    works.  New code should import from the rules module.
     """
+    from check_hardcoding_rules import _STRUCTURAL_MIN, _STRUCTURAL_MAX, _STRUCTURAL_PACKAGES
     if not any(relpath.startswith(prefix) for prefix in _STRUCTURAL_PACKAGES):
         return False
     if isinstance(value, bool):
@@ -518,17 +544,28 @@ def _attach_parents(tree: ast.AST) -> None:
 # AST visitor
 # ---------------------------------------------------------------------------
 class _HardcodingVisitor(ast.NodeVisitor):
-    """Walks an AST tree collecting hardcoding violations."""
+    """Walks an AST tree collecting hardcoding violations.
+
+    The visitor is a thin dispatcher: it builds a
+    :class:`~scripts.check_hardcoding_rules.RuleContext` for each
+    AST node and asks every rule in :data:`DEFAULT_RULES` to
+    evaluate it.  The rule-based design (D1 stage three) lets
+    callers add new rules, opt out per-rule, or run a single rule
+    via the ``--only-rule`` CLI flag -- without changing the
+    visitor itself.
+    """
 
     def __init__(
         self,
         relpath: str,
-        docstring_ids: set[int],
-        excluded_str_ids: set[int],
+        docstring_ids: set,
+        excluded_str_ids: set,
+        rules: Optional[List[Rule]] = None,
     ) -> None:
         self.relpath: str = relpath
-        self._docstring_ids: set[int] = docstring_ids
-        self._excluded_str_ids: set[int] = excluded_str_ids
+        self._docstring_ids: set = docstring_ids
+        self._excluded_str_ids: set = excluded_str_ids
+        self._rules: List[Rule] = list(rules) if rules is not None else list(DEFAULT_RULES)
         self.violations: list[Violation] = []
         # Stack of (name, kind) for each function-like scope entered.
         self._func_stack: list[tuple[str, str]] = []
@@ -560,71 +597,56 @@ class _HardcodingVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self._func_stack.pop()
 
-    # -- literal checks --------------------------------------------------
+    # -- literal dispatch ------------------------------------------------
+    def _build_context(
+        self,
+        node: ast.AST,
+        value: Any,
+    ) -> RuleContext:
+        """Build a :class:`RuleContext` for ``node``.
+
+        Sub-helpers (e.g. :func:`is_log_message_format` /
+        :func:`_is_runtime_attr`) require ``.parent`` to be set
+        on the AST node; the scan pipeline attaches that.
+        """
+        in_docstring = id(node) in self._docstring_ids
+        in_all = id(node) in self._excluded_str_ids and not in_docstring
+        in_log = bool(is_log_message_format(node)) if isinstance(node, ast.Constant) else False
+        in_runtime = bool(_is_runtime_attr(node)) if isinstance(node, ast.Constant) else False
+        return RuleContext(
+            relpath=self.relpath,
+            node=node,
+            value=value,
+            in_function=self.in_function,
+            in_init=self.in_init,
+            in_docstring=in_docstring,
+            in_all=in_all,
+            in_log_call=in_log,
+            in_runtime_attr=in_runtime,
+        )
+
     def visit_Constant(self, node: ast.Constant) -> None:
         value = node.value
-        if isinstance(value, str):
-            self._check_string(node, value)
-        elif isinstance(value, bool) or value is None:
-            pass  # booleans / None are never numeric violations
-        elif isinstance(value, (int, float, complex)):
-            self._check_numeric(node, value)
+        ctx = self._build_context(node, value)
+        for rule in self._rules:
+            if not rule.applies_to(node):
+                continue
+            for cand in rule.check(ctx):
+                self._add(node, cand.type, cand.content, severity=cand.severity)
         self.generic_visit(node)
 
     def visit_List(self, node: ast.List) -> None:
-        if self.in_function and len(node.elts) > LIST_MAX_ELEMENTS:
-            self._add(node, LIST_LITERAL, "[{} elements]".format(len(node.elts)))
+        # ast.iter_child_nodes yields the elements; for the
+        # ListLiteralRule we need the *list* itself (a composite
+        # node) rather than each child.  Build a context with
+        # ``value=node.elts`` and dispatch.
+        ctx = self._build_context(node, list(node.elts))
+        for rule in self._rules:
+            if not rule.applies_to(node):
+                continue
+            for cand in rule.check(ctx):
+                self._add(node, cand.type, cand.content, severity=cand.severity)
         self.generic_visit(node)
-
-    # -- rule implementations -------------------------------------------
-    def _check_string(self, node: ast.Constant, value: str) -> None:
-        is_exempt = (
-            id(node) in self._docstring_ids
-            or id(node) in self._excluded_str_ids
-        )
-        # Rule #1: long string literal inside a function body.
-        if (
-            self.in_function
-            and len(value) > STRING_MIN_LENGTH
-            and not is_exempt
-        ):
-            severity = self._string_severity(node)
-            self._add(node, STRING_LITERAL, _truncate(repr(value)), severity=severity)
-        # Rule #3: path-like string literal (checked everywhere).
-        if not is_exempt and _looks_like_path(value):
-            severity = self._string_severity(node)
-            self._add(node, PATH_LITERAL, _truncate(repr(value)), severity=severity)
-
-    def _string_severity(self, node: ast.Constant) -> str:
-        """Decide the severity of a string violation.
-
-        Order of precedence:
-
-        1. :func:`is_log_message_format` -- the string is a logger
-           format string.  Log messages are protocol/format
-           identifiers, so the violation is downgraded to ``info``.
-        2. :func:`_is_runtime_attr` -- the string is read from a
-           runtime source (env var, ``Path(...)``, ``sys.argv``).
-           Also downgraded to ``info``.
-        3. Otherwise ``critical`` (the default; the developer should
-           move this constant to ConfigCenter or whitelist it).
-        """
-        if is_log_message_format(node):
-            return SEVERITY_INFO
-        if _is_runtime_attr(node):
-            return SEVERITY_INFO
-        return SEVERITY_CRITICAL
-
-    def _check_numeric(self, node: ast.Constant, value: Any) -> None:
-        # Rule #2: numeric literal inside __init__ (0, 1, -1 excluded).
-        if self.in_init and value not in _EXEMPT_NUMBERS:
-            if _is_structural_init(self.relpath, value):
-                severity = SEVERITY_INFO
-            elif _is_runtime_attr(node):
-                severity = SEVERITY_INFO
-            else:
-                severity = SEVERITY_CRITICAL
-            self._add(node, NUMERIC_LITERAL, repr(value), severity=severity)
 
     # -- bookkeeping -----------------------------------------------------
     def _add(
@@ -677,7 +699,11 @@ def _is_excluded(rel_parts: tuple[str, ...]) -> bool:
     return False
 
 
-def scan_file(path: Path, root: Path) -> list[Violation]:
+def scan_file(
+    path: Path,
+    root: Path,
+    rules: Optional[List[Rule]] = None,
+) -> list[Violation]:
     """Scan a single Python file and return its violations.
 
     Files that cannot be read or parsed are silently skipped.
@@ -685,6 +711,9 @@ def scan_file(path: Path, root: Path) -> list[Violation]:
     Args:
         path: Absolute path to the ``.py`` file.
         root: The scan root used to compute the relative path.
+        rules: Optional subset of rules to run.  When ``None`` the
+            four default rules are used.  Pass a single-rule list
+            (e.g. ``[PathLiteralRule()]``) for ad-hoc diagnostics.
 
     Returns:
         A list of :class:`Violation` objects (possibly empty).
@@ -700,7 +729,9 @@ def scan_file(path: Path, root: Path) -> list[Violation]:
     _attach_parents(tree)
     relpath = _relative_path(path, root)
     docstring_ids, excluded_str_ids = _collect_exclusions(tree)
-    visitor = _HardcodingVisitor(relpath, docstring_ids, excluded_str_ids)
+    visitor = _HardcodingVisitor(
+        relpath, docstring_ids, excluded_str_ids, rules=rules,
+    )
     visitor.visit(tree)
     return visitor.violations
 
@@ -717,6 +748,7 @@ def _iter_python_files(root: Path) -> Any:
 def scan_directory(
     root: Path,
     exemptions: Optional[list[Exemption]] = None,
+    only_rule: Optional[str] = None,
 ) -> list[Violation]:
     """Scan every non-excluded ``.py`` file under ``root``.
 
@@ -728,12 +760,25 @@ def scan_directory(
     Args:
         root: Directory (or single file) to scan.
         exemptions: Optional list of :class:`Exemption` objects.
+        only_rule: When set, run only the named rule (D1 stage
+            three opt-out).  Useful for "show me all path literals"
+            diagnostics.
 
     Returns:
         A sorted list of :class:`Violation` objects (terminal exemptions
         removed, non-terminal exemptions applied).
     """
     exemptions = exemptions or []
+    rules: Optional[List[Rule]] = None
+    if only_rule is not None:
+        rule = get_rule(only_rule)
+        if rule is None:
+            raise ValueError(
+                "unknown rule {!r}; expected one of {}".format(
+                    only_rule, list_rule_names(),
+                )
+            )
+        rules = [rule]
     violations: list[Violation] = []
 
     if root.is_file():
@@ -742,7 +787,9 @@ def scan_directory(
         files = list(_iter_python_files(root))
 
     for path in files:
-        for violation in scan_file(path, root if root.is_dir() else root.parent):
+        for violation in scan_file(
+            path, root if root.is_dir() else root.parent, rules=rules,
+        ):
             # Apply every matching exemption; the last one wins.
             kept = True
             for exemption in exemptions:
@@ -856,6 +903,11 @@ def load_whitelist(path: Path) -> list[Exemption]:
                 content_contains=entry.get("content_contains"),
                 severity=severity,
                 protocol_format=bool(entry.get("protocol_format", False)),
+                rules=(
+                    set(entry["rules"])
+                    if entry.get("rules") is not None
+                    else None
+                ),
                 reason=entry.get("reason"),
             )
         )
@@ -1027,6 +1079,36 @@ def _build_parser() -> argparse.ArgumentParser:
             "YAML file (whitelist-schema compatible)."
         ),
     )
+    parser.add_argument(
+        "--only-rule",
+        default=None,
+        choices=list_rule_names(),
+        help=(
+            "Run only the named rule (D1 stage three).  Useful for "
+            "narrow diagnostics like '--only-rule path_literal'."
+        ),
+    )
+    parser.add_argument(
+        "--list-rules",
+        action="store_true",
+        help=(
+            "List the available rule names and exit.  D1 stage "
+            "three: rules are pluggable, see "
+            "scripts/check_hardcoding_rules.py."
+        ),
+    )
+    parser.add_argument(
+        "--ci",
+        action="store_true",
+        help=(
+            "CI gate mode (D1 stage three).  Reads "
+            "[tool.torcha-verse.hardcoding] from pyproject.toml "
+            "and exits non-zero when critical violations remain "
+            "after the configured whitelist is applied.  "
+            "Intended to be called by the CI pipeline; "
+            "see scripts/check_ci_gates.py for the wrapper."
+        ),
+    )
     return parser
 
 
@@ -1043,12 +1125,67 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # ``--list-rules`` is the cheapest exit path -- emit the rule
+    # catalog and let the user wire their own extension.
+    if args.list_rules:
+        sys.stdout.write("Hardcoding rules (D1 stage three, v0.4.x):\n")
+        for rule in DEFAULT_RULES:
+            sys.stdout.write(
+                "  - {name:<16}  {description}\n".format(
+                    name=rule.name, description=rule.description,
+                )
+            )
+        return 0
+
+    # ``--ci`` reads its settings from pyproject.toml so the CI
+    # pipeline has a single source of truth (D1 stage three).
+    if args.ci:
+        try:
+            try:
+                from ci_config import load_hardcoding_ci_settings
+            except ImportError:
+                from scripts.ci_config import load_hardcoding_ci_settings
+            ci_settings = load_hardcoding_ci_settings()
+        except SystemExit as exc:
+            sys.stderr.write("{}\n".format(exc))
+            return 2
+        root = Path(ci_settings["path"]).expanduser().resolve()
+        if not root.exists():
+            sys.stderr.write("Error: path does not exist: {}\n".format(root))
+            return 2
+        exemptions: list[Exemption] = []
+        whitelist_path = ci_settings.get("whitelist")
+        if whitelist_path:
+            wp = Path(whitelist_path).expanduser().resolve()
+            if wp.exists():
+                exemptions = load_whitelist(wp)
+            else:
+                sys.stderr.write(
+                    "Warning: whitelist not found: {}\n".format(wp)
+                )
+        violations = scan_directory(root, exemptions, only_rule=args.only_rule)
+        # ``--ci`` always reports at the configured ``ci_fail_on``
+        # threshold (default ``critical``).  Lower severities are
+        # only reported as a stderr summary.
+        filtered = filter_by_severity(violations, ci_settings["ci_fail_on"])
+        if args.format == "json":
+            sys.stdout.write(format_json(filtered) + "\n")
+        else:
+            sys.stdout.write(format_text(filtered) + "\n")
+            if len(violations) > len(filtered):
+                sys.stderr.write(
+                    "(suppressed {} non-critical violations)\n".format(
+                        len(violations) - len(filtered),
+                    )
+                )
+        return 1 if filtered else 0
+
     root = Path(args.path).expanduser().resolve()
     if not root.exists():
         sys.stderr.write("Error: path does not exist: {}\n".format(root))
         return 2
 
-    exemptions: list[Exemption] = []
+    exemptions = []
     if args.whitelist:
         whitelist_path = Path(args.whitelist).expanduser().resolve()
         if not whitelist_path.exists():
@@ -1058,7 +1195,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         exemptions = load_whitelist(whitelist_path)
 
-    violations = scan_directory(root, exemptions)
+    violations = scan_directory(
+        root, exemptions, only_rule=args.only_rule,
+    )
     filtered = filter_by_severity(violations, args.severity)
 
     if args.export:
