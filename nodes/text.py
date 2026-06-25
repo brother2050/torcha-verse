@@ -163,8 +163,8 @@ class TextNode(BaseNode):
         model = inputs.get("model") or ctx.config.get("default_text_model")
         _mt = inputs.get("max_tokens", 256)
         max_tokens = int(_mt) if _mt is not None else 256
-        _temp = inputs.get("temperature", 1.0)
-        temperature = float(_temp) if _temp is not None else 1.0
+        _temp = inputs.get("temperature", 0.7)
+        temperature = float(_temp) if _temp is not None else 0.7
 
         ctx.logger.debug(
             "text_chat run_id=%s model=%s max_tokens=%d temperature=%.2f",

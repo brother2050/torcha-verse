@@ -72,7 +72,8 @@ _DEFAULT_WIDTH: int = 512
 #: 默认视频高度（像素），用于 execute() 中的回退值。
 _DEFAULT_HEIGHT: int = 512
 #: 默认推理步数，用于 execute() 中的回退值。
-_DEFAULT_STEPS: int = 20
+#: 与 config/inference_config.yaml 中 diffusion.default_steps 保持一致。
+_DEFAULT_STEPS: int = 30
 #: 默认插帧目标帧率（fps），用于 execute() 中的回退值。
 _DEFAULT_TARGET_FPS: int = 60
 

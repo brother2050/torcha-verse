@@ -537,7 +537,7 @@ class PipelineService:
             content_hash=content_hash,
         )
         inputs: Dict[str, Any] = {
-            "image": ref,
+            "input_image": ref,
             "prompt": prompt,
             "negative_prompt": negative_prompt,
             "strength": strength,

@@ -59,7 +59,8 @@ __all__ = [
 # Module-level constants (no hard-coded magic numbers inside functions)
 # ---------------------------------------------------------------------------
 #: Default number of denoising steps when :attr:`SamplerConfig.steps` is unset.
-_DEFAULT_STEPS: int = 50
+#: 与 config/inference_config.yaml 中 diffusion.default_steps 保持一致。
+_DEFAULT_STEPS: int = 30
 
 #: Default classifier-free guidance scale (``1.0`` = no guidance).
 _DEFAULT_GUIDANCE_SCALE: float = 7.5

@@ -826,7 +826,7 @@ class DiffusionScheduler:
         self,
         num_timesteps: int = 1000,
         noise_strategy: str = "linear",
-        sampler_name: str = "ddim",
+        sampler_name: str = "dpm_solver",
         guidance_scale: float = 7.5,
         eta: float = 0.0,
         device: Optional[Union[str, torch.device]] = None,
