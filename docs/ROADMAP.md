@@ -1,7 +1,7 @@
 # TorchaVerse 路线图
 
 > 日期:2026-06-25 · 状态:初期(early-stage)→ 准生产(quasi-production)
-> 当前 HEAD: `fdfdb1f` · 目标 next release: **v0.4.0**
+> 当前 HEAD: `10e9f90` · 目标 next release: **v0.4.0**
 
 ## 定位
 
