@@ -601,8 +601,16 @@ class TestCIGates:
             assert callable(spec["runner"]), f"{name} runner not callable"
 
     def test_registry_default_enabled_true(self):
+        """The hardcoding and placeholders gates are enabled by
+        default; the degrade_logging gate is intentionally off
+        until the 38 known silent-degrade sites are fixed."""
         for name, spec in ci_gates.GATE_REGISTRY.items():
-            assert spec["default_enabled"] is True, f"{name} not enabled by default"
+            if name == "degrade_logging":
+                # D3 stage three -- default off, opt-in via
+                # [tool.torcha-verse.ci-gates.degrade_logging].
+                assert spec["default_enabled"] is False
+            else:
+                assert spec["default_enabled"] is True, f"{name} not enabled by default"
 
     def test_main_list_returns_0(self, capsys):
         """`--list` mode is informational and exits 0."""

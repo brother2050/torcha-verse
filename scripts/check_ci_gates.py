@@ -8,6 +8,12 @@ enforce all "non-negotiable" engineering gates declared in
   remain after the whitelist is applied;
 * placeholders (D3) -- exits non-zero when an unregistered
   ``pass`` / ``NotImplementedError`` is found;
+* degrade_logging (D3 stage three) -- exits non-zero when a
+  silent-degrade ``except ...: pass`` block is found that does
+  not contain ``logger.warning`` / ``safe_call`` /
+  ``record_degrade`` / explicit ``raise``.  Default is **off**
+  until the 38 known sites are fixed (see
+  ``docs/placeholder_registry.md`` section 2.4);
 * future gates (TODO) can register themselves by adding a
   ``[tool.torcha-verse.ci-gates.<name>]`` table that contains
   an ``enabled = true`` key.
@@ -91,6 +97,28 @@ def _run_placeholder_gate() -> GateResult:
     return GateResult("placeholders", exit_code, "scanner usage error")
 
 
+def _run_degrade_logging_gate() -> GateResult:
+    """Run the D3 stage three degrade-logging gate.
+
+    The gate invokes :mod:`scripts.check_degrade_logging` against
+    the project root.  The scanner exits ``0`` when no silent
+    degrade is found, ``1`` when at least one site fails the
+    forensic-trace rule.  We re-wrap that into a :class:`GateResult`
+    so the unified runner can aggregate.
+    """
+    from check_degrade_logging import main as dl_main
+    exit_code = dl_main([])
+    if exit_code == 0:
+        return GateResult("degrade_logging", 0, "no silent-degrade blocks")
+    if exit_code == 1:
+        return GateResult(
+            "degrade_logging", 1,
+            "silent-degrade blocks remain (run "
+            "scripts/check_degrade_logging.py for the full list)",
+        )
+    return GateResult("degrade_logging", exit_code, "scanner usage error")
+
+
 GATE_REGISTRY: Dict[str, Any] = {
     "hardcoding": {
         "runner": _run_hardcoding_gate,
@@ -101,6 +129,14 @@ GATE_REGISTRY: Dict[str, Any] = {
         "runner": _run_placeholder_gate,
         "default_enabled": True,
         "description": "D3 unregistered pass/NotImplementedError",
+    },
+    "degrade_logging": {
+        "runner": _run_degrade_logging_gate,
+        "default_enabled": False,
+        "description": (
+            "D3 stage three silent-degrade blocks must contain "
+            "logger.warning / safe_call / record_degrade / raise"
+        ),
     },
 }
 

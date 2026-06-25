@@ -67,6 +67,7 @@ markers = [
     "hardcoding_severity: marks hardcoding-scanner severity tests (D1)",
     "hardcoding_rules: marks hardcoding-scanner pluggable-rule tests (D1 stage three)",
     "examples: marks examples/*.py smoke tests (import + main() presence)",
+    "error_helper: marks infrastructure/error_helper.py tests (D3 stage three)",
 ]
 
 # ---------------------------------------------------------------------------
@@ -132,3 +133,8 @@ enabled = true
 
 [tool.torcha-verse.ci-gates.placeholders]
 enabled = true
+
+[tool.torcha-verse.ci-gates.degrade_logging]
+# D3 stage three: 默认 disabled, 等 38 处 silent-degrade 补完再 enabled = true
+# 当前可用 `python scripts/check_degrade_logging.py` 单跑看进度
+enabled = false

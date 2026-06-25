@@ -4,6 +4,67 @@
 
 ## [Unreleased] — 初期整理
 
+### D3 阶段三：降级协议化 + degrade_logging CI 闸口 (v0.4.x D3 stage three)
+
+把 v0.4.x D3 阶段二已经建立的"placeholder 集中化"再向前推一步:
+把"silent degrade"(只 `except ...: pass` 不留任何 trace 的降级路径)
+抽成**协议** + **CI 闸口**。
+
+**新文件**:
+- `scripts/check_degrade_logging.py` — AST 扫描器, 找出"silent
+  degrade" (`except ...: pass` 或等同的空 body) 且不含
+  `logger.warning` / `safe_call` / `record_degrade` / 显式 `raise`
+  的 except 块。 默认排除 tests/ (fixture 清理容许静默), 报告
+  按文件聚合。 支持 `--list` / `--stats` / 单文件路径。
+- `tests/test_error_helper.py` — 29 个新测试, 覆盖 `safe_call`
+  成功/失败/不匹配异常/重抛/warning 不可关闭 5 个路径,
+  `record_degrade` 5 个路径, `DEGRADE_COUNTERS` 计数器 4 个路径,
+  import-safety 2 个。
+
+**修改文件**:
+- `infrastructure/error_helper.py` — `safe_call` 升级:
+  - 现在**总是**发 `logger.warning`(不能通过 `logger=None` 关掉)
+  - 新增 `op_id` 参数(显式 counter key, 稳定跨 refactor)
+  - 新增 `DEGRADE_COUNTERS: Counter`(模块级 dict-like 计数),
+    每个 degrade 路径 +1。 M1 (v1.0.0) 会把这个 dict 替换成
+    Prometheus counter, call site 不变。
+  - 新增 `record_degrade(op_id, *, exc=None, op="")` helper
+    给 `finally` 块 / 沙箱生成代码等不能用 `safe_call` 的场景用。
+- `scripts/check_ci_gates.py` — 新增 `degrade_logging` gate, 注册到
+  `GATE_REGISTRY`, **default_enabled=false** (38 处现状 silent
+  degrade 会 fail, 故意不立即阻塞 CI; D3 阶段三第二批"补 warning"
+  完成后由 pyproject 显式开 `enabled = true`)。
+- `pyproject.toml` — 加 `[tool.torcha-verse.ci-gates.degrade_logging]`
+  段, 默认 `enabled = false`; 加 `error_helper` pytest marker。
+- `tests/test_hardcoding_rules.py` — 修一处旧测试: `degrade_logging`
+  是默认 off 的, 旧测试的"所有 gate 默认 enabled"断言需对
+  `degrade_logging` 单独豁免。
+
+**协议**:
+"silent degrade" 在 D3 阶段三下被定义为**反模式**。 任何降级
+路径必须满足至少一条:
+1. body 含 `logger.warning(...)` 调用
+2. body 替换为 `safe_call(...)` 或 `record_degrade(...)` 调用
+3. 显式 `raise`(重抛原异常, 不算静默)
+4. 该 except 在 `try: ... finally: ...` 结构里(`finally` 才是清理点,
+   `except: pass` 只在 finally 块已兜底时合法)
+
+**当前统计**:
+- 38 处 silent degrade 已识别, 分布: nodes/export.py(5) /
+  models/source/huggingface.py(4) / consistency/score.py(3) /
+  infrastructure/config_center.py(3) / models/source/cache.py(3) /
+  serving/app.py(3) / tools/python_executor.py(3) /
+  assets/store.py(2) / infrastructure/checkpoint_manager.py(2) /
+  rag/loaders/document_loader.py(2) / training/sft_trainer.py(2) /
+  consistency/scene.py(1) / infrastructure/device_manager.py(1) /
+  models/providers/tiny_transformer.py(1) / nodes/_helpers.py(1) /
+  plugins/manager.py(1) / security/sandbox.py(1)
+- 报告命令: `python scripts/check_degrade_logging.py --stats`
+- 详细 list: `python scripts/check_degrade_logging.py` 走 stdout
+- 30 个新增测试全过; 全量 830 测试 0 回归
+- 统一 CI gate runner 默认仍 PASS(hardcoding + placeholders)
+- `degrade_logging` gate 等第二批"补 warning" PR 完成后再开 true
+
 ### D1 阶段三：硬编码 scanner 拆规则 + CI gating (v0.4.x D1 stage three)
 
 把 v0.4.x D1 阶段一/二建立的"分级 + 行级豁免" scanner
