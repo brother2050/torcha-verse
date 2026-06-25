@@ -93,6 +93,18 @@ class ConnectionValidator:
             )
             return None
 
+    @classmethod
+    def invalidate_cache(cls) -> None:
+        """Invalidate the spec cache.
+
+        Call after registering/unregistering nodes so that the next
+        :meth:`load_specs` call re-reads the registry instead of
+        returning a stale cached result.
+        """
+        with cls._spec_cache_lock:
+            cls._spec_cache = None
+            cls._spec_cache_time = 0.0
+
     # ------------------------------------------------------------------
     # 核心验证入口
     # ------------------------------------------------------------------
@@ -136,13 +148,12 @@ class ConnectionValidator:
                 from_id, output_key, to_id, input_key
             )
 
-        # 3. 重复边检测
-        new_key: EdgeTuple = (from_id, to_id, output_key, input_key)
-        for edge in existing_edges:
-            if (edge[0], edge[1], edge[2], edge[3]) == new_key:
-                return "重复连接 {}.{} -> {}.{}。".format(
-                    from_id, output_key, to_id, input_key
-                )
+        # 3. 重复边检测(使用 set 查找,O(1) 而非线性扫描)
+        existing_set = {(e[0], e[1], e[2], e[3]) for e in existing_edges}
+        if (from_id, to_id, output_key, input_key) in existing_set:
+            return "重复连接 {}.{} -> {}.{}。".format(
+                from_id, output_key, to_id, input_key
+            )
 
         # 4 & 5. 端口存在性 + 类型兼容性(可选,需要 specs 与 node_type_map)
         if specs is not None and node_type_map is not None:

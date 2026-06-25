@@ -390,6 +390,14 @@ class DeviceManager:
         )
         local_rank = int(os.environ.get("LOCAL_RANK", rank))
 
+        # 参数校验：rank / world_size / local_rank 必须处于合法范围。
+        if world_size <= 0:
+            raise ValueError(f"world_size must be positive, got {world_size}")
+        if rank < 0 or rank >= world_size:
+            raise ValueError(f"rank {rank} must be in [0, {world_size})")
+        if local_rank < 0:
+            raise ValueError(f"local_rank must be non-negative, got {local_rank}")
+
         if backend is None:
             backend = "nccl" if torch.cuda.is_available() else "gloo"
 
@@ -528,11 +536,12 @@ class DeviceManager:
         """Release unoccupied cached memory held by the allocator."""
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        if hasattr(torch.backends, "mps") and hasattr(torch.mps, "empty_cache"):
-            try:
-                torch.mps.empty_cache()  # type: ignore[attr-defined]
-            except Exception as exc:  # pragma: no cover - 最佳努力
-                _logger.warning("清空 MPS 缓存失败，已跳过: %s", exc)
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            if hasattr(torch.mps, "empty_cache"):
+                try:
+                    torch.mps.empty_cache()  # type: ignore[attr-defined]
+                except Exception as exc:  # pragma: no cover - 最佳努力
+                    _logger.warning("清空 MPS 缓存失败，已跳过: %s", exc)
 
     @classmethod
     def reset(cls) -> None:

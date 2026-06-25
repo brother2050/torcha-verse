@@ -433,6 +433,8 @@ class AssetStore:
         asset_type: Optional[AssetType] = None,
         tags: Optional[List[str]] = None,
         status: Optional[AssetStatus] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> List[Asset]:
         """List assets, optionally filtered by type / tags / status.
 
@@ -440,6 +442,12 @@ class AssetStore:
             asset_type: Only include assets of this type.
             tags: Only include assets whose tags contain *all* of these.
             status: Only include assets with this lifecycle status.
+            limit: Optional maximum number of results to return.
+                When ``None`` (the default) all matching rows are
+                returned.
+            offset: Number of matching rows to skip before returning
+                results.  Only meaningful when ``limit`` is not
+                ``None``.
 
         Returns:
             A list of matching :class:`Asset` instances.
@@ -458,7 +466,11 @@ class AssetStore:
                 escaped_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 query += " AND tags_json LIKE ? ESCAPE '\\'"
                 params.append(f'%"{escaped_tag}"%')
-        query += " ORDER BY updated_at DESC;"
+        query += " ORDER BY updated_at DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        query += ";"
 
         with self._lock:
             self._ensure_open()  # S2-7
@@ -495,7 +507,12 @@ class AssetStore:
             self._logger.debug("Archived asset %s.", ref.asset_id)
             return True
 
-    def search(self, query: str) -> List[Asset]:
+    def search(
+        self,
+        query: str,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Asset]:
         """Fuzzy-search assets by name, description and tags.
 
         The match is case-insensitive and matches any asset whose name,
@@ -503,6 +520,12 @@ class AssetStore:
 
         Args:
             query: Substring to search for.
+            limit: Optional maximum number of results to return.
+                When ``None`` (the default) all matching rows are
+                returned.
+            offset: Number of matching rows to skip before returning
+                results.  Only meaningful when ``limit`` is not
+                ``None``.
 
         Returns:
             A list of matching :class:`Asset` instances.
@@ -511,14 +534,21 @@ class AssetStore:
             return []
         escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped_query}%"
+        sql = (
+            "SELECT metadata_json FROM assets "
+            "WHERE name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
+            "OR tags_json LIKE ? ESCAPE '\\' "
+            "ORDER BY updated_at DESC"
+        )
+        sql_params: List[Any] = [pattern, pattern, pattern]
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            sql_params.extend([limit, offset])
+        sql += ";"
         with self._lock:
             self._ensure_open()  # S2-7
             rows = self._conn.execute(  # type: ignore[union-attr]
-                "SELECT metadata_json FROM assets "
-                "WHERE name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
-                "OR tags_json LIKE ? ESCAPE '\\' "
-                "ORDER BY updated_at DESC;",
-                (pattern, pattern, pattern),
+                sql, sql_params,
             ).fetchall()
 
         needle = query.lower()

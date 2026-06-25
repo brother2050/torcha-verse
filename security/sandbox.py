@@ -106,6 +106,7 @@ _BLOCKED_BUILTINS: tuple[str, ...] = (
     "input",
     "memoryview",
     "open",
+    "getattr",
 )
 
 #: Module-level attribute paths that are considered dangerous.  Each
@@ -412,6 +413,12 @@ class _SandboxVisitor(ast.NodeVisitor):
                 self.violations.append(
                     f"Dangerous call: {call_name}"
                 )
+            # getattr can bypass attribute-access restrictions (e.g.
+            # retrieving __subclasses__ via getattr(obj, "__subclasses__")).
+            if call_name == "getattr":
+                self.violations.append(
+                    "Dangerous call: getattr (attribute bypass)"
+                )
             # Check open() with sensitive path literals.
             if call_name in ("open", "os.open", "io.open"):
                 self._check_open_args(node)
@@ -637,10 +644,10 @@ class SandboxExecutor:
             return None
         try:
             old_cpu = resource.getrlimit(resource.RLIMIT_CPU)
-            old_mem = resource.getrlimit(resource.RLIMIT_AS)
+            old_mem = resource.getrlimit(resource.RLIMIT_DATA)
             mem_bytes = self._config.max_memory_mb * 1024 * 1024
             cpu_seconds = self._config.max_cpu_seconds
-            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+            resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
             resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
             return (old_cpu, old_mem)
         except (ValueError, OSError):
@@ -654,7 +661,7 @@ class SandboxExecutor:
         try:
             old_cpu, old_mem = old
             resource.setrlimit(resource.RLIMIT_CPU, old_cpu)
-            resource.setrlimit(resource.RLIMIT_AS, old_mem)
+            resource.setrlimit(resource.RLIMIT_DATA, old_mem)
         except (ValueError, OSError):
             pass
 

@@ -300,7 +300,10 @@ class AutoDirector:
             raise ValueError("Template registry is empty.")
 
         topic_lower = topic.lower()
-        topic_words = set(topic_lower.split())
+        # Use re.findall to tokenise on word boundaries so that
+        # punctuation-adjacent words (e.g. "cat,playing") are split
+        # correctly instead of being treated as a single token.
+        topic_words = set(re.findall(r"\w+", topic_lower))
 
         best_name: Optional[str] = None
         best_score: int = -1
@@ -608,8 +611,9 @@ class AutoDirector:
                 "LLM response was not valid JSON; using fallback."
             )
 
-        # Fallback: map every key to the raw response.
-        return {k: response for k in fillable_keys}
+        # Fallback: only assign the response to "prompt"; other keys
+        # get an empty string so they don't receive irrelevant content.
+        return {k: (response if k == "prompt" else "") for k in fillable_keys}
 
     @staticmethod
     def _merge_redundant_nodes(canvas: Canvas) -> None:
@@ -636,50 +640,45 @@ class AutoDirector:
             survivor = node_ids[0]
             redundant = node_ids[1:]
             redundant_set = set(redundant)
+            survivor_map = {nid: survivor for nid in redundant}
 
             # Rewire connections.
             connections = canvas.list_connections()
             for conn in connections:
+                new_from = conn.from_node
+                new_to = conn.to_node
                 if conn.from_node in redundant_set:
-                    # Update from_node to survivor.
-                    canvas.disconnect(conn.id)
-                    try:
-                        canvas.connect(
-                            survivor,
-                            conn.from_port,
-                            conn.to_node,
-                            conn.to_port,
-                        )
-                    except ValueError:
-                        # duplicate after rewiring
-                        _logger.debug(
-                            "Merge: skipped duplicate connection "
-                            "%s.%s -> %s.%s after rewiring from_node.",
-                            survivor,
-                            conn.from_port,
-                            conn.to_node,
-                            conn.to_port,
-                        )
-                elif conn.to_node in redundant_set:
-                    # Update to_node to survivor.
-                    canvas.disconnect(conn.id)
-                    try:
-                        canvas.connect(
-                            conn.from_node,
-                            conn.from_port,
-                            survivor,
-                            conn.to_port,
-                        )
-                    except ValueError:
-                        # duplicate after rewiring
-                        _logger.debug(
-                            "Merge: skipped duplicate connection "
-                            "%s.%s -> %s.%s after rewiring to_node.",
-                            conn.from_node,
-                            conn.from_port,
-                            survivor,
-                            conn.to_port,
-                        )
+                    new_from = survivor_map[conn.from_node]
+                if conn.to_node in redundant_set:
+                    new_to = survivor_map[conn.to_node]
+                # If neither endpoint changed, leave the connection as-is.
+                if (
+                    new_from == conn.from_node
+                    and new_to == conn.to_node
+                ):
+                    continue
+                # Disconnect the old connection before rewiring.
+                canvas.disconnect(conn.id)
+                # If both endpoints map to the survivor, it's a self-loop -- skip.
+                if new_from == new_to:
+                    continue
+                try:
+                    canvas.connect(
+                        new_from,
+                        conn.from_port,
+                        new_to,
+                        conn.to_port,
+                    )
+                except ValueError:
+                    # duplicate after rewiring
+                    _logger.debug(
+                        "Merge: skipped duplicate connection "
+                        "%s.%s -> %s.%s after rewiring.",
+                        new_from,
+                        conn.from_port,
+                        new_to,
+                        conn.to_port,
+                    )
 
             # Remove redundant nodes.
             for nid in redundant:
@@ -710,7 +709,10 @@ class AutoDirector:
                     reduced = max(1, int(original * _OPTIMIZE_STEP_REDUCTION))
                 else:
                     reduced = round(original * _OPTIMIZE_STEP_REDUCTION, 1)
-                inputs["steps"] = reduced
+                # ``list_nodes`` returns deep copies, so mutating
+                # ``inputs`` would not persist.  Write back via the
+                # canvas API instead.
+                canvas.update_node_inputs(node.id, {"steps": reduced})
 
     def __repr__(self) -> str:
         return "AutoDirector(templates={})".format(self._registry.count())

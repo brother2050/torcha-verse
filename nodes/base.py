@@ -160,6 +160,11 @@ _MISSING: Any = object()
 #: L5 管道层默认的最大并发工作线程数。
 _DEFAULT_MAX_WORKERS: int = 4
 
+#: 节点执行器可调用对象的类型别名:``(inputs, ctx) -> outputs``。
+#: 定义在 :class:`NodeContext` 之前,以便 ``NodeContext`` 的字段注解
+#: (``executors: Dict[str, NodeExecutor]``)能直接引用该别名。
+NodeExecutor = Callable[[Dict[str, Any], "NodeContext"], Dict[str, Any]]
+
 
 @dataclass
 class NodeContext:
@@ -365,10 +370,6 @@ class NodeContext:
         )
 
 
-#: 节点执行器可调用对象的类型别名:``(inputs, ctx) -> outputs``。
-NodeExecutor = Callable[[Dict[str, Any], "NodeContext"], Dict[str, Any]]
-
-
 # ---------------------------------------------------------------------------
 # BaseNode
 # ---------------------------------------------------------------------------
@@ -430,6 +431,14 @@ class BaseNode(abc.ABC):
         Raises:
             Exception: 重新抛出 :meth:`execute` 抛出的异常。
         """
+        # 在执行前校验输入,提前发现缺失/非法的必填输入。
+        # 放在 try 块之外,使校验失败直接抛出 ValueError 而不被
+        # 当作"执行失败"记录。
+        errors = self.validate_inputs(inputs)
+        if errors:
+            raise ValueError(
+                "Input validation failed: {}".format(errors)
+            )
         try:
             return self.execute(ctx, **inputs)
         except Exception as exc:

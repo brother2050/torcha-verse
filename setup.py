@@ -15,13 +15,9 @@ setup(
         "PyYAML>=6.0",
         "numpy>=1.24.0",
         "Pillow>=10.0.0",
-        "librosa>=0.10.0",
-        "soundfile>=0.12.0",
-        "sentencepiece>=0.1.99",
         "fastapi>=0.104.0",
         "uvicorn>=0.24.0",
         "click>=8.1.0",
-        "tqdm>=4.66.0",
         "safetensors>=0.4.0",
         "rich>=13.0.0",
         # 数据校验与配置模型(AssetStore / 配置中心等依赖)

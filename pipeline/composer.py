@@ -27,6 +27,7 @@ Public surface:
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from concurrent.futures import (
@@ -214,12 +215,24 @@ class Pipeline:
         self._pause_event.set()
 
     def close(self) -> None:
-        """Clean up resources (thread pool)."""
+        """Clean up resources (thread pool).
+
+        If the pipeline is currently running this logs a warning but does
+        not block -- the executor is shut down without waiting for pending
+        tasks.  ``_run_lock`` is an :class:`~threading.RLock` so acquiring
+        it here cannot deadlock against :meth:`run` (which only holds it
+        briefly to flip the ``_running`` flag).
+        """
         with self._run_lock:
+            if self._running:
+                _logger.warning(
+                    "close() called while pipeline is running; "
+                    "shutting down executor without waiting."
+                )
             if self._executor is not None:
                 self._executor.shutdown(wait=False)
                 self._executor = None
-            self._executor_max_workers = 0
+                self._executor_max_workers = 0
 
     # ------------------------------------------------------------------
     # Execution
@@ -367,7 +380,7 @@ class Pipeline:
     def _run_node(self, node_id: str, ctx: NodeContext) -> Dict[str, Any]:
         """Execute a single node, merging upstream outputs into its inputs."""
         node = self._dag.get_node(node_id)
-        inputs: Dict[str, Any] = dict(node.inputs)
+        inputs: Dict[str, Any] = copy.deepcopy(node.inputs)
 
         # Thread upstream outputs through the graph's edges.
         for edge in self._dag.get_incoming_edges(node_id):

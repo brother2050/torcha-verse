@@ -269,16 +269,15 @@ class DAG:
     def get_node(self, node_id: str) -> DAGNode:
         """Return the node registered under ``node_id``.
 
-        返回节点的一个 **浅拷贝** (S3-9),而非内部存储的直接引用。这样调用
-        方无法意外修改 DAG 的内部状态;嵌套的可变对象(如 ``inputs`` 字典、
-        ``dependencies`` 列表)仍为共享引用,但调用方通常只读取它们或通过
-        ``dict(node.inputs)`` 创建副本后再使用。
+        返回节点的一个 **深拷贝** (S3-9),而非内部存储的直接引用。这样调用
+        方无法意外修改 DAG 的内部状态,包括嵌套的可变对象(如 ``inputs``
+        字典、``dependencies`` 列表)。
 
         Args:
             node_id: The node id to look up.
 
         Returns:
-            The :class:`DAGNode` 的浅拷贝。
+            The :class:`DAGNode` 的深拷贝。
 
         Raises:
             KeyError: If no node with that id exists.
@@ -287,8 +286,8 @@ class DAG:
             node = self._nodes.get(node_id)
         if node is None:
             raise KeyError("No DAGNode with id={!r}.".format(node_id))
-        # 返回浅拷贝,防止调用方意外修改 DAG 内部状态。
-        return copy.copy(node)
+        # 返回深拷贝,防止调用方意外修改 DAG 内部状态(包括嵌套可变对象)。
+        return copy.deepcopy(node)
 
     def has_node(self, node_id: str) -> bool:
         """Return ``True`` if a node with ``node_id`` exists."""
@@ -454,10 +453,14 @@ class DAG:
             if not deps:
                 depth[nid] = 0
             else:
-                # Only consider deps that exist; missing deps get depth -1
-                # so they do not inflate this node's depth.
-                dep_depths = [depth[d] for d in deps if d in depth]
-                depth[nid] = (max(dep_depths) + 1) if dep_depths else 0
+                missing = [d for d in deps if d not in depth]
+                if missing:
+                    raise ValueError(
+                        "Node '{}' depends on non-existent nodes: {}".format(
+                            nid, missing
+                        )
+                    )
+                depth[nid] = max(depth[d] + 1 for d in deps)
         if not depth:
             return []
         max_depth = max(depth.values())

@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+from ._helpers import coerce_float as _coerce_float
 
 __all__ = ["AudioTTSNode", "AudioMusicNode"]
 
@@ -51,15 +52,6 @@ _TTS_MODEL_VRAM_GB: float = 1.5
 _MUSIC_MODEL_VRAM_GB: float = 3.0
 #: Host RAM (GB) per second of generated audio.
 _AUDIO_RAM_PER_SECOND_GB: float = 0.005
-
-
-def _coerce_float(value: Any) -> Optional[float]:
-    """Return ``value`` as a ``float`` when it is a real number."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
 
 
 # ---------------------------------------------------------------------------

@@ -254,6 +254,8 @@ class OutputFilter:
         Returns:
             A :class:`FilterResult`.
         """
+        if image is None:
+            return FilterResult(passed=False, score=1.0, categories=[], action="block")
         if _HAS_NUDENET:
             return self._filter_image_nudenet(image)
         # Fail-closed: without a backend we cannot guarantee the image is
@@ -324,7 +326,8 @@ class OutputFilter:
         """Use Detoxify to score the text."""
         model = self._get_detoxify()
         try:
-            results = model.predict(text)
+            with self._lock:
+                results = model.predict(text)
         except Exception as exc:
             _logger.warning("Detoxify 预测失败，回退到黑名单匹配: %s", exc)
             return self._filter_text_blocklist(text)
@@ -386,7 +389,8 @@ class OutputFilter:
         """Use NudeNet to score the image."""
         detector = self._get_nude_detector()
         try:
-            detections = detector.detect(image)
+            with self._lock:
+                detections = detector.detect(image)
         except Exception as exc:
             _logger.warning("NudeNet detection failed: %s; blocking image as fail-closed", exc)
             return FilterResult(

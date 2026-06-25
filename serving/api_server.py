@@ -26,6 +26,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import time
 import uuid
 from typing import Any, Dict, Iterator, List, Optional, Union
@@ -919,12 +920,17 @@ def create_app() -> FastAPI:
         version="0.3.1",
     )
 
-    # CORS middleware.  ``allow_credentials`` is intentionally omitted:
-    # it is incompatible with the wildcard ``allow_origins=["*"]`` and
-    # would be silently dropped (or rejected) by the browser.
+    # CORS middleware.  Origins are read from the TORCHA_CORS_ORIGINS
+    # environment variable (comma-separated).  The default ``"*"`` is
+    # permissive and intended for development only -- in production,
+    # configure specific origins (e.g. ``https://app.example.com``).
+    # ``allow_credentials`` is intentionally omitted: it is incompatible
+    # with the wildcard ``allow_origins=["*"]`` and would be silently
+    # dropped (or rejected) by the browser.
+    cors_origins = os.environ.get("TORCHA_CORS_ORIGINS", "*").split(",")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -995,6 +1001,14 @@ def create_app() -> FastAPI:
             # Security Gate 1: sanitise user-supplied text input.
             try:
                 request.prompt = service._sanitizer.sanitize_text(request.prompt)
+                request.model = service._sanitizer.sanitize_text(request.model)
+                if request.stop:
+                    if isinstance(request.stop, str):
+                        request.stop = service._sanitizer.sanitize_text(request.stop)
+                    elif isinstance(request.stop, list):
+                        request.stop = [
+                            service._sanitizer.sanitize_text(s) for s in request.stop
+                        ]
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
@@ -1076,6 +1090,15 @@ def create_app() -> FastAPI:
                 raise RuntimeError(result["error"])
             text = result.get("text", "")
 
+            # Security Gate 3: filter the streamed text before yielding.
+            try:
+                filter_result = svc._filter.filter_text(text)
+                if not filter_result.passed:
+                    yield f"data: {json.dumps({'error': 'Output filtered'})}\n\n"
+                    return
+            except Exception:
+                pass  # filter errors should not block the stream
+
             data = {
                 "id": _generate_id(),
                 "object": "text_completion.chunk",
@@ -1124,6 +1147,7 @@ def create_app() -> FastAPI:
             try:
                 for msg in request.messages:
                     msg.content = service._sanitizer.sanitize_text(msg.content)
+                request.model = service._sanitizer.sanitize_text(request.model)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
@@ -1201,6 +1225,15 @@ def create_app() -> FastAPI:
                 raise RuntimeError(result["error"])
             text = result.get("text", "")
 
+            # Security Gate 3: filter the streamed text before yielding.
+            try:
+                filter_result = svc._filter.filter_text(text)
+                if not filter_result.passed:
+                    yield f"data: {json.dumps({'error': 'Output filtered'})}\n\n"
+                    return
+            except Exception:
+                pass  # filter errors should not block the stream
+
             data = {
                 "id": _generate_id(),
                 "object": "chat.completion.chunk",
@@ -1255,6 +1288,7 @@ def create_app() -> FastAPI:
                     request.negative_prompt = service._sanitizer.sanitize_text(
                         request.negative_prompt
                     )
+                request.model = service._sanitizer.sanitize_text(request.model)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
@@ -1327,6 +1361,8 @@ def create_app() -> FastAPI:
             # Security Gate 1: sanitise user-supplied text input.
             try:
                 request.text = service._sanitizer.sanitize_text(request.text)
+                request.model = service._sanitizer.sanitize_text(request.model)
+                request.emotion = service._sanitizer.sanitize_text(request.emotion)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
@@ -1340,19 +1376,26 @@ def create_app() -> FastAPI:
             if "error" in result:
                 raise RuntimeError(result["error"])
 
-            # Security Gate 3: filter the text content conveyed by the audio.
-            try:
-                filter_result = service._filter.filter_text(request.text)
-                if not filter_result.passed:
-                    return _error_response(
-                        "Output filtered: " + filter_result.action,
-                        error_type="output_filtered",
-                        code=403,
+            # Security Gate 3: filter the output text content rather than
+            # the input.  The audio node currently returns pure media data
+            # (no text transcript), so there is nothing to filter.  If a
+            # text transcript/caption is added to the output in the future,
+            # it should be passed through service._filter.filter_text()
+            # before release.
+            output_text = str(result.get("text", ""))
+            if output_text:
+                try:
+                    filter_result = service._filter.filter_text(output_text)
+                    if not filter_result.passed:
+                        return _error_response(
+                            "Output filtered: " + filter_result.action,
+                            error_type="output_filtered",
+                            code=403,
+                        )
+                except Exception as filter_exc:  # noqa: BLE001
+                    service._logger.warning(
+                        "Output filter failed, allowing response: %s", filter_exc
                     )
-            except Exception as filter_exc:  # noqa: BLE001
-                service._logger.warning(
-                    "Output filter failed, allowing response: %s", filter_exc
-                )
 
             audio = result.get("audio", result)
             payload = _media_payload(audio, "audio/wav")
@@ -1399,6 +1442,7 @@ def create_app() -> FastAPI:
                     request.negative_prompt = service._sanitizer.sanitize_text(
                         request.negative_prompt
                     )
+                request.model = service._sanitizer.sanitize_text(request.model)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
@@ -1418,6 +1462,27 @@ def create_app() -> FastAPI:
                 raise RuntimeError(result["error"])
 
             video = result.get("video", result)
+
+            # Security Gate 3: filter any text description that may accompany
+            # the video.  Currently the video node returns pure media data
+            # (no text caption), so there is nothing to filter.  If a text
+            # description is added to the output in the future, it should be
+            # passed through service._filter.filter_text() before release.
+            output_text = str(result.get("text", ""))
+            if output_text:
+                try:
+                    filter_result = service._filter.filter_text(output_text)
+                    if not filter_result.passed:
+                        return _error_response(
+                            "Output filtered: " + filter_result.action,
+                            error_type="output_filtered",
+                            code=403,
+                        )
+                except Exception as filter_exc:  # noqa: BLE001
+                    service._logger.warning(
+                        "Output filter failed, allowing response: %s", filter_exc
+                    )
+
             payload = _media_payload(video, "image/gif")
             response = UnifiedResponse(
                 id=_generate_id(),
@@ -1468,12 +1533,15 @@ def create_app() -> FastAPI:
                     request.question = service._sanitizer.sanitize_text(
                         request.question
                     )
+                request.model = service._sanitizer.sanitize_text(request.model)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
             result = service.multimodal_understand()
             if "error" in result:
-                raise RuntimeError(result["error"])
+                raise RuntimeError(
+                    f"{result['error']} [{result.get('error_type', 'engine_error')}]"
+                )
 
             text = str(result.get("text", ""))
 
@@ -1505,7 +1573,9 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Multimodal understanding failed: %s", exc)
-            return _error_response("Internal error", error_type="not_implemented", code=501)
+            error_type = "not_implemented" if "not_implemented" in str(exc).lower() else "engine_error"
+            code = 501 if error_type == "not_implemented" else 500
+            return _error_response("Internal error", error_type=error_type, code=code)
 
     # ------------------------------------------------------------------
     # RAG query
@@ -1533,7 +1603,9 @@ def create_app() -> FastAPI:
 
             result = service.rag_query()
             if "error" in result:
-                raise RuntimeError(result["error"])
+                raise RuntimeError(
+                    f"{result['error']} [{result.get('error_type', 'engine_error')}]"
+                )
 
             text = str(result.get("text", ""))
 
@@ -1563,7 +1635,9 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("RAG query failed: %s", exc)
-            return _error_response("Internal error", error_type="not_implemented", code=501)
+            error_type = "not_implemented" if "not_implemented" in str(exc).lower() else "engine_error"
+            code = 501 if error_type == "not_implemented" else 500
+            return _error_response("Internal error", error_type=error_type, code=code)
 
     # ------------------------------------------------------------------
     # Agent run
@@ -1587,6 +1661,9 @@ def create_app() -> FastAPI:
             # Security Gate 1: sanitise user-supplied text input.
             try:
                 request.task = service._sanitizer.sanitize_text(request.task)
+                request.agent_type = service._sanitizer.sanitize_text(request.agent_type)
+                if request.flow:
+                    request.flow = service._sanitizer.sanitize_text(request.flow)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
@@ -1607,7 +1684,9 @@ def create_app() -> FastAPI:
 
             result = service.agent_run()
             if "error" in result:
-                raise RuntimeError(result["error"])
+                raise RuntimeError(
+                    f"{result['error']} [{result.get('error_type', 'engine_error')}]"
+                )
 
             output_text = str(result.get("output", ""))
 
@@ -1647,7 +1726,9 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Agent run failed: %s", exc)
-            return _error_response("Internal error", error_type="not_implemented", code=501)
+            error_type = "not_implemented" if "not_implemented" in str(exc).lower() else "engine_error"
+            code = 501 if error_type == "not_implemented" else 500
+            return _error_response("Internal error", error_type=error_type, code=code)
 
     def _agent_stream(
         svc: PipelineService,
@@ -1660,12 +1741,23 @@ def create_app() -> FastAPI:
             result = svc.agent_run()
             if "error" in result:
                 raise RuntimeError(result["error"])
+            output_text = str(result.get("output", ""))
+
+            # Security Gate 3: filter the streamed text before yielding.
+            try:
+                filter_result = svc._filter.filter_text(output_text)
+                if not filter_result.passed:
+                    yield f"data: {json.dumps({'error': 'Output filtered'})}\n\n"
+                    return
+            except Exception:
+                pass  # filter errors should not block the stream
+
             data = {
                 "id": _generate_id(),
                 "object": "agent.step",
                 "created": int(time.time()),
                 "model": "agent",
-                "step": {"output": str(result.get("output", ""))},
+                "step": {"output": output_text},
             }
             yield f"data: {json.dumps(data)}\n\n"
             yield "data: [DONE]\n\n"
@@ -1729,8 +1821,19 @@ def main() -> None:
         raise
 
 
-# Module-level app instance for ``uvicorn torcha_verse.serving.api_server:app``.
-app: FastAPI = create_app()
+# Lazy app creation to avoid import side-effects (e.g. binding ports,
+# loading config at import time).  Use ``get_app()`` to obtain the
+# singleton, or reference ``serving.api_server:create_app`` with
+# ``factory=True`` in uvicorn.
+app: Optional[FastAPI] = None
+
+
+def get_app() -> FastAPI:
+    """Return the singleton :class:`FastAPI` app, creating it on first call."""
+    global app
+    if app is None:
+        app = create_app()
+    return app
 
 
 if __name__ == "__main__":

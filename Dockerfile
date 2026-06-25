@@ -15,12 +15,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create a non-root user for runtime security
 RUN useradd -m appuser
-USER appuser
 
 # Copy source code
 COPY . .
 
-# Install package
+# Fix ownership so appuser can run pip install -e .
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user and install package
+USER appuser
 RUN pip install -e .
 
 # Expose API port

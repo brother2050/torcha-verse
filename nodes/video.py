@@ -26,6 +26,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+from ._helpers import (
+    _MEGAPIXEL_PIXELS,
+    coerce_float as _coerce_float,
+    coerce_int as _coerce_int,
+)
 
 __all__ = [
     "VideoTxt2VidNode",
@@ -57,8 +62,6 @@ _VIDEO_RAM_PER_MPX_FRAME_GB: float = 0.01
 _VIDEO_TIME_PER_MPX_FRAME_STEP_S: float = 0.05
 #: Base VRAM (GB) for the video diffusion model weights.
 _VIDEO_MODEL_VRAM_GB: float = 6.0
-#: Number of pixels in one megapixel.
-_MEGAPIXEL_PIXELS: float = 1_000_000.0
 
 #: 默认视频帧数，用于 execute() 中的回退值。
 _DEFAULT_NUM_FRAMES: int = 16
@@ -72,26 +75,6 @@ _DEFAULT_HEIGHT: int = 512
 _DEFAULT_STEPS: int = 20
 #: 默认插帧目标帧率（fps），用于 execute() 中的回退值。
 _DEFAULT_TARGET_FPS: int = 60
-
-
-def _coerce_int(value: Any) -> Optional[int]:
-    """Return ``value`` as an ``int`` when it is an integer-like number."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
-
-
-def _coerce_float(value: Any) -> Optional[float]:
-    """Return ``value`` as a ``float`` when it is a real number."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
 
 
 # ---------------------------------------------------------------------------

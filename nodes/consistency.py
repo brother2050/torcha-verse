@@ -31,6 +31,11 @@ from typing import Any, Dict, List, Optional
 from assets.base import AssetRef
 
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+from ._helpers import (
+    _MEGAPIXEL_PIXELS,
+    coerce_int as _coerce_int,
+    ref_id as _ref_id,
+)
 
 __all__ = [
     "CharacterApplyNode",
@@ -58,32 +63,6 @@ _DEPTH_MODEL_VRAM_GB: float = 1.5
 _FIVE_VIEW_MODEL_VRAM_GB: float = 5.0
 #: Number of views produced by :class:`FiveViewNode`.
 _FIVE_VIEW_COUNT: int = 5
-#: Number of pixels in one megapixel.
-_MEGAPIXEL_PIXELS: float = 1_000_000.0
-
-
-def _coerce_int(value: Any) -> Optional[int]:
-    """Return ``value`` as an ``int`` when it is an integer-like number."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
-
-
-def _ref_id(ref: Any) -> Optional[str]:
-    """Return the asset id of ``ref`` for AssetRef, str, or id-bearing objects."""
-    if ref is None:
-        return None
-    if isinstance(ref, AssetRef):
-        return ref.asset_id
-    if isinstance(ref, str):
-        return ref
-    if hasattr(ref, "id"):
-        return ref.id
-    return None
 
 
 def _validate_dimensions(

@@ -325,38 +325,66 @@ class ConfigCenter:
         Returns:
             The fully merged configuration dictionary.
         """
+        # 锁内：解析参数并快照当前目录（快速操作）。
         with self._lock:
             if config_dir is not None:
                 self._config_dir = _resolve_config_dir(config_dir)
             if environment is not None:
                 self._environment = environment
+            system_dir = self._system_dir
+            user_dir = self._user_dir
+            config_dir_resolved = self._config_dir
+            env = self._environment
 
-            self._config = {}
-            self._loaded_files = []
+        # 锁外：读取所有配置文件（慢速 I/O 不持有锁）。
+        new_config: Dict[str, Any] = {}
+        new_loaded_files: List[Path] = []
 
-            # 1. System layer (immutable built-in defaults).
-            self._load_dir(self._system_dir, required=False, layer="system")
+        # 1. System layer (immutable built-in defaults).
+        for path, data in self._collect_dir(
+            system_dir, required=False, layer="system"
+        ):
+            new_config = _deep_merge(new_config, data)
+            new_loaded_files.append(path)
 
-            # 2. Project layer (committed ./config/*.yaml + environment override).
-            for filename in self.DEFAULT_CONFIG_FILES:
-                self._load_file(self._config_dir / filename)
-            env_file = self._config_dir / f"config.{self._environment}.yaml"
-            self._load_file(env_file, required=False)
+        # 2. Project layer (committed ./config/*.yaml + environment override).
+        for filename in self.DEFAULT_CONFIG_FILES:
+            fpath = config_dir_resolved / filename
+            data = self._read_yaml_file(fpath, required=True)
+            if data is not None:
+                new_config = _deep_merge(new_config, data)
+                new_loaded_files.append(fpath)
+        env_file = config_dir_resolved / f"config.{env}.yaml"
+        data = self._read_yaml_file(env_file, required=False)
+        if data is not None:
+            new_config = _deep_merge(new_config, data)
+            new_loaded_files.append(env_file)
 
-            # 3. User layer (per-user overrides).
-            if include_user:
-                self.load_user_config()
+        # 3. User layer (per-user overrides).
+        if include_user:
+            for path, data in self._collect_dir(
+                user_dir, required=False, layer="user"
+            ):
+                new_config = _deep_merge(new_config, data)
+                new_loaded_files.append(path)
 
-            # 4. Run layer (persist a snapshot for reproducibility).
-            if include_run:
-                try:
-                    self._run_snapshot_path = self.save_run_snapshot()
-                except Exception as exc:  # pragma: no cover - best effort
-                    self._logger.warning(
-                        "Failed to write run snapshot: %s", exc
-                    )
-                    self._run_snapshot_path = None
+        # 锁内：原子地更新配置状态。
+        with self._lock:
+            self._config = new_config
+            self._loaded_files = new_loaded_files
 
+        # 4. Run layer (persist a snapshot for reproducibility).
+        # 锁外写入磁盘（save_run_snapshot 内部仅短暂加锁读取配置）。
+        if include_run:
+            try:
+                self._run_snapshot_path = self.save_run_snapshot()
+            except Exception as exc:  # pragma: no cover - best effort
+                self._logger.warning(
+                    "Failed to write run snapshot: %s", exc
+                )
+                self._run_snapshot_path = None
+
+        with self._lock:
             return deepcopy(self._config)
 
     def load_user_config(self) -> Dict[str, Any]:
@@ -369,8 +397,14 @@ class ConfigCenter:
         Returns:
             The merged configuration dictionary after applying user overrides.
         """
+        # 锁外读取文件（慢速 I/O 不持有锁）。
+        user_dir = self._user_dir
+        collected = self._collect_dir(user_dir, required=False, layer="user")
+        # 锁内更新配置。
         with self._lock:
-            self._load_dir(self._user_dir, required=False, layer="user")
+            for path, data in collected:
+                self._config = _deep_merge(self._config, data)
+                self._loaded_files.append(path)
             return deepcopy(self._config)
 
     def load_run_snapshot(self, path: Union[str, Path]) -> Dict[str, Any]:
@@ -429,10 +463,30 @@ class ConfigCenter:
 
     def _load_file(self, path: Path, required: bool = True) -> None:
         """加载并合并单个 YAML 文件。"""
+        data = self._read_yaml_file(path, required=required)
+        if data is None:
+            return
+        with self._lock:
+            self._config = _deep_merge(self._config, data)
+            self._loaded_files.append(path)
+
+    def _read_yaml_file(
+        self, path: Path, required: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """读取单个 YAML 文件并返回其字典内容（不加锁、不修改状态）。
+
+        Args:
+            path: YAML 文件路径。
+            required: 为 ``True`` 时，缺失文件会抛出 ``FileNotFoundError``。
+
+        Returns:
+            解析后的字典；当文件缺失且 ``required`` 为 ``False`` 时返回
+            ``None``。
+        """
         if not path.exists():
             if required:
                 raise FileNotFoundError(f"Configuration file not found: {path}")
-            return
+            return None
 
         with open(path, "r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
@@ -444,10 +498,32 @@ class ConfigCenter:
                 f"Configuration file {path} must contain a YAML mapping at "
                 f"the top level, got {type(data).__name__}."
             )
+        return data
 
-        with self._lock:
-            self._config = _deep_merge(self._config, data)
-            self._loaded_files.append(path)
+    def _collect_dir(
+        self,
+        directory: Path,
+        required: bool,
+        layer: str,
+    ) -> List[tuple]:
+        """读取目录下所有 ``*.yaml`` 文件（不加锁、不修改状态）。
+
+        Returns:
+            一个 ``(path, data)`` 元组列表，按文件名排序。
+        """
+        if not directory.exists():
+            if required:
+                raise FileNotFoundError(
+                    f"{layer} config directory not found: {directory}"
+                )
+            return []
+
+        collected: List[tuple] = []
+        for yaml_file in sorted(directory.glob("*.yaml")):
+            data = self._read_yaml_file(yaml_file, required=True)
+            if data is not None:
+                collected.append((yaml_file, data))
+        return collected
 
     # ------------------------------------------------------------------
     # Access (点号分隔键访问)
@@ -701,15 +777,11 @@ class ConfigCenter:
         layer: str,
     ) -> None:
         """Load and merge every ``*.yaml`` file inside ``directory``."""
-        if not directory.exists():
-            if required:
-                raise FileNotFoundError(
-                    f"{layer} config directory not found: {directory}"
-                )
-            return
-
-        for yaml_file in sorted(directory.glob("*.yaml")):
-            self._load_file(yaml_file, required=True)
+        collected = self._collect_dir(directory, required, layer)
+        with self._lock:
+            for path, data in collected:
+                self._config = _deep_merge(self._config, data)
+                self._loaded_files.append(path)
 
     # ------------------------------------------------------------------
     # Reset (testing)
@@ -719,10 +791,31 @@ class ConfigCenter:
         """Reset the singleton instance.
 
         Primarily useful for testing where a fresh configuration is required.
+
+        .. warning::
+            不应在并发环境中与其他使用 :class:`ConfigCenter` 的操作同时
+            调用。本方法会尝试以非阻塞方式获取实例锁以减少竞争，但若锁
+            正被长时间持有则不阻塞等待，直接重置单例。
         """
         with cls._singleton_lock:
-            cls._instance = None
-            cls._initialized = False
+            instance = cls._instance
+            acquired = False
+            if instance is not None:
+                # 尝试获取实例锁以避免与正在进行的操作竞争。
+                # 使用非阻塞获取，避免死锁；获取失败则继续重置。
+                try:
+                    acquired = instance._lock.acquire(blocking=False)
+                except Exception:
+                    acquired = False
+            try:
+                cls._instance = None
+                cls._initialized = False
+            finally:
+                if acquired and instance is not None:
+                    try:
+                        instance._lock.release()
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------

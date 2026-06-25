@@ -280,32 +280,38 @@ class AuditLogger:
         with self._lock:
             if not self._buffer:
                 return 0
-            to_write = list(self._buffer)
-            self._buffer.clear()
+            batch = list(self._buffer)
 
-        if not to_write:
-            return 0
+        # 锁外写入磁盘（慢速 I/O 不持有锁）。
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            # Partition by the event's UTC date so each day gets its own file.
+            partitions: Dict[str, List[AuditEvent]] = {}
+            for event in batch:
+                key = event.timestamp.strftime("%Y-%m-%d")
+                partitions.setdefault(key, []).append(event)
 
-        self._log_dir.mkdir(parents=True, exist_ok=True)
-        # Partition by the event's UTC date so each day gets its own file.
-        partitions: Dict[str, List[AuditEvent]] = {}
-        for event in to_write:
-            key = event.timestamp.strftime("%Y-%m-%d")
-            partitions.setdefault(key, []).append(event)
-
-        for date_key, events in partitions.items():
-            path = self._log_dir / f"{date_key}.jsonl"
-            with open(path, "a", encoding="utf-8") as handle:
-                # 确保每行完整写入（单次 write 调用），并在写入后
-                # flush + fsync 以保证事件持久化到磁盘。
-                for event in events:
-                    line = json.dumps(
-                        event.to_dict(), ensure_ascii=False, default=str
-                    ) + "\n"
-                    handle.write(line)
-                handle.flush()
-                os.fsync(handle.fileno())  # 确保写入磁盘
-        return len(to_write)
+            for date_key, events in partitions.items():
+                path = self._log_dir / f"{date_key}.jsonl"
+                with open(path, "a", encoding="utf-8") as handle:
+                    # 确保每行完整写入（单次 write 调用），并在写入后
+                    # flush + fsync 以保证事件持久化到磁盘。
+                    for event in events:
+                        line = json.dumps(
+                            event.to_dict(), ensure_ascii=False, default=str
+                        ) + "\n"
+                        handle.write(line)
+                    handle.flush()
+                    os.fsync(handle.fileno())  # 确保写入磁盘
+            # 写入成功后才清空缓冲区（仅移除已写入的事件，保留写入期间
+            # 新追加的事件，避免数据丢失）。
+            with self._lock:
+                del self._buffer[: len(batch)]
+            return len(batch)
+        except Exception as exc:
+            # 写入失败，保留缓冲区以便下次重试。
+            self._diag.warning("Flush failed, retaining buffer: %s", exc)
+            raise
 
     # ------------------------------------------------------------------
     # Querying
@@ -380,6 +386,8 @@ class AuditLogger:
                     filtered_files.append(f)
                 jsonl_files = filtered_files
             for jsonl_file in jsonl_files:
+                if limit is not None and len(results) >= limit:
+                    break
                 results.extend(self._read_file(jsonl_file))
 
         # 2. In-memory buffered events (not yet flushed).
@@ -477,7 +485,11 @@ class AuditLogger:
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    events.append(AuditLogger._event_from_dict(data))
+                    try:
+                        events.append(AuditLogger._event_from_dict(data))
+                    except (ValueError, TypeError, KeyError):
+                        # 跳过无法重建的事件（如非法枚举值）。
+                        continue
         except OSError:
             return []
         return events
@@ -490,14 +502,17 @@ class AuditLogger:
             timestamp = datetime.fromisoformat(timestamp_raw)
         except (TypeError, ValueError):
             timestamp = datetime.now(timezone.utc)
+        # 使用枚举校验，确保 event_type / severity 取值合法。
+        event_type = AuditLogger._coerce_event_type(data.get("event_type", ""))
+        severity = AuditLogger._coerce_severity(data.get("severity", "INFO"))
         return AuditEvent(
             timestamp=timestamp,
-            event_type=str(data.get("event_type", "")),
+            event_type=event_type,
             actor=str(data.get("actor", "")),
             action=str(data.get("action", "")),
             resource_id=data.get("resource_id"),
             details=data.get("details") or {},
-            severity=str(data.get("severity", Severity.INFO.value)),
+            severity=severity,
         )
 
     @staticmethod

@@ -60,7 +60,6 @@ from .spec import (
     Plugin,
     PluginSpec,
     SOURCE_CODE,
-    SOURCE_DIRECTORY,
     SOURCE_ENTRY_POINT,
 )
 
@@ -84,6 +83,15 @@ _logger: logging.Logger = logging.getLogger("PluginManager")
 # ...) 或敏感文件访问的插件。分析器无状态且线程安全。
 # ---------------------------------------------------------------------------
 _ast_analyzer: ASTAnalyzer = ASTAnalyzer()
+
+# ---------------------------------------------------------------------------
+# 专用导入锁：保护 ``sys.path`` 的临时修改，避免并发插件加载时
+# ``sys.path.insert`` / ``sys.path.remove`` 产生竞争。
+# ---------------------------------------------------------------------------
+_import_lock: threading.Lock = threading.Lock()
+
+#: 插件源码文件大小上限（10 MiB），超过则拒绝加载。
+MAX_PLUGIN_SIZE: int = 10 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +503,15 @@ class PluginManager:
         plugin._registered_node_types = new_types
 
         # Optional lifecycle hook.
-        self._call_hook(spec, "on_load")
+        if not self._call_hook(spec, "on_load"):
+            # on_load hook 失败：回滚已注册的节点类型，不标记为 loaded。
+            self._unregister_nodes(plugin._registered_node_types)
+            plugin._registered_node_types = []
+            plugin.node_classes = []
+            plugin._loaded = False
+            raise PluginError(
+                "on_load hook failed for plugin {!r}".format(spec.name)
+            )
 
         plugin._loaded = True
         return plugin
@@ -566,20 +582,23 @@ class PluginManager:
             )
             return
 
-        # Make the plugin directory importable for relative hooks/imports.
-        added_path: Optional[str] = None
-        if spec.is_directory and spec.path is not None:
-            dir_str = str(spec.path)
-            if dir_str not in sys.path:
-                sys.path.insert(0, dir_str)
-                added_path = dir_str
+        # 使用专用导入锁保护 sys.path 的临时修改，避免并发插件加载
+        # 时 sys.path.insert / sys.path.remove 产生竞争。
+        with _import_lock:
+            # Make the plugin directory importable for relative hooks/imports.
+            added_path: Optional[str] = None
+            if spec.is_directory and spec.path is not None:
+                dir_str = str(spec.path)
+                if dir_str not in sys.path:
+                    sys.path.insert(0, dir_str)
+                    added_path = dir_str
 
-        try:
-            for module_path in modules:
-                self._import_single_module(spec, module_path)
-        finally:
-            if added_path is not None and added_path in sys.path:
-                sys.path.remove(added_path)
+            try:
+                for module_path in modules:
+                    self._import_single_module(spec, module_path)
+            finally:
+                if added_path is not None and added_path in sys.path:
+                    sys.path.remove(added_path)
 
     # ------------------------------------------------------------------
     def _import_single_module(self, spec: PluginSpec, module_path: str) -> None:
@@ -628,6 +647,20 @@ class PluginManager:
         # Avoid collisions when the same file is imported twice.
         if mod_name in sys.modules:
             return sys.modules[mod_name]
+        # --- 文件大小限制 -------------------------------------------------
+        # 在读取源码前检查文件大小，防止恶意超大文件耗尽内存。
+        try:
+            file_size = path.stat().st_size
+        except OSError as exc:
+            raise PluginError(
+                "Cannot stat plugin file {}: {}".format(path, exc)
+            ) from exc
+        if file_size > MAX_PLUGIN_SIZE:
+            raise PluginError(
+                "Plugin file too large: {} bytes (max {}): {}".format(
+                    file_size, MAX_PLUGIN_SIZE, path
+                )
+            )
         # --- R0-6: 静态安全分析 --------------------------------------------
         # 在 importlib 执行插件源码前，读取源码并使用 ASTAnalyzer 进行
         # 静态分析。命中危险调用 / 危险导入 / 敏感文件访问时拒绝加载，
@@ -656,30 +689,38 @@ class PluginManager:
         return module
 
     # ------------------------------------------------------------------
-    def _call_hook(self, spec: PluginSpec, hook_field: str) -> None:
-        """Resolve and invoke an optional ``on_load`` / ``on_unload`` hook."""
+    def _call_hook(self, spec: PluginSpec, hook_field: str) -> bool:
+        """Resolve and invoke an optional ``on_load`` / ``on_unload`` hook.
+
+        Returns:
+            ``True`` if the hook was not defined, could not be resolved, or
+            ran successfully.  ``False`` if the hook was found and callable
+            but raised an exception during execution.
+        """
         hook_path = getattr(spec, hook_field, "")
         if not hook_path:
-            return
+            return True
         func = self._resolve_hook(spec, hook_path)
         if func is None:
             self._logger.warning(
                 "Could not resolve %s hook %r for plugin %r.",
                 hook_field, hook_path, spec.name,
             )
-            return
+            return True
         if not callable(func):
             self._logger.warning(
                 "%s hook %r for plugin %r is not callable.",
                 hook_field, hook_path, spec.name,
             )
-            return
+            return True
         try:
             func()
+            return True
         except Exception as exc:
             self._logger.warning(
                 "%s hook for plugin %r raised: %s", hook_field, spec.name, exc
             )
+            return False
 
     # ------------------------------------------------------------------
     def _resolve_hook(

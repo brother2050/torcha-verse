@@ -32,6 +32,11 @@ from typing import Any, Dict, List, Optional
 from assets.base import AssetRef
 
 from .base import BaseNode, NodeContext, NodeSpec, register_node
+from ._helpers import (
+    _MEGAPIXEL_PIXELS,
+    coerce_dim as _coerce_dim,
+    ref_id as _ref_id,
+)
 
 __all__ = [
     "ImageTxt2ImgNode",
@@ -56,8 +61,6 @@ _IMAGE_RAM_PER_MEGAPIXEL_GB: float = 0.05
 _IMAGE_TIME_PER_MPX_STEP_S: float = 0.10
 #: Base VRAM (GB) for the diffusion model weights.
 _IMAGE_MODEL_VRAM_GB: float = 4.0
-#: Number of pixels in one megapixel.
-_MEGAPIXEL_PIXELS: float = 1_000_000.0
 
 #: 默认图像宽度/高度（像素），用于 execute() 中的回退值。
 _DEFAULT_WIDTH: int = 512
@@ -69,17 +72,6 @@ _DEFAULT_STEPS: int = 20
 _DEFAULT_STRENGTH: float = 0.75
 #: 默认放大倍数，用于 execute() 中的回退值。
 _DEFAULT_SCALE: int = 2
-
-
-def _coerce_dim(value: Any) -> Optional[int]:
-    """Return ``value`` as an ``int`` when it is an integer-like number."""
-    if isinstance(value, bool):  # bool is a subclass of int -- exclude it.
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
 
 
 def _validate_dimensions(
@@ -713,13 +705,6 @@ class ImageInpaintNode(BaseNode):
 # ---------------------------------------------------------------------------
 # Small helpers shared by the image nodes
 # ---------------------------------------------------------------------------
-def _ref_id(ref: Any) -> Optional[str]:
-    """Return the asset id of ``ref`` when it is an :class:`AssetRef`."""
-    if isinstance(ref, AssetRef):
-        return ref.asset_id
-    return None
-
-
 def _num_loras(loras: Any) -> int:
     """Return the number of LoRA adapters in ``loras`` (0 if absent)."""
     if isinstance(loras, list):

@@ -78,6 +78,18 @@ except Exception:  # pragma: no cover - safety not installed
 
 
 # ---------------------------------------------------------------------------
+# Tool version -- read from the installed package metadata when available so
+# the SBOM stays in sync with the actual distribution version.
+# ---------------------------------------------------------------------------
+try:
+    from importlib.metadata import version as _pkg_version
+
+    _tool_version: str = _pkg_version("torcha-verse")
+except Exception:  # pragma: no cover - package not installed
+    _tool_version = "0.3.1"
+
+
+# ---------------------------------------------------------------------------
 # Module-level configuration constants
 # ---------------------------------------------------------------------------
 #: SPDX identifiers of licences that permit commercial use.
@@ -264,6 +276,7 @@ class SecurityAudit:
             return self._scan_with_pip_audit(path)
         # Fallback: parse the file so callers can inspect the dependency
         # list, but report no vulnerabilities without a backend.
+        _logger.warning("pip-audit not installed; skipping dependency check")
         return []
 
     # ------------------------------------------------------------------
@@ -298,7 +311,7 @@ class SecurityAudit:
                     {
                         "vendor": "TorchaVerse",
                         "name": "SecurityAudit",
-                        "version": "0.3.1",
+                        "version": _tool_version,
                     }
                 ],
             },
@@ -467,6 +480,7 @@ class SecurityAudit:
                 "type": _SBOM_COMPONENT_TYPE,
                 "name": name,
                 "bom-ref": f"pkg:pypi/{name}",
+                "purl": f"pkg:pypi/{name}@{version}" if version else f"pkg:pypi/{name}",
             }
             if version:
                 component["version"] = version

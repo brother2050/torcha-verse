@@ -36,6 +36,7 @@ Example:
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import unicodedata
@@ -76,6 +77,17 @@ _PATH_TRAVERSAL_TOKENS: tuple[str, ...] = (
     "%252e%252e",
     "..%2f",
     "..%5c",
+)
+
+#: Regular-expression patterns for path-traversal detection.  These are
+#: more precise than a bare substring match: ``..`` is only flagged when
+#: followed by a path separator, avoiding false positives on version
+#: numbers (e.g. ``1..0``) or ellipses in prose.
+_PATH_TRAVERSAL_PATTERNS: tuple[str, ...] = (
+    r"\.\./",           # ../
+    r"\.\.\\",          # ..\
+    r"%2e%2e",          # URL-encoded ..
+    r"%252e%252e",      # double-encoded ..
 )
 
 #: Sensitive path *fragments* (directory names) that, when found after a
@@ -236,8 +248,11 @@ class InputSanitizer:
         cleaned = _CONTROL_CHAR_RE.sub("", normalised)
 
         # 3. Path-traversal detection (before truncation so a payload
-        #    cannot be split across the cut point).
-        self._check_path_traversal(cleaned)
+        #    cannot be split across the cut point).  Only triggered when
+        #    a path separator is present to avoid false positives on
+        #    prose that merely contains ``..`` (e.g. version numbers).
+        if "/" in cleaned or "\\" in cleaned:
+            self._check_path_traversal(cleaned)
 
         # 4. Redact custom blocklist entries.
         cleaned = self._apply_blocklist(cleaned)
@@ -385,8 +400,6 @@ class InputSanitizer:
         cleaned = self._sanitize_value(data, depth=0)
 
         # Enforce the byte budget on the cleaned payload.
-        import json
-
         try:
             payload = json.dumps(cleaned, ensure_ascii=False)
         except (TypeError, ValueError) as exc:
@@ -437,13 +450,13 @@ class InputSanitizer:
     def _check_path_traversal(text: str) -> None:
         """Raise :class:`ValueError` if ``text`` contains a traversal token."""
         lowered = text.lower()
-        for token in _PATH_TRAVERSAL_TOKENS:
-            if token in lowered:
+        for pattern in _PATH_TRAVERSAL_PATTERNS:
+            if re.search(pattern, lowered):
                 raise ValueError(
-                    f"Path-traversal token {token!r} detected in input."
+                    f"Path-traversal pattern {pattern!r} detected in input."
                 )
         for fragment in _SENSITIVE_PATH_FRAGMENTS:
-            if fragment in lowered:
+            if re.search(r"\b" + re.escape(fragment) + r"\b", lowered):
                 raise ValueError(
                     f"Sensitive path fragment {fragment!r} detected in input."
                 )

@@ -247,6 +247,34 @@ class Canvas:
         with self._lock:
             return [copy.deepcopy(c) for c in self._state.connections]
 
+    def update_node_inputs(
+        self, node_id: str, inputs: Dict[str, Any]
+    ) -> None:
+        """Update a node's inputs in-place.
+
+        Unlike :meth:`get_node` / :meth:`list_nodes` (which return deep
+        copies), this method mutates the node stored on the canvas so that
+        changes persist.  It is the sanctioned way for collaborators such
+        as :class:`~canvas.autodirector.AutoDirector` to adjust a node's
+        parameters after creation.
+
+        Args:
+            node_id: The id of the node to update.
+            inputs: A mapping of input keys to new values.  Existing keys
+                are updated; keys not present in ``inputs`` are left
+                unchanged (``dict.update`` semantics).
+
+        Raises:
+            KeyError: If no node with ``node_id`` exists.
+        """
+        with self._lock:
+            node = self._find_node(node_id)
+            if node is None:
+                raise KeyError(
+                    "No CanvasNode with id={!r}.".format(node_id)
+                )
+            node.inputs.update(inputs)
+
     def _find_node(self, node_id: str) -> Optional[CanvasNode]:
         """Return the node with ``node_id`` or ``None`` (caller holds lock)."""
         for node in self._state.nodes:
@@ -463,10 +491,12 @@ class Canvas:
             # Duplicate connections.
             seen: set[Tuple[str, str, str, str]] = set()
             for conn in self._state.connections:
+                # 元组顺序与 ConnectionValidator 一致:
+                # (from_node, to_node, from_port, to_port)
                 key = (
                     conn.from_node,
-                    conn.from_port,
                     conn.to_node,
+                    conn.from_port,
                     conn.to_port,
                 )
                 if key in seen:
@@ -607,8 +637,13 @@ class Canvas:
             A new :class:`~pipeline.composer.Pipeline`.
 
         Raises:
-            ValueError: If the canvas has no nodes.
+            ValueError: If the canvas has no nodes or has validation errors.
         """
+        errors = self.validate()
+        if errors:
+            raise ValueError(
+                "Canvas has validation errors: {}".format(errors)
+            )
         with self._lock:
             if not self._state.nodes:
                 raise ValueError(
@@ -795,6 +830,7 @@ class Canvas:
             )
 
         # Add connections from other with rewired ids.
+        skipped: List[Tuple[str, str]] = []
         for conn_d in other_snapshot["state"]["connections"]:
             new_from = id_map.get(
                 conn_d["from_node"], conn_d["from_node"]
@@ -816,6 +852,12 @@ class Canvas:
                     new_to,
                     conn_d["to_port"],
                 )
+                skipped.append((conn_d["from_node"], conn_d["to_node"]))
+        if skipped:
+            _logger.warning(
+                "Merge completed with %d skipped connections: %s",
+                len(skipped), skipped,
+            )
 
         return merged
 

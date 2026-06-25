@@ -14,9 +14,9 @@ from .cache_store import CacheStore
 from .checkpoint_manager import CheckpointManager
 from .config_center import ConfigCenter
 from .config_manager import ConfigManager, get_config
-from .device_manager import DeviceManager, DTypePolicy
+from .device_manager import DeviceManager, DTypePolicy, PipelineParallel, TensorParallel
 from .error_handler import ErrorHandler, with_error_handler
-from .logger import Logger, get_logger
+from .logger import Logger, get_logger, set_log_level
 from .rate_limiter import RateLimiter
 from .resource_budget import (
     AllocationHandle,
@@ -44,9 +44,12 @@ __all__ = [
     # device / distributed
     "DeviceManager",
     "DTypePolicy",
+    "TensorParallel",
+    "PipelineParallel",
     # logging & errors
     "Logger",
     "get_logger",
+    "set_log_level",
     "ErrorHandler",
     "with_error_handler",
     # lifecycle utilities

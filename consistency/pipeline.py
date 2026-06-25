@@ -41,7 +41,7 @@ calculator) and the L1/L2/L6 layers.
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from assets.model_asset import CharacterAsset, DepthAsset, OutfitAsset, SceneAsset
 from assets.store import AssetStore
@@ -52,6 +52,13 @@ from .outfit import OutfitEngine
 from .profile import ConsistencyProfile
 from .scene import SceneEngine
 from .score import ConsistencyScore, ScoreCalculator
+
+if TYPE_CHECKING:
+    # These imports are only needed for type annotations; importing them
+    # at runtime would create circular dependencies (pipeline.composer ->
+    # nodes -> ... -> consistency).
+    from pipeline.composer import Pipeline
+    from nodes.base import NodeContext
 
 __all__ = ["ConsistencyPipeline"]
 
@@ -570,23 +577,26 @@ class ConsistencyPipeline:
         self._validate_dimensions(width, height)
         builder = PipelineBuilder("consistency_generate")
 
-        # 基础图像生成节点
+        # 基础图像生成节点（当 character 未激活时创建）。
+        # 当 character 激活时，character_apply 直接作为链的起点，
+        # 避免浪费一个 base 生成节点的输出（fix #18）。
         base_inputs: Dict[str, Any] = {
             "prompt": prompt,
             "width": width,
             "height": height,
         }
         base_inputs.update(kwargs)
-        builder.node("image_txt2img", id="base", **base_inputs)
-        prev_id, prev_key = "base", "image"
+        # 为必填输入提供默认值，确保 validate_inputs 校验通过。
+        base_inputs.setdefault("steps", 20)
+        base_inputs.setdefault("guidance_scale", 7.0)
 
-        # 按权重链式添加一致性节点
-        if (
+        character_active = (
             self._character is not None
             and self._profile.character_weight > 0.0
-        ):
-            # character_apply 不需要上游图像输入，不连接 base→char，
-            # 而是将 char 作为独立分支，直接接收 prompt / width / height。
+        )
+
+        if character_active:
+            # character_apply 直接作为链起点，不创建 base 节点。
             builder.node(
                 "character_apply",
                 id="char",
@@ -597,6 +607,9 @@ class ConsistencyPipeline:
                 character_weight=self._profile.character_weight,
             )
             prev_id, prev_key = "char", "image"
+        else:
+            builder.node("image_txt2img", id="base", **base_inputs)
+            prev_id, prev_key = "base", "image"
 
         if (
             self._outfit is not None
@@ -641,7 +654,11 @@ class ConsistencyPipeline:
             builder.connect(
                 prev_id, "depth", output_key=prev_key, input_key="image_or_scene"
             )
-            prev_id, prev_key = "depth", "depth_map"
+            # depth_condition 的输出是 depth_map（DEPTH 类型），不是图像。
+            # 不将其作为链末端，保持 prev 指向上一个图像节点，
+            # 这样链的最终输出仍是图像而非深度图（fix #17）。
+            # depth 节点仍然执行（产生 depth_map），但其输出不作为
+            # 后续节点的输入。
 
         self._logger.debug(
             "Built consistency pipeline (prompt=%r, %dx%d).",

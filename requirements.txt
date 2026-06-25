@@ -12,13 +12,6 @@ numpy>=1.24.0
 # Image processing
 Pillow>=10.0.0
 
-# Audio processing
-librosa>=0.10.0
-soundfile>=0.12.0
-
-# Tokenization
-sentencepiece>=0.1.99
-
 # Serving
 fastapi>=0.104.0
 uvicorn>=0.24.0
@@ -32,9 +25,6 @@ gradio>=4.0.0
 
 # RAG
 faiss-cpu>=1.7.4
-
-# Evaluation
-tqdm>=4.66.0
 
 # Distributed
 safetensors>=0.4.0

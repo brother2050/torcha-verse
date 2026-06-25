@@ -11,8 +11,9 @@ provided for function-level protection.
 from __future__ import annotations
 
 import functools
+import threading
 import traceback
-from typing import Any, Callable, Dict, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union
 
 import torch
 
@@ -52,24 +53,35 @@ class ErrorHandler:
 
     _instance: Optional["ErrorHandler"] = None
     _initialized: bool = False
+    # 类级锁，保护单例创建 / 初始化，避免并发 ``ErrorHandler()`` 调用
+    # 在 ``_initialized`` 标志上产生 TOCTOU 竞争。
+    _singleton_lock: threading.Lock = threading.Lock()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "ErrorHandler":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._singleton_lock:
+                if cls._instance is None:  # double-check
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, logger_name: str = "error_handler") -> None:
+        # Fast path: already initialised -- avoid the lock entirely.
         if self._initialized:
             return
-        self._initialized = True
+        with self._singleton_lock:
+            # Double-check under the lock to prevent two threads from
+            # initialising concurrently.
+            if self._initialized:
+                return
+            self._initialized = True
 
-        self._handlers: Dict[Type[BaseException], ExceptionHandler] = {}
-        self._logger = get_logger(logger_name)
-        self._default_handler: Optional[ExceptionHandler] = None
-        self._suppress_unknown: bool = False
+            self._handlers: Dict[Type[BaseException], ExceptionHandler] = {}
+            self._logger = get_logger(logger_name)
+            self._default_handler: Optional[ExceptionHandler] = None
+            self._suppress_unknown: bool = False
 
-        # Register the built-in handlers.
-        self._register_builtin_handlers()
+            # Register the built-in handlers.
+            self._register_builtin_handlers()
 
     # ------------------------------------------------------------------
     # Registration
@@ -252,8 +264,9 @@ class ErrorHandler:
     @classmethod
     def reset(cls) -> None:
         """Reset the singleton (useful for testing)."""
-        cls._instance = None
-        cls._initialized = False
+        with cls._singleton_lock:
+            cls._instance = None
+            cls._initialized = False
 
 
 # ---------------------------------------------------------------------------
