@@ -18,6 +18,42 @@ from typing import Any, Dict, List, Optional, Protocol, Union, runtime_checkable
 import torch
 import torch.nn as nn
 
+from .error_helper import safe_call
+
+
+# ---------------------------------------------------------------------------
+# Distributed-parallelism placeholders (see DEFERRED_TASKS D3)
+# ---------------------------------------------------------------------------
+def _tensor_parallel_impl(
+    model: nn.Module, num_devices: int
+) -> nn.Module:
+    """Module-level placeholder for tensor parallelism.
+
+    Raises :class:`NotImplementedError` unconditionally.  The wrapper
+    :meth:`DeviceManager.tensor_parallel` routes the call through
+    :func:`safe_call` and falls back to the original ``model`` so that
+    single-GPU development environments never break.
+    """
+    raise NotImplementedError(
+        "Tensor parallelism is not yet implemented. See "
+        "DEFERRED_TASKS D3 for the planned interface."
+    )
+
+
+def _pipeline_parallel_impl(
+    model: nn.Module,
+    num_stages: int,
+    devices: Optional[List[torch.device]] = None,
+) -> nn.Module:
+    """Module-level placeholder for pipeline parallelism.
+
+    See :func:`_tensor_parallel_impl` for the rationale.
+    """
+    raise NotImplementedError(
+        "Pipeline parallelism is not yet implemented. See "
+        "DEFERRED_TASKS D3 for the planned interface."
+    )
+
 __all__ = [
     "DeviceManager",
     "DTypePolicy",
@@ -460,19 +496,25 @@ class DeviceManager:
         )
 
     # ------------------------------------------------------------------
-    # Parallelism (interface placeholders)
+    # Parallelism (interface placeholders, see DEFERRED_TASKS D3)
     # ------------------------------------------------------------------
     def tensor_parallel(self, model: nn.Module, num_devices: int) -> nn.Module:
         """Shard ``model`` using tensor parallelism.
 
         Note:
-            Not yet implemented. This is a placeholder that raises
-            ``NotImplementedError`` until a concrete backend is available.
+            Placeholder — see :doc:`/docs/DEFERRED_TASKS` (D3).  The
+            method returns ``model`` unchanged and emits a warning so
+            single-GPU development environments do not break; a real
+            backend (NCCL / Gloo / Ray) will be selected when the
+            distributed story is finalised.
         """
-        raise NotImplementedError(
-            "Tensor parallelism is not yet implemented. See the "
-            "TensorParallel protocol for the planned interface."
-        )
+        return safe_call(
+            _tensor_parallel_impl,
+            model,
+            num_devices,
+            fallback=model,
+            op="tensor_parallel",
+        ) or model
 
     def pipeline_parallel(
         self, model: nn.Module, num_stages: int, devices: Optional[List[torch.device]] = None
@@ -480,13 +522,19 @@ class DeviceManager:
         """Partition ``model`` into pipeline stages.
 
         Note:
-            Not yet implemented. This is a placeholder that raises
-            ``NotImplementedError`` until a concrete backend is available.
+            Placeholder — see :doc:`/docs/DEFERRED_TASKS` (D3).  Same
+            semantics as :meth:`tensor_parallel`: returns ``model``
+            unchanged with a logged warning when the distributed
+            backend is not available.
         """
-        raise NotImplementedError(
-            "Pipeline parallelism is not yet implemented. See the "
-            "PipelineParallel protocol for the planned interface."
-        )
+        return safe_call(
+            _pipeline_parallel_impl,
+            model,
+            num_stages,
+            devices,
+            fallback=model,
+            op="pipeline_parallel",
+        ) or model
 
     # ------------------------------------------------------------------
     # Introspection

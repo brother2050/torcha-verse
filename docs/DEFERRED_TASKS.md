@@ -53,6 +53,29 @@
 
 ---
 
+## D3 — device_manager TP/PP 占位与 placeholder 集中化
+
+**现状**
+- `infrastructure/device_manager.py` 中存在 `raise NotImplementedError`,在单 GPU 环境下调用会直接抛错,影响开发期体验。
+- D2 审计出的 42 处 `pass` / `NotImplementedError` 分散在 18 个文件,缺少集中视图,后续维护成本高。
+
+**为什么延后**
+- TP/PP 的实际实现依赖分布式调度框架(目前尚未选定 backend:NCCL / Gloo / Ray),提前实现会带来返工。
+- placeholder 集中化需要先有统一的 `infrastructure/error_helper.py` 的 `safe_call` API,以及降级协议约定。
+
+**再次启动条件(任一)**
+1. 分布式 backend 选定,单卡/多卡策略明确。
+2. `safe_call` API 稳定并文档化,接入 ≥ 1 个真实模块。
+3. 准备好投入 ≥ 1 个工作日做"集中化 → 灰度 → 收口"。
+
+**重启时要做的事**
+1. 在 `infrastructure/device_manager.py` 中把 `raise NotImplementedError` 替换为 `from .error_helper import safe_call` + 原样返回 `model` + 警告日志,保证单 GPU 环境下调用不爆。
+2. 建立 `docs/placeholder_registry.md`,集中列出所有 `pass` / `NotImplementedError`,按"协议占位 / 分布式未实现 / 降级路径"分类。
+3. 统一相关 docstring,统一指向 D3,让所有占位都有单一来源的说明。
+4. 在 `pyproject.toml` 里把"未在 placeholder_registry 注册的 pass/NotImplementedError"设为 lint 必过项。
+
+---
+
 ## 添加新条目
 
 复制下面这段,改成新条目:
