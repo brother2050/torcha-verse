@@ -296,11 +296,15 @@ class AuditLogger:
         for date_key, events in partitions.items():
             path = self._log_dir / f"{date_key}.jsonl"
             with open(path, "a", encoding="utf-8") as handle:
+                # 确保每行完整写入（单次 write 调用），并在写入后
+                # flush + fsync 以保证事件持久化到磁盘。
                 for event in events:
-                    handle.write(
-                        json.dumps(event.to_dict(), ensure_ascii=False)
-                        + "\n"
-                    )
+                    line = json.dumps(
+                        event.to_dict(), ensure_ascii=False, default=str
+                    ) + "\n"
+                    handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())  # 确保写入磁盘
         return len(to_write)
 
     # ------------------------------------------------------------------
@@ -366,7 +370,7 @@ class AuditLogger:
                     # 如果 start_time 在某天之后，跳过该天之前的文件
                     if start_utc is not None:
                         # 文件日期的结束（当天23:59:59）
-                        file_end = file_date.replace(hour=23, minute=59, second=59)
+                        file_end = file_date.replace(hour=23, minute=59, second=59, microsecond=999999)
                         if file_end < start_utc:
                             continue
                     # 如果 end_time 在某天之前，跳过该天之后的文件

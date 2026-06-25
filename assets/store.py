@@ -319,7 +319,7 @@ class AssetStore:
             size_match = any(
                 r.size_bytes == size_bytes for r in existing_revisions
             )
-        except BaseException:
+        except Exception:
             self._cleanup_staging(staging_path)
             raise
 
@@ -341,6 +341,7 @@ class AssetStore:
 
                 # S2-6: 显式事务保护元数据操作(加载资产 + 保存资产)。
                 self._conn.execute("BEGIN")  # type: ignore[union-attr]
+                committed = False
                 try:
                     # 保留此前存储版本的修订历史。
                     stored = self._load_asset(asset.id)
@@ -365,9 +366,10 @@ class AssetStore:
                     asset.updated_at = time.time()
                     self._save_asset(asset)
                     self._conn.execute("COMMIT")  # type: ignore[union-attr]
-                except Exception:
-                    self._conn.execute("ROLLBACK")  # type: ignore[union-attr]
-                    raise
+                    committed = True
+                finally:
+                    if not committed:
+                        self._conn.execute("ROLLBACK")  # type: ignore[union-attr]
 
                 self._hot_put(asset)
 
@@ -381,7 +383,7 @@ class AssetStore:
                     revision=rev.revision,
                     content_hash=rev.content_hash,
                 )
-            except BaseException:
+            except Exception:
                 self._cleanup_staging(staging_path)
                 raise
 
@@ -398,8 +400,8 @@ class AssetStore:
             KeyError: If the asset or the referenced revision is missing.
             FileNotFoundError: If the content blob is missing on disk.
         """
-        self._ensure_open()  # S2-7
         with self._lock:
+            self._ensure_open()  # S2-7
             asset = self._load_asset(ref.asset_id)
             if asset is None:
                 raise KeyError(f"Asset not found: {ref.asset_id!r}")
@@ -418,8 +420,8 @@ class AssetStore:
 
     def exists(self, ref: AssetRef) -> bool:
         """Return ``True`` if the referenced asset + revision exist."""
-        self._ensure_open()  # S2-7
         with self._lock:
+            self._ensure_open()  # S2-7
             asset = self._load_asset(ref.asset_id)
             if asset is None:
                 return False
@@ -453,12 +455,13 @@ class AssetStore:
         if tags is not None and tags:
             # 将 tags 过滤下推到 SQL：每个 tag 必须在 tags_json 中出现
             for tag in tags:
-                query += " AND tags_json LIKE ?"
-                params.append(f'%"{tag}"%')
+                escaped_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                query += " AND tags_json LIKE ? ESCAPE '\\'"
+                params.append(f'%"{escaped_tag}"%')
         query += " ORDER BY updated_at DESC;"
 
-        self._ensure_open()  # S2-7
         with self._lock:
+            self._ensure_open()  # S2-7
             rows = self._conn.execute(query, params).fetchall()  # type: ignore[union-attr]
 
         results: List[Asset] = []
@@ -480,8 +483,8 @@ class AssetStore:
             ``True`` if the asset was found and archived, ``False`` if it
             was not found.
         """
-        self._ensure_open()  # S2-7
         with self._lock:
+            self._ensure_open()  # S2-7
             asset = self._load_asset(ref.asset_id)
             if asset is None:
                 return False
@@ -506,12 +509,14 @@ class AssetStore:
         """
         if not query:
             return []
-        self._ensure_open()  # S2-7
-        pattern = f"%{query}%"
+        escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped_query}%"
         with self._lock:
+            self._ensure_open()  # S2-7
             rows = self._conn.execute(  # type: ignore[union-attr]
                 "SELECT metadata_json FROM assets "
-                "WHERE name LIKE ? OR description LIKE ? OR tags_json LIKE ? "
+                "WHERE name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
+                "OR tags_json LIKE ? ESCAPE '\\' "
                 "ORDER BY updated_at DESC;",
                 (pattern, pattern, pattern),
             ).fetchall()
@@ -543,7 +548,8 @@ class AssetStore:
         Returns:
             An :class:`AssetRef` to the newly created asset.
         """
-        self._ensure_open()  # S2-7
+        with self._lock:
+            self._ensure_open()  # S2-7
         asset, content_path = self.get(ref)
         data = asset.to_dict()
         new_id = f"{asset.id}-fork-{uuid4().hex[:8]}"
@@ -572,8 +578,8 @@ class AssetStore:
         Returns:
             ``True`` if the content is present and its hash matches.
         """
-        self._ensure_open()  # S2-7
         with self._lock:
+            self._ensure_open()  # S2-7
             asset = self._load_asset(ref.asset_id)
             if asset is None:
                 return False

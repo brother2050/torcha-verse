@@ -220,7 +220,7 @@ class Canvas:
             node.position = (float(position[0]), float(position[1]))
 
     def get_node(self, node_id: str) -> CanvasNode:
-        """Return the node registered under ``node_id``.
+        """Return a deep copy of the node registered under ``node_id``.
 
         Args:
             node_id: The node id to look up.
@@ -235,17 +235,17 @@ class Canvas:
             node = self._find_node(node_id)
             if node is None:
                 raise KeyError("No CanvasNode with id={!r}.".format(node_id))
-            return node
+            return copy.deepcopy(node)
 
     def list_nodes(self) -> List[CanvasNode]:
         """Return a list of all nodes on the canvas (insertion order)."""
         with self._lock:
-            return list(self._state.nodes)
+            return [copy.deepcopy(n) for n in self._state.nodes]
 
     def list_connections(self) -> List[CanvasConnection]:
         """Return a list of all connections on the canvas."""
         with self._lock:
-            return list(self._state.connections)
+            return [copy.deepcopy(c) for c in self._state.connections]
 
     def _find_node(self, node_id: str) -> Optional[CanvasNode]:
         """Return the node with ``node_id`` or ``None`` (caller holds lock)."""
@@ -480,9 +480,9 @@ class Canvas:
                     )
                 seen.add(key)
 
-        # Type matching using the TypeSystem (no longer silently skipped).
-        type_errors = self._validate_port_types(node_type_map)
-        errors.extend(type_errors)
+            # Type matching using the TypeSystem (no longer silently skipped).
+            type_errors = self._validate_port_types(node_type_map)
+            errors.extend(type_errors)
 
         return errors
 
@@ -784,11 +784,14 @@ class Canvas:
             old_id = node_d["id"]
             new_id = _MERGE_ID_PREFIX + old_id
             id_map[old_id] = new_id
+            merge_inputs = dict(node_d.get("inputs") or {})
+            merge_inputs.pop("id", None)
+            merge_inputs.pop("position", None)
             merged.add_node(
                 node_d["type"],
                 id=new_id,
                 position=tuple(node_d.get("position", (0.0, 0.0))),
-                **dict(node_d.get("inputs") or {}),
+                **merge_inputs,
             )
 
         # Add connections from other with rewired ids.

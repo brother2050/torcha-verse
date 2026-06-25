@@ -242,8 +242,10 @@ class ImageTxt2ImgNode(BaseNode):
             A dict with ``image`` and ``seed``.
         """
         prompt = str(inputs.get("prompt", ""))
-        width = _coerce_dim(inputs.get("width")) or _DEFAULT_WIDTH
-        height = _coerce_dim(inputs.get("height")) or _DEFAULT_HEIGHT
+        _w = _coerce_dim(inputs.get("width"))
+        width = _w if _w is not None else _DEFAULT_WIDTH
+        _h = _coerce_dim(inputs.get("height"))
+        height = _h if _h is not None else _DEFAULT_HEIGHT
         steps = inputs.get("steps")
         steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         seed = inputs.get("seed")
@@ -437,8 +439,10 @@ class ImageImg2ImgNode(BaseNode):
             A dict with ``image`` and ``seed``.
         """
         prompt = str(inputs.get("prompt", ""))
-        width = _coerce_dim(inputs.get("width")) or _DEFAULT_WIDTH
-        height = _coerce_dim(inputs.get("height")) or _DEFAULT_HEIGHT
+        _w = _coerce_dim(inputs.get("width"))
+        width = _w if _w is not None else _DEFAULT_WIDTH
+        _h = _coerce_dim(inputs.get("height"))
+        height = _h if _h is not None else _DEFAULT_HEIGHT
         steps = inputs.get("steps")
         steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         strength = inputs.get("strength")

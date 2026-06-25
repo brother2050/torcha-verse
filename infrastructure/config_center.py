@@ -472,6 +472,10 @@ class ConfigCenter:
                     current = current[part]
                 else:
                     return default
+            # 对可变容器类型（dict/list）返回深拷贝，避免调用方
+            # 误改内部配置；标量类型直接返回即可。
+            if isinstance(current, (dict, list)):
+                return deepcopy(current)
             return current
 
     def set(self, key: str, value: Any) -> None:

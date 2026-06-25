@@ -324,6 +324,13 @@ class InputSanitizer:
         if not isinstance(text, str):
             raise TypeError(f"text must be str, got {type(text).__name__}.")
 
+        # NFC normalisation and zero-width character stripping so that
+        # obfuscated injection payloads (e.g. using homoglyphs or invisible
+        # joiners) cannot bypass the rule matchers.
+        text = unicodedata.normalize("NFC", text)
+        for zw in ("\u200b", "\u200c", "\u200d", "\ufeff"):
+            text = text.replace(zw, "")
+
         matched: list[str] = []
         for pattern, rule_name in _COMPILED_INJECTION_RULES:
             if pattern.search(text):
@@ -421,7 +428,9 @@ class InputSanitizer:
         result = text
         for word in blocklist:
             if word:
-                result = result.replace(word, "*" * len(word))
+                result = re.sub(
+                    re.escape(word), "*" * len(word), result, flags=re.IGNORECASE
+                )
         return result
 
     @staticmethod

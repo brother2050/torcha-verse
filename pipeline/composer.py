@@ -152,6 +152,7 @@ class Pipeline:
         self._dag: DAG = dag
         self._logger: logging.Logger = _logger
         self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor_max_workers: int = 0
 
         # Run-control primitives.
         self._cancel_event: threading.Event = threading.Event()
@@ -159,6 +160,12 @@ class Pipeline:
         self._pause_event.set()  # not paused by default
         self._run_lock: threading.RLock = threading.RLock()
         self._running: bool = False
+
+    def __enter__(self) -> "Pipeline":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # Properties
@@ -208,9 +215,11 @@ class Pipeline:
 
     def close(self) -> None:
         """Clean up resources (thread pool)."""
-        if self._executor is not None:
-            self._executor.shutdown(wait=False)
-            self._executor = None
+        with self._run_lock:
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+                self._executor = None
+            self._executor_max_workers = 0
 
     # ------------------------------------------------------------------
     # Execution
@@ -271,9 +280,12 @@ class Pipeline:
         step = 0
         results: Dict[str, Any] = {}
 
+        # Compute max_workers once (it does not depend on the current group).
+        max_workers = max(ctx.max_workers, max((len(g) for g in groups), default=1))
+
         for group in groups:
             # Cooperative pause: block (with a small spin) until resumed.
-            while not self._pause_event.wait(timeout=1.0):
+            while not self._pause_event.wait(timeout=_PAUSE_POLL_INTERVAL_S):
                 if self._cancel_event.is_set():
                     break
             if self._cancel_event.is_set():
@@ -285,11 +297,11 @@ class Pipeline:
 
             # Run the layer concurrently.
             # 使用可复用线程池
-            max_workers = max(ctx.max_workers, max((len(g) for g in groups), default=1))
-            if self._executor is None or self._executor._max_workers < max_workers:
+            if self._executor is None or self._executor_max_workers < max_workers:
                 if self._executor is not None:
                     self._executor.shutdown(wait=False)
                 self._executor = ThreadPoolExecutor(max_workers=max_workers)
+                self._executor_max_workers = max_workers
             pool = self._executor
             future_map: Dict[Future, str] = {}
             for node_id in group:
@@ -327,11 +339,11 @@ class Pipeline:
                             continue
                         try:
                             other_outputs = other_fut.result()
-                        except Exception:
+                        except Exception as other_exc:
                             # 该 future 也失败了,跳过(不保留失败结果)。
                             self._logger.debug(
                                 "Future %r also failed: %s",
-                                other_id, exc,
+                                other_id, other_exc,
                             )
                             continue
                         results[other_id] = other_outputs

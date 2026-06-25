@@ -287,9 +287,11 @@ class DeviceManager:
             device: A device string (``"cuda"``, ``"cuda:1"``, ``"cpu"`` ...)
                 or ``torch.device``.
         """
-        self._device = self._resolve_device(device)
-        if self._device.type == "cuda":
-            torch.cuda.set_device(self._device)
+        with self._singleton_lock:
+            self._device = self._resolve_device(device)
+            if self._device.type == "cuda":
+                torch.cuda.set_device(self._device)
+            _logger.info("Device set to %s", self._device)
 
     @property
     def dtype_policy(self) -> DTypePolicy:
@@ -536,5 +538,10 @@ class DeviceManager:
     def reset(cls) -> None:
         """Reset the singleton instance (useful for testing)."""
         with cls._singleton_lock:
+            if cls._instance is not None:
+                try:
+                    cls._instance.cleanup_ddp()
+                except Exception:
+                    pass
             cls._instance = None
             cls._initialized = False

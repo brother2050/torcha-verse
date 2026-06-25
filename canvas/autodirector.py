@@ -483,7 +483,7 @@ class AutoDirector:
             canvas.add_node(
                 node_d.get("node_type", "unknown"),
                 id=node_d.get("id"),
-                inputs=dict(node_d.get("inputs") or {}),
+                **dict(node_d.get("inputs") or {}),
             )
 
         # Add connections.
@@ -627,7 +627,7 @@ class AutoDirector:
         # Group nodes by (type, frozenset of inputs).
         groups: Dict[tuple, List[str]] = {}
         for node in nodes:
-            key = (node.type, json.dumps(node.inputs, sort_keys=True))
+            key = (node.type, repr(sorted(node.inputs.items()) if isinstance(node.inputs, dict) else node.inputs))
             groups.setdefault(key, []).append(node.id)
 
         for key, node_ids in groups.items():
@@ -695,7 +695,6 @@ class AutoDirector:
         Args:
             canvas: The canvas to optimise in place.
         """
-        dag = canvas.state.to_dag()
         # Determine which nodes have dependents.
         has_dependents: set[str] = set()
         for conn in canvas.list_connections():

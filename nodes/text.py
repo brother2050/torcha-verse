@@ -161,8 +161,10 @@ class TextNode(BaseNode):
         """
         prompt = str(inputs.get("prompt", ""))
         model = inputs.get("model") or ctx.config.get("default_text_model")
-        max_tokens = int(inputs.get("max_tokens", 256) or 256)
-        temperature = float(inputs.get("temperature", 1.0) or 1.0)
+        _mt = inputs.get("max_tokens", 256)
+        max_tokens = int(_mt) if _mt is not None else 256
+        _temp = inputs.get("temperature", 1.0)
+        temperature = float(_temp) if _temp is not None else 1.0
 
         ctx.logger.debug(
             "text_chat run_id=%s model=%s max_tokens=%d temperature=%.2f",
@@ -301,7 +303,8 @@ class TextCompletionNode(BaseNode):
         """
         prompt = str(inputs.get("prompt", ""))
         model = inputs.get("model") or ctx.config.get("default_text_model")
-        max_tokens = int(inputs.get("max_tokens", 128) or 128)
+        _mt = inputs.get("max_tokens", 128)
+        max_tokens = int(_mt) if _mt is not None else 128
 
         ctx.logger.debug(
             "text_completion run_id=%s model=%s max_tokens=%d",

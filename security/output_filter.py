@@ -388,12 +388,12 @@ class OutputFilter:
         try:
             detections = detector.detect(image)
         except Exception as exc:
-            _logger.warning("NudeNet 检测失败，返回宽松通过结果: %s", exc)
+            _logger.warning("NudeNet detection failed: %s; blocking image as fail-closed", exc)
             return FilterResult(
-                passed=True,
-                score=0.0,
+                passed=False,
+                score=1.0,
                 categories=[],
-                action="pass",
+                action="block",
             )
 
         max_score = 0.0

@@ -587,8 +587,9 @@ class SandboxExecutor:
         # Apply CPU and memory limits (Unix).
         old_limits = self._apply_resource_limits()
         try:
-            if _HAS_SIGNAL:
-                # Real timeout interrupt via SIGALRM (Unix only).
+            if _HAS_SIGNAL and threading.current_thread() is threading.main_thread():
+                # Real timeout interrupt via SIGALRM (Unix only, main thread
+                # only -- signal.signal() raises ValueError off the main thread).
                 def _timeout_handler(signum, frame):  # noqa: ARG001
                     raise SandboxTimeoutError(
                         f"Execution exceeded timeout of {timeout}s."
@@ -602,8 +603,9 @@ class SandboxExecutor:
                     signal.alarm(0)
                     signal.signal(signal.SIGALRM, old_handler)
             else:
-                # Windows fallback: threading.Timer (best effort -- cannot
-                # actually interrupt a running exec, but records the timeout).
+                # Fallback (Windows or non-main thread): threading.Timer
+                # (best effort -- cannot actually interrupt a running exec,
+                # but records the timeout).
                 timer = threading.Timer(
                     timeout,
                     lambda: error_box.append(

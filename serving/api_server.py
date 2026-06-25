@@ -860,6 +860,12 @@ def _decode_b64_image(b64_str: str) -> Any:
     """Decode a base64-encoded image string into a PIL image."""
     from PIL import Image as PILImage
 
+    # Guard against decompression bombs: cap the maximum decoded pixel
+    # count and reject oversized base64 payloads before decoding.
+    PILImage.MAX_IMAGE_PIXELS = 50_000_000  # 50M pixels limit
+    if len(b64_str) > 10 * 1024 * 1024:  # 10MB base64 limit
+        raise ValueError("Image too large")
+
     raw = base64.b64decode(b64_str)
     return PILImage.open(io.BytesIO(raw))
 
@@ -978,6 +984,11 @@ def create_app() -> FastAPI:
     @app.post("/v1/text/completions")
     async def text_completions(request: TextCompletionRequest) -> Any:
         """Generate text from a prompt."""
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "text_completions"
         try:
@@ -986,6 +997,15 @@ def create_app() -> FastAPI:
                 request.prompt = service._sanitizer.sanitize_text(request.prompt)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
+
+            # Security Gate 1b: detect prompt-injection attempts.
+            injection_result = service._sanitizer.detect_prompt_injection(
+                request.prompt
+            )
+            if injection_result.is_injected:
+                return _error_response(
+                    "Prompt injection detected", error_type="injection", code=400
+                )
 
             if request.stream:
                 return StreamingResponse(
@@ -1003,6 +1023,21 @@ def create_app() -> FastAPI:
                 raise RuntimeError(result["error"])
 
             text = result.get("text", "")
+
+            # Security Gate 3: filter the generated text output.
+            try:
+                filter_result = service._filter.filter_text(text)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
+
             prompt_tokens = _estimate_tokens(request.prompt)
             response = _make_response(
                 model=request.model,
@@ -1016,7 +1051,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Text completion failed: %s", exc)
-            return _error_response(str(exc), error_type="engine_error", code=500)
+            return _error_response("Internal error", error_type="engine_error", code=500)
 
     def _text_completion_stream(
         svc: PipelineService,
@@ -1077,6 +1112,11 @@ def create_app() -> FastAPI:
     @app.post("/v1/text/chat")
     async def text_chat(request: ChatRequest) -> Any:
         """Run a multi-turn chat conversation."""
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "text_chat"
         try:
@@ -1088,6 +1128,13 @@ def create_app() -> FastAPI:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
             prompt = _messages_to_prompt(request.messages)
+
+            # Security Gate 1b: detect prompt-injection attempts.
+            injection_result = service._sanitizer.detect_prompt_injection(prompt)
+            if injection_result.is_injected:
+                return _error_response(
+                    "Prompt injection detected", error_type="injection", code=400
+                )
 
             if request.stream:
                 return StreamingResponse(
@@ -1105,6 +1152,21 @@ def create_app() -> FastAPI:
                 raise RuntimeError(result["error"])
 
             text = result.get("text", "")
+
+            # Security Gate 3: filter the generated text output.
+            try:
+                filter_result = service._filter.filter_text(text)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
+
             prompt_tokens = sum(_estimate_tokens(m.content) for m in request.messages)
             response = _make_response(
                 model=request.model,
@@ -1118,7 +1180,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Chat failed: %s", exc)
-            return _error_response(str(exc), error_type="engine_error", code=500)
+            return _error_response("Internal error", error_type="engine_error", code=500)
 
     def _chat_stream(
         svc: PipelineService,
@@ -1210,6 +1272,21 @@ def create_app() -> FastAPI:
                 raise RuntimeError(result["error"])
 
             image = result.get("image", result)
+
+            # Security Gate 3: filter the generated image output.
+            try:
+                filter_result = service._filter.filter_image(image)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
+
             payload = _media_payload(image, "image/png")
             response = UnifiedResponse(
                 id=_generate_id(),
@@ -1231,7 +1308,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Image generation failed: %s", exc)
-            return _error_response(str(exc), error_type="engine_error", code=500)
+            return _error_response("Internal error", error_type="engine_error", code=500)
 
     # ------------------------------------------------------------------
     # Audio synthesis
@@ -1239,6 +1316,11 @@ def create_app() -> FastAPI:
     @app.post("/v1/audio/synthesize")
     async def audio_synthesize(request: AudioRequest) -> Any:
         """Synthesize speech from text."""
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "audio_synthesize"
         try:
@@ -1257,6 +1339,20 @@ def create_app() -> FastAPI:
             )
             if "error" in result:
                 raise RuntimeError(result["error"])
+
+            # Security Gate 3: filter the text content conveyed by the audio.
+            try:
+                filter_result = service._filter.filter_text(request.text)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
 
             audio = result.get("audio", result)
             payload = _media_payload(audio, "audio/wav")
@@ -1280,7 +1376,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Audio synthesis failed: %s", exc)
-            return _error_response(str(exc), error_type="engine_error", code=500)
+            return _error_response("Internal error", error_type="engine_error", code=500)
 
     # ------------------------------------------------------------------
     # Video generation
@@ -1288,6 +1384,11 @@ def create_app() -> FastAPI:
     @app.post("/v1/videos/generate")
     async def videos_generate(request: VideoRequest) -> Any:
         """Generate a video from a text prompt."""
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "videos_generate"
         try:
@@ -1338,7 +1439,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Video generation failed: %s", exc)
-            return _error_response(str(exc), error_type="engine_error", code=500)
+            return _error_response("Internal error", error_type="engine_error", code=500)
 
     # ------------------------------------------------------------------
     # Multimodal understanding
@@ -1351,6 +1452,11 @@ def create_app() -> FastAPI:
         ``not_implemented`` error is returned while the REST contract is
         preserved.
         """
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "multimodal_understand"
         try:
@@ -1369,9 +1475,25 @@ def create_app() -> FastAPI:
             if "error" in result:
                 raise RuntimeError(result["error"])
 
+            text = str(result.get("text", ""))
+
+            # Security Gate 3: filter the text response.
+            try:
+                filter_result = service._filter.filter_text(text)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
+
             response = _make_response(
                 model=request.model,
-                text=str(result.get("text", "")),
+                text=text,
                 object_type="multimodal.understanding",
                 prompt_tokens=_estimate_tokens(
                     (request.text or "") + (request.question or "")
@@ -1383,7 +1505,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Multimodal understanding failed: %s", exc)
-            return _error_response(str(exc), error_type="not_implemented", code=501)
+            return _error_response("Internal error", error_type="not_implemented", code=501)
 
     # ------------------------------------------------------------------
     # RAG query
@@ -1395,6 +1517,11 @@ def create_app() -> FastAPI:
         RAG query is not yet backed by a node; a ``not_implemented``
         error is returned while the REST contract is preserved.
         """
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "rag_query"
         try:
@@ -1408,9 +1535,25 @@ def create_app() -> FastAPI:
             if "error" in result:
                 raise RuntimeError(result["error"])
 
+            text = str(result.get("text", ""))
+
+            # Security Gate 3: filter the text response.
+            try:
+                filter_result = service._filter.filter_text(text)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
+
             response = _make_response(
                 model="rag",
-                text=str(result.get("text", "")),
+                text=text,
                 object_type="rag.answer",
                 prompt_tokens=_estimate_tokens(request.question),
             )
@@ -1420,7 +1563,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("RAG query failed: %s", exc)
-            return _error_response(str(exc), error_type="not_implemented", code=501)
+            return _error_response("Internal error", error_type="not_implemented", code=501)
 
     # ------------------------------------------------------------------
     # Agent run
@@ -1433,6 +1576,11 @@ def create_app() -> FastAPI:
         ``not_implemented`` error is returned while the REST contract is
         preserved.
         """
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "agent_run"
         try:
@@ -1441,6 +1589,15 @@ def create_app() -> FastAPI:
                 request.task = service._sanitizer.sanitize_text(request.task)
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
+
+            # Security Gate 1b: detect prompt-injection attempts.
+            injection_result = service._sanitizer.detect_prompt_injection(
+                request.task
+            )
+            if injection_result.is_injected:
+                return _error_response(
+                    "Prompt injection detected", error_type="injection", code=400
+                )
 
             if request.stream:
                 return StreamingResponse(
@@ -1452,13 +1609,29 @@ def create_app() -> FastAPI:
             if "error" in result:
                 raise RuntimeError(result["error"])
 
+            output_text = str(result.get("output", ""))
+
+            # Security Gate 3: filter the final text response.
+            try:
+                filter_result = service._filter.filter_text(output_text)
+                if not filter_result.passed:
+                    return _error_response(
+                        "Output filtered: " + filter_result.action,
+                        error_type="output_filtered",
+                        code=403,
+                    )
+            except Exception as filter_exc:  # noqa: BLE001
+                service._logger.warning(
+                    "Output filter failed, allowing response: %s", filter_exc
+                )
+
             response_dict = {
                 "id": _generate_id(),
                 "object": "agent.result",
                 "created": int(time.time()),
                 "model": "agent",
                 "choices": [
-                    {"index": 0, "text": str(result.get("output", "")), "finish_reason": "stop"}
+                    {"index": 0, "text": output_text, "finish_reason": "stop"}
                 ],
                 "usage": {
                     "prompt_tokens": _estimate_tokens(request.task),
@@ -1474,7 +1647,7 @@ def create_app() -> FastAPI:
         except Exception as exc:
             service.metrics.record_request(endpoint, time.time() - start, error=True)
             service._logger.error("Agent run failed: %s", exc)
-            return _error_response(str(exc), error_type="not_implemented", code=501)
+            return _error_response("Internal error", error_type="not_implemented", code=501)
 
     def _agent_stream(
         svc: PipelineService,

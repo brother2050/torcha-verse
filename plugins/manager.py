@@ -847,7 +847,8 @@ class PluginManager:
                 data = json.load(fh)
             if isinstance(data, dict):
                 self._enabled_state = {
-                    str(k): bool(v) for k, v in data.items()
+                    str(k): str(v).lower() in ("true", "1", "yes")
+                    for k, v in data.items()
                 }
         except (OSError, ValueError, json.JSONDecodeError):
             # Missing / corrupt state file -> start fresh.
@@ -858,6 +859,7 @@ class PluginManager:
         """Persist enable/disable state to disk atomically (best-effort)."""
         if self._state_file is None:
             return
+        tmp: Optional[Path] = None
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
             # Atomic write: write to a unique temp file, then os.replace
@@ -872,6 +874,11 @@ class PluginManager:
             os.replace(str(tmp), str(self._state_file))
         except OSError as exc:
             self._logger.debug("Could not persist plugin state: %s", exc)
+            try:
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:

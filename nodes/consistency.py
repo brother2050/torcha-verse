@@ -74,9 +74,15 @@ def _coerce_int(value: Any) -> Optional[int]:
 
 
 def _ref_id(ref: Any) -> Optional[str]:
-    """Return the asset id of ``ref`` when it is an :class:`AssetRef`."""
+    """Return the asset id of ``ref`` for AssetRef, str, or id-bearing objects."""
+    if ref is None:
+        return None
     if isinstance(ref, AssetRef):
         return ref.asset_id
+    if isinstance(ref, str):
+        return ref
+    if hasattr(ref, "id"):
+        return ref.id
     return None
 
 
@@ -198,6 +204,7 @@ class CharacterApplyNode(BaseNode):
         prompt = str(inputs.get("prompt", ""))
         width = _coerce_int(inputs.get("width")) or 512
         height = _coerce_int(inputs.get("height")) or 512
+        weight = inputs.get("character_weight")
 
         ctx.logger.debug(
             "character_apply run_id=%s character=%s %dx%d",
@@ -225,6 +232,7 @@ class CharacterApplyNode(BaseNode):
             "width": width,
             "height": height,
             "prompt": prompt[: 64],
+            "_character_weight": weight,
         }
         return {"image": image}
 
@@ -295,6 +303,7 @@ class OutfitApplyNode(BaseNode):
             A dict with ``image``.
         """
         outfit = inputs.get("outfit")
+        weight = inputs.get("outfit_weight")
 
         ctx.logger.debug(
             "outfit_apply run_id=%s outfit=%s",
@@ -314,6 +323,7 @@ class OutfitApplyNode(BaseNode):
         image = {
             "kind": "placeholder_outfit_image",
             "outfit": _ref_id(outfit),
+            "_outfit_weight": weight,
         }
         return {"image": image}
 
@@ -384,6 +394,7 @@ class SceneApplyNode(BaseNode):
             A dict with ``image``.
         """
         scene = inputs.get("scene")
+        weight = inputs.get("scene_weight")
 
         ctx.logger.debug(
             "scene_apply run_id=%s scene=%s",
@@ -403,6 +414,7 @@ class SceneApplyNode(BaseNode):
         image = {
             "kind": "placeholder_scene_image",
             "scene": _ref_id(scene),
+            "_scene_weight": weight,
         }
         return {"image": image}
 
@@ -489,6 +501,7 @@ class DepthConditionNode(BaseNode):
         """
         method = str(inputs.get("method", "midas"))
         model = ctx.config.get("default_depth_model")
+        weight = inputs.get("depth_weight")
 
         ctx.logger.debug(
             "depth_condition run_id=%s method=%s",
@@ -508,6 +521,7 @@ class DepthConditionNode(BaseNode):
         depth_map = {
             "kind": "placeholder_depth_map",
             "method": method,
+            "_depth_weight": weight,
         }
         return {"depth_map": depth_map}
 

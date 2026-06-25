@@ -52,6 +52,7 @@ from __future__ import annotations
 from .base import (
     BaseNode,
     NodeContext,
+    NodeExecutor,
     NodeRegistry,
     NodeSpec,
     register_node,
@@ -105,6 +106,7 @@ __all__ = [
     # Base infrastructure
     "NodeSpec",
     "NodeContext",
+    "NodeExecutor",
     "BaseNode",
     "NodeRegistry",
     "register_node",

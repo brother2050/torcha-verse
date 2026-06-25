@@ -432,7 +432,7 @@ class BaseNode(abc.ABC):
         """
         try:
             return self.execute(ctx, **inputs)
-        except (OSError, RuntimeError, MemoryError) as exc:
+        except Exception as exc:
             logger = getattr(ctx, "logger", None) or _logger
             logger.error(
                 "节点 %s 执行失败 (%s): %s",

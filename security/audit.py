@@ -41,6 +41,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -289,7 +290,7 @@ class SecurityAudit:
         bom: dict[str, Any] = {
             "bomFormat": _SBOM_BOM_FORMAT,
             "specVersion": _SBOM_SPEC_VERSION,
-            "serialNumber": "urn:uuid:torcha-verse-sbom",
+            "serialNumber": f"urn:uuid:{uuid.uuid4()}",
             "version": 1,
             "metadata": {
                 "timestamp": datetime.now(timezone.utc).isoformat(),

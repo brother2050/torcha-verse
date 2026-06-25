@@ -149,7 +149,8 @@ class AudioTTSNode(BaseNode):
         """
         text = inputs.get("text", "")
         text = text if isinstance(text, str) else ""
-        speed = _coerce_float(inputs.get("speed")) or 1.0
+        _sp = _coerce_float(inputs.get("speed"))
+        speed = _sp if _sp is not None else 1.0
         speed = max(_AUDIO_MIN_SPEED, min(_AUDIO_MAX_SPEED, speed))
 
         word_count = max(1, len(text.split()))
@@ -181,7 +182,8 @@ class AudioTTSNode(BaseNode):
         """
         text = str(inputs.get("text", ""))
         voice = str(inputs.get("voice", ""))
-        speed = _coerce_float(inputs.get("speed")) or 1.0
+        _sp = _coerce_float(inputs.get("speed"))
+        speed = _sp if _sp is not None else 1.0
         emotion = inputs.get("emotion")
         sample_rate = int(
             ctx.config.get("default_tts_sample_rate", _DEFAULT_SAMPLE_RATE)

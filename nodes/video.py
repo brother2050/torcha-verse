@@ -261,8 +261,10 @@ class VideoTxt2VidNode(BaseNode):
         prompt = str(inputs.get("prompt", ""))
         num_frames = _coerce_int(inputs.get("num_frames")) or _DEFAULT_NUM_FRAMES
         fps = _coerce_int(inputs.get("fps")) or _DEFAULT_FPS
-        width = _coerce_int(inputs.get("width")) or _DEFAULT_WIDTH
-        height = _coerce_int(inputs.get("height")) or _DEFAULT_HEIGHT
+        _w = _coerce_int(inputs.get("width"))
+        width = _w if _w is not None else _DEFAULT_WIDTH
+        _h = _coerce_int(inputs.get("height"))
+        height = _h if _h is not None else _DEFAULT_HEIGHT
         steps = inputs.get("steps")
         steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         seed = inputs.get("seed")

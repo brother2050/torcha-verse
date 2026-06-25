@@ -75,8 +75,6 @@ class ConnectionValidator:
         try:
             from nodes import NodeRegistry  # type: ignore[import-not-found]
 
-            registry = NodeRegistry()
-            specs = {spec.type: spec for spec in registry.list()}
             with cls._spec_cache_lock:
                 # 第二次检查(持锁):防止并发线程重复加载。
                 if (
@@ -84,6 +82,8 @@ class ConnectionValidator:
                     and (now - cls._spec_cache_time) < cls._SPEC_CACHE_TTL
                 ):
                     return cls._spec_cache
+                registry = NodeRegistry()
+                specs = {spec.type: spec for spec in registry.list()}
                 cls._spec_cache = specs
                 cls._spec_cache_time = now
             return cls._spec_cache

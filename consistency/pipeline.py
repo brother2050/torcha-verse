@@ -41,7 +41,7 @@ calculator) and the L1/L2/L6 layers.
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence
 
 from assets.model_asset import CharacterAsset, DepthAsset, OutfitAsset, SceneAsset
 from assets.store import AssetStore
@@ -677,9 +677,12 @@ class ConsistencyPipeline:
         if ctx is None:
             from nodes.base import NodeContext
 
-            ctx = NodeContext()
+            ctx = NodeContext(assets=self._store)
         pipeline = self.to_pipeline(prompt, width, height, **kwargs)
-        return pipeline.run(ctx)
+        try:
+            return pipeline.run(ctx)
+        finally:
+            pipeline.close()
 
     # ------------------------------------------------------------------
     # Internal helpers
