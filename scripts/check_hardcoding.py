@@ -648,6 +648,45 @@ class _HardcodingVisitor(ast.NodeVisitor):
                 self._add(node, cand.type, cand.content, severity=cand.severity)
         self.generic_visit(node)
 
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+        # FStringTemplateRule -- dispatch the whole node (template
+        # parts live under ``node.values``).  We pass the node as
+        # ``value`` so the rule can pull parts without re-walking.
+        ctx = self._build_context(node, list(node.values))
+        for rule in self._rules:
+            if not rule.applies_to(node):
+                continue
+            for cand in rule.check(ctx):
+                self._add(node, cand.type, cand.content, severity=cand.severity)
+        self.generic_visit(node)
+
+    def visit_Dict(self, node: ast.Dict) -> None:
+        # DictLiteralRule -- dispatch the dict node itself.
+        ctx = self._build_context(node, None)
+        for rule in self._rules:
+            if not rule.applies_to(node):
+                continue
+            for cand in rule.check(ctx):
+                self._add(node, cand.type, cand.content, severity=cand.severity)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        # RegexPatternRule -- dispatch the call node itself so the
+        # rule can inspect ``func`` / ``args`` / ``keywords``.
+        # We skip visit_Constant children that the visitor would
+        # also re-dispatch (the rule inspects the *call* shape,
+        # not individual argument literals).
+        ctx = self._build_context(node, None)
+        for rule in self._rules:
+            if not rule.applies_to(node):
+                continue
+            for cand in rule.check(ctx):
+                self._add(node, cand.type, cand.content, severity=cand.severity)
+        # We still walk children so that *other* literal rules
+        # (e.g. ``StringLiteralRule`` for non-regex strings inside
+        # the call) can fire on each argument.
+        self.generic_visit(node)
+
     # -- bookkeeping -----------------------------------------------------
     def _add(
         self,

@@ -63,6 +63,9 @@ from scripts.check_hardcoding_rules import (
     NumericLiteralRule,
     PathLiteralRule,
     ListLiteralRule,
+    FStringTemplateRule,
+    RegexPatternRule,
+    DictLiteralRule,
     STRING_MIN_LENGTH,
     ViolationCandidate,
     _looks_like_path,
@@ -135,14 +138,23 @@ def _write(tmp_path: Path, name: str, content: str) -> Path:
 # Registry / Rule base class
 # ---------------------------------------------------------------------------
 class TestRuleRegistry:
-    """The 4 default rules are registered in the documented order."""
+    """The default rules are registered in the documented order.
+
+    As of the 3-new-Rule extension the registry has 7 rules: the
+    4 original ones (string / numeric / path / list) plus the 3
+    informational extensions (fstring_template / regex_pattern /
+    dict_literal).
+    """
 
     def test_default_rules_count(self):
-        assert len(DEFAULT_RULES) == 4
+        assert len(DEFAULT_RULES) == 7
 
     def test_default_rules_names(self):
         names = [r.name for r in DEFAULT_RULES]
-        assert names == ["string_literal", "numeric_literal", "path_literal", "list_literal"]
+        assert names == [
+            "string_literal", "numeric_literal", "path_literal", "list_literal",
+            "fstring_template", "regex_pattern", "dict_literal",
+        ]
 
     def test_default_rules_have_descriptions(self):
         for rule in DEFAULT_RULES:
@@ -371,6 +383,256 @@ class TestListLiteralRule:
 
 
 # ---------------------------------------------------------------------------
+# FStringTemplateRule
+# ---------------------------------------------------------------------------
+class TestFStringTemplateRule:
+    """Rule #5: long f-string template literal (default ``info``)."""
+
+    def test_default_severity_is_info(self):
+        rule = FStringTemplateRule()
+        assert rule.default_severity == "info"
+
+    def test_long_fstring_fires(self):
+        rule = FStringTemplateRule()
+        import ast
+        node = ast.JoinedStr(values=[
+            ast.Constant(value="hello, "),
+            ast.FormattedValue(
+                value=ast.Name(id="name"),
+                conversion=-1, format_spec=None,
+            ),
+            ast.Constant(value="! Welcome to the TorchaVerse playground."),
+        ])
+        ctx = _ctx(node=node, value=list(node.values), in_function=True)
+        cands = rule.check(ctx)
+        assert len(cands) == 1
+        assert cands[0].severity == "info"
+        assert cands[0].type == "fstring_template"
+
+    def test_short_fstring_does_not_fire(self):
+        rule = FStringTemplateRule()
+        import ast
+        node = ast.JoinedStr(values=[
+            ast.Constant(value="hi "),
+            ast.FormattedValue(value=ast.Name(id="x"), conversion=-1, format_spec=None),
+        ])
+        ctx = _ctx(node=node, value=list(node.values))
+        assert rule.check(ctx) == []
+
+    def test_all_string_fstring_does_not_fire(self):
+        """A f-string with no FormattedValue is a no-op template."""
+        rule = FStringTemplateRule()
+        import ast
+        node = ast.JoinedStr(values=[ast.Constant(value="just a constant")])
+        ctx = _ctx(node=node, value=list(node.values))
+        assert rule.check(ctx) == []
+
+    def test_docstring_is_exempt(self):
+        rule = FStringTemplateRule()
+        import ast
+        node = ast.JoinedStr(values=[
+            ast.Constant(value="prefix "),
+            ast.FormattedValue(value=ast.Name(id="x"), conversion=-1, format_spec=None),
+            ast.Constant(value=" suffix long enough to trigger"),
+        ])
+        ctx = _ctx(node=node, value=list(node.values), in_docstring=True)
+        assert rule.check(ctx) == []
+
+    def test_log_call_downgrades_to_info(self):
+        rule = FStringTemplateRule()
+        import ast
+        node = ast.JoinedStr(values=[
+            ast.Constant(value="a "),
+            ast.FormattedValue(value=ast.Name(id="x"), conversion=-1, format_spec=None),
+            ast.Constant(value=" b long enough to trigger indeed"),
+        ])
+        ctx = _ctx(node=node, value=list(node.values), in_log_call=True)
+        cands = rule.check(ctx)
+        assert cands[0].severity == "info"
+
+    def test_applies_to_only_joinedstr(self):
+        rule = FStringTemplateRule()
+        import ast
+        assert rule.applies_to(ast.JoinedStr(values=[])) is True
+        assert rule.applies_to(ast.Constant(value="x")) is False
+        assert rule.applies_to(ast.List(elts=[])) is False
+
+
+# ---------------------------------------------------------------------------
+# RegexPatternRule
+# ---------------------------------------------------------------------------
+class TestRegexPatternRule:
+    """Rule #6: regex pattern string in ``re.*`` calls (default ``info``)."""
+
+    def test_default_severity_is_info(self):
+        rule = RegexPatternRule()
+        assert rule.default_severity == "info"
+
+    def _make_call(self, attr_name: str, pattern: str) -> "ast.Call":
+        import ast
+        return ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id="re"),
+                attr=attr_name,
+            ),
+            args=[ast.Constant(value=pattern)],
+            keywords=[],
+        )
+
+    def test_re_compile_fires(self):
+        rule = RegexPatternRule()
+        import ast
+        node = self._make_call("compile", r"^foo\d+$")
+        ctx = _ctx(node=node, value=None, in_function=True)
+        cands = rule.check(ctx)
+        assert len(cands) == 1
+        assert cands[0].severity == "info"
+        assert cands[0].type == "regex_pattern"
+        assert "compile" in cands[0].content
+
+    def test_re_search_fires(self):
+        rule = RegexPatternRule()
+        import ast
+        node = self._make_call("search", r"\bword\b")
+        ctx = _ctx(node=node, value=None)
+        cands = rule.check(ctx)
+        assert cands[0].type == "regex_pattern"
+
+    def test_re_sub_fires(self):
+        rule = RegexPatternRule()
+        import ast
+        # re.sub(pattern, repl, string) -- rule inspects the
+        # first positional argument (pattern) only.
+        node = ast.Call(
+            func=ast.Attribute(value=ast.Name(id="re"), attr="sub"),
+            args=[ast.Constant(value=r"x+"), ast.Constant(value="y"),
+                  ast.Constant(value="abc")],
+            keywords=[],
+        )
+        ctx = _ctx(node=node, value=None)
+        cands = rule.check(ctx)
+        assert cands[0].type == "regex_pattern"
+        assert cands[0].content.startswith("re.sub(")
+        assert r"x+" in cands[0].content
+
+    def test_non_re_call_does_not_fire(self):
+        """A call to ``os.path.join`` must NOT fire this rule."""
+        rule = RegexPatternRule()
+        import ast
+        node = ast.Call(
+            func=ast.Attribute(
+                value=ast.Attribute(
+                    value=ast.Name(id="os"),
+                    attr="path",
+                ),
+                attr="join",
+            ),
+            args=[ast.Constant(value="a"), ast.Constant(value="b")],
+            keywords=[],
+        )
+        ctx = _ctx(node=node, value=None)
+        assert rule.check(ctx) == []
+
+    def test_non_string_first_arg_does_not_fire(self):
+        rule = RegexPatternRule()
+        import ast
+        node = ast.Call(
+            func=ast.Attribute(value=ast.Name(id="re"), attr="match"),
+            args=[ast.Constant(value=42)],  # not a string!
+            keywords=[],
+        )
+        ctx = _ctx(node=node, value=None)
+        assert rule.check(ctx) == []
+
+    def test_empty_pattern_does_not_fire(self):
+        rule = RegexPatternRule()
+        import ast
+        node = self._make_call("match", "")
+        ctx = _ctx(node=node, value=None)
+        assert rule.check(ctx) == []
+
+    def test_keyword_pattern_arg_fires(self):
+        """``re.match(pattern=r'x+', string='foo')`` must fire."""
+        rule = RegexPatternRule()
+        import ast
+        node = ast.Call(
+            func=ast.Attribute(value=ast.Name(id="re"), attr="match"),
+            args=[],
+            keywords=[
+                ast.keyword(
+                    arg="pattern",
+                    value=ast.Constant(value=r"x+"),
+                ),
+            ],
+        )
+        ctx = _ctx(node=node, value=None)
+        cands = rule.check(ctx)
+        assert cands[0].type == "regex_pattern"
+
+    def test_applies_to_only_call(self):
+        rule = RegexPatternRule()
+        import ast
+        assert rule.applies_to(ast.Call(func=None, args=[], keywords=[])) is True
+        assert rule.applies_to(ast.Constant(value="x")) is False
+
+
+# ---------------------------------------------------------------------------
+# DictLiteralRule
+# ---------------------------------------------------------------------------
+class TestDictLiteralRule:
+    """Rule #7: large dict literal inside a function (default ``info``)."""
+
+    def test_default_severity_is_info(self):
+        rule = DictLiteralRule()
+        assert rule.default_severity == "info"
+
+    def _make_dict(self, n_keys: int) -> "ast.Dict":
+        import ast
+        keys = [ast.Constant(value="k{}".format(i)) for i in range(n_keys)]
+        values = [ast.Constant(value=i) for i in range(n_keys)]
+        return ast.Dict(keys=keys, values=values)
+
+    def test_large_dict_in_function_fires(self):
+        rule = DictLiteralRule()
+        import ast
+        node = self._make_dict(6)
+        ctx = _ctx(node=node, value=None, in_function=True)
+        cands = rule.check(ctx)
+        assert len(cands) == 1
+        assert cands[0].severity == "info"
+        assert cands[0].type == "dict_literal"
+        assert "6 keys" in cands[0].content
+
+    def test_small_dict_does_not_fire(self):
+        rule = DictLiteralRule()
+        import ast
+        node = self._make_dict(3)
+        ctx = _ctx(node=node, value=None, in_function=True)
+        assert rule.check(ctx) == []
+
+    def test_dict_outside_function_does_not_fire(self):
+        rule = DictLiteralRule()
+        import ast
+        node = self._make_dict(10)
+        ctx = _ctx(node=node, value=None, in_function=False)
+        assert rule.check(ctx) == []
+
+    def test_dict_in_docstring_does_not_fire(self):
+        rule = DictLiteralRule()
+        import ast
+        node = self._make_dict(10)
+        ctx = _ctx(node=node, value=None, in_function=True, in_docstring=True)
+        assert rule.check(ctx) == []
+
+    def test_applies_to_only_dict(self):
+        rule = DictLiteralRule()
+        import ast
+        assert rule.applies_to(ast.Dict(keys=[], values=[])) is True
+        assert rule.applies_to(ast.List(elts=[])) is False
+        assert rule.applies_to(ast.Constant(value="x")) is False
+
+
+# ---------------------------------------------------------------------------
 # Exemption.rules -- per-rule opt-out
 # ---------------------------------------------------------------------------
 class TestExemptionRules:
@@ -452,11 +714,13 @@ class TestScannerCLI:
 
     def test_list_rule_names_via_module(self):
         names = list_rule_names()
-        assert "string_literal" in names
-        assert "numeric_literal" in names
-        assert "path_literal" in names
-        assert "list_literal" in names
-        assert len(names) == 4
+        for expected in (
+            "string_literal", "numeric_literal", "path_literal",
+            "list_literal", "fstring_template", "regex_pattern",
+            "dict_literal",
+        ):
+            assert expected in names
+        assert len(names) == 7
 
     def test_scan_directory_only_rule_string(self, tmp_path):
         """When only_rule='string_literal', numeric and path and list

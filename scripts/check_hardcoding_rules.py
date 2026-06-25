@@ -39,6 +39,9 @@ __all__ = [
     "NumericLiteralRule",
     "PathLiteralRule",
     "ListLiteralRule",
+    "FStringTemplateRule",
+    "RegexPatternRule",
+    "DictLiteralRule",
     "DEFAULT_RULES",
     "get_rule",
     "list_rule_names",
@@ -299,6 +302,156 @@ class ListLiteralRule(Rule):
         )]
 
 
+class FStringTemplateRule(Rule):
+    """Rule #5: f-string template literal (informational by default).
+
+    Fires on an :class:`ast.JoinedStr` whose template parts contain
+    at least one :class:`ast.Constant` that is non-empty AND whose
+    raw (concatenated) template is longer than
+    :data:`FSTRING_MIN_LENGTH`.  Docstrings and ``__all__`` are
+    exempt.
+
+    The default severity is ``info`` because f-string templates
+    in TorchaVerse are almost always protocol/format identifiers
+    (e.g. ``logger.info("loading {path}")``).  Sites that need
+    runtime-configurable templates should move the format string
+    to ConfigCenter and downgrade / exempt the rule.
+    """
+
+    name = "fstring_template"
+    description = "f-string template literal (informational)"
+    default_severity = "info"
+
+    #: F-strings shorter than this are noise (they're often inline
+    #: debug / repr); we ignore them.
+    FSTRING_MIN_LENGTH: int = 20
+
+    def applies_to(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.JoinedStr)
+
+    def check(self, ctx: RuleContext) -> List[ViolationCandidate]:
+        if ctx.in_docstring or ctx.in_all:
+            return []
+        # ``ctx.value`` is the list of JoinedStr parts.  We accept
+        # either an ``ast.JoinedStr`` itself (the visitor passes
+        # the whole node) or a list of parts.
+        parts: list[Any]
+        if isinstance(ctx.node, ast.JoinedStr):
+            parts = list(ctx.node.values)
+        else:
+            parts = ctx.value
+        template = "".join(
+            v.value for v in parts if isinstance(v, ast.Constant) and isinstance(v.value, str)
+        )
+        if not template:
+            return []
+        if len(template) < self.FSTRING_MIN_LENGTH:
+            return []
+        severity = "info" if (ctx.in_log_call or ctx.in_runtime_attr) else self.default_severity
+        return [ViolationCandidate(
+            type=self.name,
+            content=_truncate("f'" + template + "'"),
+            severity=severity,
+        )]
+
+
+class RegexPatternRule(Rule):
+    """Rule #6: regex pattern string passed to ``re.*`` (informational).
+
+    Fires on the first positional argument of a call whose function
+    is the ``re`` module (``re.compile`` / ``re.match`` / ``re.search`` /
+    ``re.sub`` / ``re.findall`` / ``re.split`` / ``re.fullmatch``).
+
+    The default severity is ``info`` because regex patterns in
+    TorchaVerse are almost always protocol/format identifiers
+    (e.g. ``_RE_DETERMINISTIC_FLAG = re.compile(r'^-{0,2}d+')``).
+    """
+
+    name = "regex_pattern"
+    description = "regex pattern string passed to re.* (informational)"
+    default_severity = "info"
+
+    #: The ``re`` module attributes we recognise.
+    _RE_METHODS: frozenset[str] = frozenset({
+        "compile", "match", "search", "sub", "findall",
+        "split", "fullmatch", "subn",
+    })
+
+    def applies_to(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Call)
+
+    def check(self, ctx: RuleContext) -> List[ViolationCandidate]:
+        call: ast.Call = ctx.node  # type: ignore[assignment]
+        func = call.func
+        if not isinstance(func, ast.Attribute):
+            return []
+        if func.attr not in self._RE_METHODS:
+            return []
+        if not isinstance(func.value, ast.Name) or func.value.id != "re":
+            return []
+        # The first positional argument (or ``pattern=`` kwarg) is
+        # the regex pattern.
+        pattern_node: Optional[ast.AST] = None
+        if call.args:
+            pattern_node = call.args[0]
+        else:
+            for kw in call.keywords:
+                if kw.arg == "pattern":
+                    pattern_node = kw.value
+                    break
+        if pattern_node is None or not isinstance(pattern_node, ast.Constant):
+            return []
+        if not isinstance(pattern_node.value, str):
+            return []
+        if not pattern_node.value:
+            return []
+        return [ViolationCandidate(
+            type=self.name,
+            content=_truncate("re.{}({!r})".format(func.attr, pattern_node.value)),
+            severity=self.default_severity,
+        )]
+
+
+class DictLiteralRule(Rule):
+    """Rule #7: large dict literal inside a function (informational).
+
+    Fires on an :class:`ast.Dict` whose number of keys is at least
+    :data:`DICT_MIN_KEYS` and which lives inside a function body.
+    Docstrings are exempt.
+
+    The default severity is ``info`` because the project's
+    sub-systems (``ConfigCenter`` defaults, ``ModuleBus`` mappings,
+    per-node ``schema``) often contain static dict literals that
+    are de-facto protocol definitions.
+    """
+
+    name = "dict_literal"
+    description = "dict literal with many keys inside a function (informational)"
+    default_severity = "info"
+
+    #: A dict with fewer than this many keys is treated as a
+    #: "regular kwargs" / "small mapping" and ignored.
+    DICT_MIN_KEYS: int = 5
+
+    def applies_to(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Dict)
+
+    def check(self, ctx: RuleContext) -> List[ViolationCandidate]:
+        if ctx.in_docstring or ctx.in_all:
+            return []
+        if not ctx.in_function:
+            return []
+        d: ast.Dict = ctx.node  # type: ignore[assignment]
+        n = len(d.keys)
+        if n < self.DICT_MIN_KEYS:
+            return []
+        return [ViolationCandidate(
+            type=self.name,
+            content="{{{} keys}}".format(n),
+            severity=self.default_severity,
+        )]
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -307,6 +460,9 @@ DEFAULT_RULES: tuple[Rule, ...] = (
     NumericLiteralRule(),
     PathLiteralRule(),
     ListLiteralRule(),
+    FStringTemplateRule(),
+    RegexPatternRule(),
+    DictLiteralRule(),
 )
 
 
