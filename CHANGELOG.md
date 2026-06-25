@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [v0.5.1] - 2026-06-25
+
+### D-补丁: 撤掉 prometheus_client swap-in (回退到 v0.4.3 之前的纯 stdlib 路径)
+
+v0.4.3 引入的 `infrastructure/metrics.py` prometheus_client
+swap-in (C4b / M2b) 在 v0.5.0 release 后被回退:
+
+- 决定: 后续路线**不会**走分布式 / Prometheus / pushgateway
+  场景; stdlib 的 `render_prometheus()` 文本格式已经够用,
+  不需要再装 `prometheus_client>=0.19` 翻译层
+- 改动: 删掉 `is_prometheus_client_available()` /
+  `export_to_prometheus_client()` 两个公开函数及配套 11 个
+  unit test
+- 保留: `MetricsRegistry` / `Counter` / `Gauge` / `Histogram` /
+  `render_prometheus()` 全部不动, stdlib 渲染路径就是 v0.5.x
+  的最终形态
+- 迁移: 调用方如果有引用 `is_prometheus_client_available()`
+  / `export_to_prometheus_client()` 直接删除即可, 没有 v0.5.x
+  调用方使用这两个函数
+
 ## [v0.5.0] - 2026-06-25
 
 ### D 档: 把 v0.4.x 留的 placeholder 全部填实 (5 大业务块 + 4 个 CI / 工具块 + 1 个测试文件 + 4 个新 module)

@@ -249,6 +249,7 @@ class TestServingEndpoints:
 
     def test_serving_models_have_rag_index_name(self):
         pytest.importorskip("pydantic")
+        pytest.importorskip("fastapi")
         from serving.models import RAGRequest
         req = RAGRequest(question="q", index_name="abc")
         assert req.index_name == "abc"
@@ -257,6 +258,7 @@ class TestServingEndpoints:
 
     def test_serving_endpoints_wire(self):
         pytest.importorskip("pydantic")
+        pytest.importorskip("fastapi")
         from serving import app
         # The app module must expose create_app.
         assert callable(getattr(app, "create_app", None))
