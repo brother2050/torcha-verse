@@ -487,13 +487,28 @@ class AutoDirector:
             )
 
         # Add connections.
+        # ``Canvas.connect`` raises ``ValueError`` on validation failure
+        # (e.g. duplicate edge, type mismatch).  We skip such edges with a
+        # warning rather than aborting the whole canvas generation, so that
+        # a single bad edge in a template does not prevent the rest of the
+        # canvas from being built.
         for edge_d in dag_dict.get("edges", []):
-            canvas.connect(
-                edge_d.get("from_node", ""),
-                edge_d.get("output_key", "output"),
-                edge_d.get("to_node", ""),
-                edge_d.get("input_key", "input"),
-            )
+            try:
+                canvas.connect(
+                    edge_d.get("from_node", ""),
+                    edge_d.get("output_key", "output"),
+                    edge_d.get("to_node", ""),
+                    edge_d.get("input_key", "input"),
+                )
+            except ValueError:
+                _logger.warning(
+                    "expand_to_canvas: skipped edge %s.%s -> %s.%s "
+                    "(validation failed)",
+                    edge_d.get("from_node", ""),
+                    edge_d.get("output_key", "output"),
+                    edge_d.get("to_node", ""),
+                    edge_d.get("input_key", "input"),
+                )
 
         # Auto-layout for a clean visual result.
         canvas.auto_layout()
@@ -636,7 +651,15 @@ class AutoDirector:
                             conn.to_port,
                         )
                     except ValueError:
-                        pass  # duplicate after rewiring
+                        # duplicate after rewiring
+                        _logger.debug(
+                            "Merge: skipped duplicate connection "
+                            "%s.%s -> %s.%s after rewiring from_node.",
+                            survivor,
+                            conn.from_port,
+                            conn.to_node,
+                            conn.to_port,
+                        )
                 elif conn.to_node in redundant_set:
                     # Update to_node to survivor.
                     canvas.disconnect(conn.id)
@@ -648,7 +671,15 @@ class AutoDirector:
                             conn.to_port,
                         )
                     except ValueError:
-                        pass  # duplicate after rewiring
+                        # duplicate after rewiring
+                        _logger.debug(
+                            "Merge: skipped duplicate connection "
+                            "%s.%s -> %s.%s after rewiring to_node.",
+                            conn.from_node,
+                            conn.from_port,
+                            survivor,
+                            conn.to_port,
+                        )
 
             # Remove redundant nodes.
             for nid in redundant:

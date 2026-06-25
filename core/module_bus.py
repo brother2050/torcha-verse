@@ -192,15 +192,22 @@ class ModuleBus:
         return cls._instance
 
     def __init__(self) -> None:
+        # Fast path: already initialised -- avoid the lock entirely.
         if self._initialized:
             return
-        self._initialized = True
+        # Run the whole initialisation under ``_singleton_lock`` (the same
+        # lock used by ``__new__``) so that two concurrent ``ModuleBus()``
+        # calls cannot both pass the ``_initialized`` check (TOCTOU).
+        with self._singleton_lock:
+            if self._initialized:
+                return
+            self._initialized = True
 
-        self._registry: Dict[_RegistryKey, ModuleSpec] = {}
-        self._cache: Dict[_CacheKey, Any] = {}
-        self._factory_locks: Dict[_CacheKey, threading.Lock] = {}
-        self._lock: threading.RLock = threading.RLock()
-        self._logger: logging.Logger = _logger
+            self._registry: Dict[_RegistryKey, ModuleSpec] = {}
+            self._cache: Dict[_CacheKey, Any] = {}
+            self._factory_locks: Dict[_CacheKey, threading.Lock] = {}
+            self._lock: threading.RLock = threading.RLock()
+            self._logger: logging.Logger = _logger
 
     # ------------------------------------------------------------------
     # Normalisation helpers

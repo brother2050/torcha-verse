@@ -8,13 +8,18 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-__all__ = ["ConnectionValidator"]
+__all__ = ["ConnectionValidator", "EdgeTuple"]
 
 #: 一条连接的四元组表示:``(from_node, to_node, output_key, input_key)``。
 EdgeTuple = Tuple[str, str, str, str]
+
+#: 模块级日志器,用于 spec 加载失败等诊断信息。
+_logger: logging.Logger = logging.getLogger("pipeline.validators")
 
 
 class ConnectionValidator:
@@ -44,6 +49,9 @@ class ConnectionValidator:
     _spec_cache: Optional[Dict[str, Any]] = None
     _spec_cache_time: float = 0.0
     _SPEC_CACHE_TTL: float = 5.0  # 秒
+    #: 类级锁,保护 ``_spec_cache`` 与 ``_spec_cache_time`` 的并发读写,
+    #: 使 ``load_specs`` 在多线程下安全(双重检查锁定模式)。
+    _spec_cache_lock: threading.Lock = threading.Lock()
 
     @classmethod
     def load_specs(cls) -> Optional[Dict[str, Any]]:
@@ -52,8 +60,13 @@ class ConnectionValidator:
         从 L4 :class:`~nodes.base.NodeRegistry` 加载已注册节点的规格。当注册表
         不可用时返回 ``None``,调用方应据此跳过端口 / 类型校验。结果缓存
         :attr:`_SPEC_CACHE_TTL` 秒,避免每次 ``connect()`` 都遍历注册表。
+
+        本方法使用双重检查锁定(double-checked locking)模式:先无锁检查缓存
+        是否命中,未命中时获取 :attr:`_spec_cache_lock` 后再次检查(防止
+        多个线程同时穿透缓存重复加载),确保线程安全。
         """
         now = time.monotonic()
+        # 第一次检查(无锁):缓存命中且未过期时直接返回。
         if (
             cls._spec_cache is not None
             and (now - cls._spec_cache_time) < cls._SPEC_CACHE_TTL
@@ -63,10 +76,21 @@ class ConnectionValidator:
             from nodes import NodeRegistry  # type: ignore[import-not-found]
 
             registry = NodeRegistry()
-            cls._spec_cache = {spec.type: spec for spec in registry.list()}
-            cls._spec_cache_time = now
+            specs = {spec.type: spec for spec in registry.list()}
+            with cls._spec_cache_lock:
+                # 第二次检查(持锁):防止并发线程重复加载。
+                if (
+                    cls._spec_cache is not None
+                    and (now - cls._spec_cache_time) < cls._SPEC_CACHE_TTL
+                ):
+                    return cls._spec_cache
+                cls._spec_cache = specs
+                cls._spec_cache_time = now
             return cls._spec_cache
-        except Exception:
+        except Exception as exc:
+            logging.debug(
+                "Failed to load node specs: %s", exc, exc_info=True
+            )
             return None
 
     # ------------------------------------------------------------------

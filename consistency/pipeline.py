@@ -40,7 +40,6 @@ calculator) and the L1/L2/L6 layers.
 
 from __future__ import annotations
 
-import threading
 import warnings
 from typing import Any, Dict, List, Optional, Sequence, Union
 
@@ -73,7 +72,7 @@ _DEFAULT_NUM_FRAMES: int = 16
 _DIM_MIN: int = 64
 
 #: Upper bound for image dimensions.
-_DIM_MAX: int = 4096
+_DIM_MAX: int = 2048
 
 #: Lower bound for the number of video frames.
 _FRAMES_MIN: int = 1
@@ -149,7 +148,6 @@ class ConsistencyPipeline:
             self._outfit_engine = OutfitEngine(asset_store)
             self._scene_engine = SceneEngine(asset_store)
 
-        self._lock: threading.Lock = threading.Lock()
         self._logger = _logger
 
     # ------------------------------------------------------------------
@@ -545,7 +543,7 @@ class ConsistencyPipeline:
         width: int = _DEFAULT_WIDTH,
         height: int = _DEFAULT_HEIGHT,
         **kwargs: Any,
-    ) -> Any:
+    ) -> "Pipeline":
         """构建 L5 Pipeline 用于一致性生成。
 
         将一致性生成流程编译为 L5 :class:`~pipeline.composer.Pipeline`：
@@ -587,14 +585,16 @@ class ConsistencyPipeline:
             self._character is not None
             and self._profile.character_weight > 0.0
         ):
+            # character_apply 不需要上游图像输入，不连接 base→char，
+            # 而是将 char 作为独立分支，直接接收 prompt / width / height。
             builder.node(
                 "character_apply",
                 id="char",
-                character_id=self._character.id,
+                character=self._character.id,
+                prompt=prompt,
+                width=width,
+                height=height,
                 character_weight=self._profile.character_weight,
-            )
-            builder.connect(
-                prev_id, "char", output_key=prev_key, input_key="image"
             )
             prev_id, prev_key = "char", "image"
 
@@ -605,7 +605,7 @@ class ConsistencyPipeline:
             builder.node(
                 "outfit_apply",
                 id="outfit",
-                outfit_id=self._outfit.id,
+                outfit=self._outfit.id,
                 outfit_weight=self._profile.outfit_weight,
             )
             builder.connect(
@@ -620,7 +620,7 @@ class ConsistencyPipeline:
             builder.node(
                 "scene_apply",
                 id="scene",
-                scene_id=self._scene.id,
+                scene=self._scene.id,
                 scene_weight=self._profile.scene_weight,
             )
             builder.connect(
@@ -635,13 +635,13 @@ class ConsistencyPipeline:
             builder.node(
                 "depth_condition",
                 id="depth",
-                depth_id=self._depth.id,
+                method="midas",
                 depth_weight=self._profile.depth_weight,
             )
             builder.connect(
-                prev_id, "depth", output_key=prev_key, input_key="image"
+                prev_id, "depth", output_key=prev_key, input_key="image_or_scene"
             )
-            prev_id, prev_key = "depth", "image"
+            prev_id, prev_key = "depth", "depth_map"
 
         self._logger.debug(
             "Built consistency pipeline (prompt=%r, %dx%d).",
@@ -654,7 +654,7 @@ class ConsistencyPipeline:
         prompt: str,
         width: int = _DEFAULT_WIDTH,
         height: int = _DEFAULT_HEIGHT,
-        ctx: Any = None,
+        ctx: Optional["NodeContext"] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """通过 L5 Pipeline 执行一致性生成。
@@ -697,7 +697,7 @@ class ConsistencyPipeline:
 
     def _apply_character_conditioning(
         self,
-        image: Any,
+        image: Dict[str, Any],
         character: CharacterAsset,
         weight: float,
     ) -> Dict[str, Any]:
@@ -718,7 +718,7 @@ class ConsistencyPipeline:
 
     def _apply_outfit_conditioning(
         self,
-        image: Any,
+        image: Dict[str, Any],
         outfit: OutfitAsset,
         weight: float,
     ) -> Dict[str, Any]:
@@ -739,7 +739,7 @@ class ConsistencyPipeline:
 
     def _apply_scene_conditioning(
         self,
-        image: Any,
+        image: Dict[str, Any],
         scene: SceneAsset,
         weight: float,
     ) -> Dict[str, Any]:
@@ -760,7 +760,7 @@ class ConsistencyPipeline:
 
     def _apply_depth_conditioning(
         self,
-        image: Any,
+        image: Dict[str, Any],
         depth: DepthAsset,
         weight: float,
     ) -> Dict[str, Any]:
@@ -878,6 +878,25 @@ class ConsistencyPipeline:
             "seed": seed,
             "regenerated": True,
         }
+
+    # ------------------------------------------------------------------
+    # 资源释放与上下文管理器协议
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        """释放底层资源（AssetStore 连接等）。"""
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception:
+                self._logger.debug(
+                    "Error closing asset store", exc_info=True
+                )
+
+    def __enter__(self) -> "ConsistencyPipeline":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:

@@ -36,6 +36,8 @@ from infrastructure.device_manager import DeviceManager
 from infrastructure.error_handler import ErrorHandler
 from infrastructure.logger import get_logger
 from infrastructure.rate_limiter import RateLimiter
+from security.input_sanitizer import InputSanitizer
+from security.output_filter import OutputFilter
 
 # Pipeline / Node system (v0.3.0 architecture) -- replaces the deleted
 # ``engines`` package.  The service layer builds short single-node
@@ -333,6 +335,10 @@ class PipelineService:
         self._logger = get_logger("PipelineService")
         self._metrics: MetricsCollector = MetricsCollector()
         self._registry: NodeRegistry = NodeRegistry()
+
+        # Security gates (Gate 1 input sanitiser + Gate 3 output filter).
+        self._sanitizer: InputSanitizer = InputSanitizer()
+        self._filter: OutputFilter = OutputFilter()
 
         # Build a reusable executor map (node_type -> callable).  Each
         # executor creates a lightweight L4 NodeContext and dispatches to
@@ -907,11 +913,12 @@ def create_app() -> FastAPI:
         version="0.3.1",
     )
 
-    # CORS middleware.
+    # CORS middleware.  ``allow_credentials`` is intentionally omitted:
+    # it is incompatible with the wildcard ``allow_origins=["*"]`` and
+    # would be silently dropped (or rejected) by the browser.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -924,8 +931,10 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         service._logger.error("Unhandled exception: %s", exc, exc_info=True)
+        # Never leak the raw exception text to the client in production;
+        # return a generic message instead.
         return _error_response(
-            str(exc), error_type="internal_error", code=500
+            "Internal Server Error", error_type="internal_error", code=500
         )
 
     # ------------------------------------------------------------------
@@ -972,6 +981,12 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "text_completions"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                request.prompt = service._sanitizer.sanitize_text(request.prompt)
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             if request.stream:
                 return StreamingResponse(
                     _text_completion_stream(service, request, endpoint),
@@ -1065,6 +1080,13 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "text_chat"
         try:
+            # Security Gate 1: sanitise every message's text content.
+            try:
+                for msg in request.messages:
+                    msg.content = service._sanitizer.sanitize_text(msg.content)
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             prompt = _messages_to_prompt(request.messages)
 
             if request.stream:
@@ -1156,9 +1178,24 @@ def create_app() -> FastAPI:
     @app.post("/v1/images/generate")
     async def images_generate(request: ImageRequest) -> Any:
         """Generate an image from a text prompt."""
+        # Rate limiting: reject early when the token bucket is empty.
+        if not service._rate_limiter.try_acquire():
+            return _error_response(
+                "Rate limit exceeded", error_type="rate_limit", code=429
+            )
         start = time.time()
         endpoint = "images_generate"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                request.prompt = service._sanitizer.sanitize_text(request.prompt)
+                if request.negative_prompt:
+                    request.negative_prompt = service._sanitizer.sanitize_text(
+                        request.negative_prompt
+                    )
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             result = service.image_txt2img(
                 prompt=request.prompt,
                 negative_prompt=request.negative_prompt,
@@ -1205,6 +1242,12 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "audio_synthesize"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                request.text = service._sanitizer.sanitize_text(request.text)
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             result = service.audio_tts(
                 text=request.text,
                 voice=request.speaker_id,
@@ -1248,6 +1291,16 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "videos_generate"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                request.prompt = service._sanitizer.sanitize_text(request.prompt)
+                if request.negative_prompt:
+                    request.negative_prompt = service._sanitizer.sanitize_text(
+                        request.negative_prompt
+                    )
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             result = service.video_txt2vid(
                 prompt=request.prompt,
                 negative_prompt=request.negative_prompt,
@@ -1301,6 +1354,17 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "multimodal_understand"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                if request.text:
+                    request.text = service._sanitizer.sanitize_text(request.text)
+                if request.question:
+                    request.question = service._sanitizer.sanitize_text(
+                        request.question
+                    )
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             result = service.multimodal_understand()
             if "error" in result:
                 raise RuntimeError(result["error"])
@@ -1334,6 +1398,12 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "rag_query"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                request.question = service._sanitizer.sanitize_text(request.question)
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             result = service.rag_query()
             if "error" in result:
                 raise RuntimeError(result["error"])
@@ -1366,6 +1436,12 @@ def create_app() -> FastAPI:
         start = time.time()
         endpoint = "agent_run"
         try:
+            # Security Gate 1: sanitise user-supplied text input.
+            try:
+                request.task = service._sanitizer.sanitize_text(request.task)
+            except ValueError as exc:
+                return _error_response("Input rejected: " + str(exc), code=400)
+
             if request.stream:
                 return StreamingResponse(
                     _agent_stream(service, request, endpoint),
@@ -1444,8 +1520,8 @@ def main() -> None:
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host to bind (default: 0.0.0.0).",
+        default="127.0.0.1",
+        help="Host to bind (default: 127.0.0.1).",
     )
     parser.add_argument(
         "--port",
@@ -1467,7 +1543,7 @@ def main() -> None:
         import uvicorn
 
         uvicorn.run(
-            "torcha_verse.serving.api_server:create_app",
+            "serving.api_server:create_app",
             factory=True,
             host=args.host,
             port=args.port,

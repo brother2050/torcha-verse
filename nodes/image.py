@@ -61,6 +61,8 @@ _MEGAPIXEL_PIXELS: float = 1_000_000.0
 
 #: 默认图像宽度/高度（像素），用于 execute() 中的回退值。
 _DEFAULT_WIDTH: int = 512
+#: 默认图像高度（像素），用于 execute() 中的回退值。
+_DEFAULT_HEIGHT: int = 512
 #: 默认推理步数，用于 execute() 中的回退值。
 _DEFAULT_STEPS: int = 20
 #: 默认 img2img 重绘强度，用于 execute() 中的回退值。
@@ -241,7 +243,7 @@ class ImageTxt2ImgNode(BaseNode):
         """
         prompt = str(inputs.get("prompt", ""))
         width = _coerce_dim(inputs.get("width")) or _DEFAULT_WIDTH
-        height = _coerce_dim(inputs.get("height")) or _DEFAULT_WIDTH
+        height = _coerce_dim(inputs.get("height")) or _DEFAULT_HEIGHT
         steps = inputs.get("steps")
         steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         seed = inputs.get("seed")
@@ -436,7 +438,7 @@ class ImageImg2ImgNode(BaseNode):
         """
         prompt = str(inputs.get("prompt", ""))
         width = _coerce_dim(inputs.get("width")) or _DEFAULT_WIDTH
-        height = _coerce_dim(inputs.get("height")) or _DEFAULT_WIDTH
+        height = _coerce_dim(inputs.get("height")) or _DEFAULT_HEIGHT
         steps = inputs.get("steps")
         steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
         strength = inputs.get("strength")

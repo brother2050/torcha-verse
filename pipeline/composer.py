@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from concurrent.futures import (
     ALL_COMPLETED,
     Future,
@@ -65,6 +64,14 @@ _logger: logging.Logger = logging.getLogger("pipeline.composer")
 #: key is supplied.
 _DEFAULT_OUTPUT_KEY: str = "output"
 _DEFAULT_INPUT_KEY: str = "input"
+
+#: Below this many GB of free VRAM the composer emits a warning before
+#: executing a node (best-effort; only checked when the budget exposes an
+#: ``available()`` method, e.g. a :class:`BudgetTracker`).
+_LOW_VRAM_THRESHOLD_GB: float = 1.0
+#: Poll interval (seconds) used by the cooperative pause loop.  Kept tiny
+#: so that a :meth:`Pipeline.resume` call is observed promptly.
+_PAUSE_POLL_INTERVAL_S: float = 0.01
 
 #: Type alias for the progress callback signature.
 ProgressCallback = Callable[[int, int, str, str], None]
@@ -259,10 +266,9 @@ class Pipeline:
 
         for group in groups:
             # Cooperative pause: block (with a small spin) until resumed.
-            while not self._pause_event.is_set():
+            while not self._pause_event.wait(timeout=1.0):
                 if self._cancel_event.is_set():
                     break
-                time.sleep(0.01)
             if self._cancel_event.is_set():
                 self._logger.info(
                     "Pipeline %r cancelled before layer %d.",
@@ -311,6 +317,10 @@ class Pipeline:
                                 other_outputs = other_fut.result()
                             except Exception:
                                 # 该 future 也失败了,跳过(不保留失败结果)。
+                                self._logger.debug(
+                                    "Future %r also failed: %s",
+                                    other_id, exc,
+                                )
                                 continue
                             results[other_id] = other_outputs
                             ctx.set_output(other_id, other_outputs)
@@ -359,19 +369,28 @@ class Pipeline:
             return inputs
 
         # Resource budget pre-check: warn if VRAM is critically low.
+        # ``ctx.budget`` is typically a :class:`ResourceBudget` dataclass
+        # (which has no ``available()`` method); only a :class:`BudgetTracker`
+        # exposes one.  Guard with ``hasattr`` so the check is a no-op for
+        # plain budgets instead of raising ``AttributeError`` that was
+        # previously swallowed by a bare ``except Exception: pass``.
         budget = ctx.budget
-        if budget is not None:
+        if budget is not None and hasattr(budget, "available"):
             try:
                 available = budget.available()
                 vram = available.get("vram_gb", float("inf"))
-                if vram < 1.0:
+                if vram < _LOW_VRAM_THRESHOLD_GB:
                     self._logger.warning(
                         "Low VRAM (%.1f GB available) before executing "
                         "node %r (type %r).",
                         vram, node_id, node.node_type,
                     )
             except Exception:
-                pass  # Don't block execution on budget check failure
+                self._logger.debug(
+                    "VRAM pre-check failed for node %r",
+                    node_id,
+                    exc_info=True,
+                )
 
         return executor(inputs, ctx)
 

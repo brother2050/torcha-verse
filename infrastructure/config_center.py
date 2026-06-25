@@ -238,29 +238,35 @@ class ConfigCenter:
         include_run: bool = True,
     ) -> None:
         # Guard against re-initialisation because ``__init__`` is invoked on
-        # every ``ConfigCenter()`` call for a singleton.
+        # every ``ConfigCenter()`` call for a singleton.  The whole
+        # initialisation block runs under the same ``_singleton_lock`` used
+        # by ``__new__`` so that two concurrent ``ConfigCenter()`` calls
+        # cannot both pass the ``_initialized`` check (TOCTOU).
         if self._initialized:
             return
-        self._initialized = True
+        with self._singleton_lock:
+            if self._initialized:
+                return
+            self._initialized = True
 
-        self._config: Dict[str, Any] = {}
-        self._environment: str = environment
-        self._config_dir: Path = _resolve_config_dir(config_dir)
-        self._loaded_files: List[Path] = []
-        self._lock: threading.RLock = threading.RLock()
+            self._config: Dict[str, Any] = {}
+            self._environment: str = environment
+            self._config_dir: Path = _resolve_config_dir(config_dir)
+            self._loaded_files: List[Path] = []
+            self._lock: threading.RLock = threading.RLock()
 
-        self._system_dir: Path = _system_defaults_dir()
-        self._user_dir: Path = _user_config_dir()
-        self._run_snapshot_path: Optional[Path] = None
+            self._system_dir: Path = _system_defaults_dir()
+            self._user_dir: Path = _user_config_dir()
+            self._run_snapshot_path: Optional[Path] = None
 
-        self._logger = get_logger(self.__class__.__name__)
+            self._logger = get_logger(self.__class__.__name__)
 
-        if auto_load:
-            self.load(
-                environment=environment,
-                include_user=include_user,
-                include_run=include_run,
-            )
+            if auto_load:
+                self.load(
+                    environment=environment,
+                    include_user=include_user,
+                    include_run=include_run,
+                )
 
     # ------------------------------------------------------------------
     # Properties
@@ -584,7 +590,7 @@ class ConfigCenter:
         with self._lock:
             envelope: Dict[str, Any] = {
                 "framework": "TorchaVerse",
-                "version": "0.3.0",
+                "version": "0.3.1",
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "timestamp": time.time(),
                 "platform": platform.platform(),

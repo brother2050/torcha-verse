@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Create a non-root user for runtime security
+RUN useradd -m appuser
+USER appuser
+
 # Copy source code
 COPY . .
 

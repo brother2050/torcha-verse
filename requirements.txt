@@ -5,11 +5,9 @@ torchaudio>=2.1.0
 
 # Configuration
 PyYAML>=6.0
-omegaconf>=2.3.0
 
 # Numerical & Scientific
 numpy>=1.24.0
-scipy>=1.11.0
 
 # Image processing
 Pillow>=10.0.0
@@ -20,7 +18,6 @@ soundfile>=0.12.0
 
 # Tokenization
 sentencepiece>=0.1.99
-tokenizers>=0.15.0
 
 # Serving
 fastapi>=0.104.0

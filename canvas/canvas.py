@@ -39,9 +39,9 @@ from uuid import uuid4
 
 import yaml
 
-from nodes.type_system import TypeSystem
 from pipeline.composer import Pipeline, PipelineConfig
 from pipeline.dag import DAG
+from pipeline.validators import ConnectionValidator
 
 from canvas.models import (
     CanvasConnection,
@@ -255,69 +255,6 @@ class Canvas:
         return None
 
     # ------------------------------------------------------------------
-    # Internal helpers for connection validation
-    # ------------------------------------------------------------------
-    _spec_cache: Optional[Dict[str, Any]] = None
-    _spec_cache_time: float = 0.0
-    _SPEC_CACHE_TTL: float = 5.0  # seconds
-
-    @classmethod
-    def _load_specs(cls) -> Optional[Dict[str, Any]]:
-        """Lazily load node specs from the L4 registry with TTL caching.
-
-        Returns a ``{node_type: NodeSpec}`` mapping, or ``None`` when the
-        node registry is unavailable.  Results are cached for
-        :attr:`_SPEC_CACHE_TTL` seconds to avoid re-traversing the
-        registry on every ``connect()`` call.
-        """
-        import time as _time
-        now = _time.monotonic()
-        if cls._spec_cache is not None and (now - cls._spec_cache_time) < cls._SPEC_CACHE_TTL:
-            return cls._spec_cache
-        try:
-            from nodes import NodeRegistry  # type: ignore[import-not-found]
-
-            registry = NodeRegistry()
-            cls._spec_cache = {spec.type: spec for spec in registry.list()}
-            cls._spec_cache_time = now
-            return cls._spec_cache
-        except Exception:
-            return None
-
-    def _would_create_cycle(
-        self, from_node: str, to_node: str
-    ) -> bool:
-        """Return ``True`` if adding ``from_node -> to_node`` creates a cycle.
-
-        A cycle is introduced when ``from_node`` is already reachable from
-        ``to_node`` through the existing connections (i.e. there is a
-        directed path ``to_node -> ... -> from_node``).  The check uses an
-        iterative DFS over the connection graph.
-
-        Args:
-            from_node: The upstream node of the proposed edge.
-            to_node: The downstream node of the proposed edge.
-
-        Returns:
-            ``True`` if the edge would close a cycle.
-        """
-        if from_node == to_node:
-            return True
-        visited: set[str] = set()
-        stack: List[str] = [to_node]
-        while stack:
-            current = stack.pop()
-            if current == from_node:
-                return True
-            if current in visited:
-                continue
-            visited.add(current)
-            for conn in self._state.connections:
-                if conn.from_node == current:
-                    stack.append(conn.to_node)
-        return False
-
-    # ------------------------------------------------------------------
     # Connection operations
     # ------------------------------------------------------------------
     def connect(
@@ -326,27 +263,27 @@ class Canvas:
         from_port: str,
         to_node: str,
         to_port: str,
-    ) -> Union[CanvasConnection, str]:
+    ) -> CanvasConnection:
         """Connect two nodes on the canvas.
 
-        The method performs full validation before creating the connection:
+        The method performs full validation before creating the connection.
+        Canvas-specific checks (endpoint / port sanity, node existence,
+        one-to-one input) are performed inline; the remaining structural
+        and type checks (self-loop, duplicate, port existence, type
+        compatibility, cycle detection) are delegated to
+        :class:`~pipeline.validators.ConnectionValidator` to avoid
+        duplicating logic that is already shared with
+        :class:`~pipeline.composer.PipelineBuilder`.
 
         * **Endpoint / port sanity** -- ``from_node``, ``to_node``,
           ``from_port`` and ``to_port`` must be non-empty strings.
         * **Node existence** -- both endpoints must already be on the
           canvas.
-        * **Self-loop** -- ``from_node`` and ``to_node`` must differ.
-        * **Duplicate** -- the exact same wire must not already exist.
         * **One-to-one input** -- an input port may receive at most one
           incoming connection.
-        * **Port existence** (when node specs are available) --
-          ``from_port`` must be a declared output of ``from_node``'s type
-          and ``to_port`` must be a declared input of ``to_node``'s type.
-        * **Type compatibility** (when node specs are available) -- the
-          output port's type must be compatible with the input port's
-          type according to :class:`~nodes.type_system.TypeSystem`.
-        * **Cycle detection** -- the new edge must not introduce a cycle
-          in the connection graph (checked via DFS).
+        * **Self-loop / duplicate / port existence / type compatibility /
+          cycle detection** -- delegated to
+          :meth:`ConnectionValidator.validate_connection`.
 
         Args:
             from_node: Id of the producing (upstream) node.
@@ -355,17 +292,19 @@ class Canvas:
             to_port: Input port name on the downstream node.
 
         Returns:
-            The newly created :class:`CanvasConnection` on success, or
-            a human-readable error string describing why the connection
-            was rejected.
+            The newly created :class:`CanvasConnection` on success.
+
+        Raises:
+            ValueError: If any validation check fails.  The exception
+                message describes the reason.
         """
         if not from_node or not to_node:
-            return (
+            raise ValueError(
                 "Connection endpoints must be non-empty strings "
                 "(from_node={!r}, to_node={!r}).".format(from_node, to_node)
             )
         if not from_port or not to_port:
-            return (
+            raise ValueError(
                 "Connection ports must be non-empty strings "
                 "(from_port={!r}, to_port={!r}).".format(
                     from_port, to_port
@@ -376,41 +315,34 @@ class Canvas:
             # --- node existence -------------------------------------------------
             src_node = self._find_node(from_node)
             if src_node is None:
-                return "Source node {!r} does not exist on the canvas.".format(
-                    from_node
+                raise ValueError(
+                    "Source node {!r} does not exist on the canvas.".format(
+                        from_node
+                    )
                 )
             dst_node = self._find_node(to_node)
             if dst_node is None:
-                return "Target node {!r} does not exist on the canvas.".format(
-                    to_node
-                )
-
-            # --- self-loop ------------------------------------------------------
-            if from_node == to_node:
-                return (
-                    "Connection {}.{!r} -> {}.{!r} is a self-loop.".format(
-                        from_node, from_port, to_node, to_port
+                raise ValueError(
+                    "Target node {!r} does not exist on the canvas.".format(
+                        to_node
                     )
                 )
-
-            # --- duplicate ------------------------------------------------------
-            for conn in self._state.connections:
-                if (
-                    conn.from_node == from_node
-                    and conn.from_port == from_port
-                    and conn.to_node == to_node
-                    and conn.to_port == to_port
-                ):
-                    return (
-                        "Duplicate connection {}.{} -> {}.{}.".format(
-                            from_node, from_port, to_node, to_port
-                        )
-                    )
 
             # --- one-to-one input ----------------------------------------------
+            # An input port may receive at most one incoming wire.  This
+            # check is canvas-specific (the shared validator does not
+            # enforce one-to-one inputs) so it stays here.  Exact duplicates
+            # (same from_node + from_port) are skipped so that the
+            # validator's duplicate check can produce a more specific error.
             for conn in self._state.connections:
                 if conn.to_node == to_node and conn.to_port == to_port:
-                    return (
+                    if (
+                        conn.from_node == from_node
+                        and conn.from_port == from_port
+                    ):
+                        # Exact duplicate -- let the validator report it.
+                        continue
+                    raise ValueError(
                         "Input port {!r} of node {!r} already has an incoming "
                         "connection from {}.{}; an input may receive at most "
                         "one wire.".format(
@@ -418,54 +350,32 @@ class Canvas:
                         )
                     )
 
-            # --- port existence + type compatibility (when specs available) ----
-            specs = self._load_specs()
-            from_spec = specs.get(src_node.type) if specs else None
-            to_spec = specs.get(dst_node.type) if specs else None
+            # --- delegate remaining checks to ConnectionValidator -------------
+            # Build the context required by the shared validator: the set
+            # of declared node ids, the existing edges as 4-tuples, the
+            # node-type map and the lazily-loaded node specs.
+            existing_edges: List[tuple] = [
+                (c.from_node, c.to_node, c.from_port, c.to_port)
+                for c in self._state.connections
+            ]
+            node_type_map: Dict[str, str] = {
+                n.id: n.type for n in self._state.nodes
+            }
+            declared_ids: set[str] = {n.id for n in self._state.nodes}
+            specs = ConnectionValidator.load_specs()
 
-            if from_spec is not None and from_port not in from_spec.outputs:
-                available = ", ".join(sorted(from_spec.outputs.keys())) or "(none)"
-                return (
-                    "Port {!r} is not a declared output of node type {!r} "
-                    "(node {!r}). Available output ports: {}.".format(
-                        from_port, src_node.type, from_node, available
-                    )
-                )
-
-            if to_spec is not None and to_port not in to_spec.inputs:
-                available = ", ".join(sorted(to_spec.inputs.keys())) or "(none)"
-                return (
-                    "Port {!r} is not a declared input of node type {!r} "
-                    "(node {!r}). Available input ports: {}.".format(
-                        to_port, dst_node.type, to_node, available
-                    )
-                )
-
-            if from_spec is not None and to_spec is not None:
-                out_type = from_spec.outputs[from_port]
-                in_type = to_spec.inputs[to_port]
-                if not TypeSystem.is_compatible(out_type, in_type):
-                    compatible = TypeSystem.compatible_inputs(out_type)
-                    return (
-                        "Type mismatch: output port {!r} of node {!r} has type "
-                        "{!r} which is not compatible with input port {!r} of "
-                        "node {!r} (type {!r}). Compatible input types: {}.".format(
-                            from_port,
-                            from_node,
-                            out_type,
-                            to_port,
-                            to_node,
-                            in_type,
-                            ", ".join(compatible),
-                        )
-                    )
-
-            # --- cycle detection (DFS) ----------------------------------------
-            if self._would_create_cycle(from_node, to_node):
-                return (
-                    "Connection {}.{} -> {}.{} would create a cycle in the "
-                    "graph.".format(from_node, from_port, to_node, to_port)
-                )
+            error = ConnectionValidator.validate_connection(
+                from_id=from_node,
+                to_id=to_node,
+                output_key=from_port,
+                input_key=to_port,
+                declared_ids=declared_ids,
+                existing_edges=existing_edges,
+                node_type_map=node_type_map,
+                specs=specs,
+            )
+            if error is not None:
+                raise ValueError(error)
 
             connection = CanvasConnection(
                 id=str(uuid4()),
@@ -599,10 +509,15 @@ class Canvas:
             A list of type-mismatch error strings (may be empty).
         """
         errors: List[str] = []
-        specs = self._load_specs()
+        specs = ConnectionValidator.load_specs()
         if specs is None:
             # Registry unavailable -- nothing to validate against.
             return errors
+
+        # Lazy import to decouple the canvas layer from the node type
+        # system (lower coupling; the import only happens when specs are
+        # actually available).
+        from nodes.type_system import TypeSystem  # type: ignore[import-not-found]
 
         with self._lock:
             for conn in self._state.connections:
@@ -882,12 +797,22 @@ class Canvas:
                 conn_d["from_node"], conn_d["from_node"]
             )
             new_to = id_map.get(conn_d["to_node"], conn_d["to_node"])
-            merged.connect(
-                new_from,
-                conn_d["from_port"],
-                new_to,
-                conn_d["to_port"],
-            )
+            try:
+                merged.connect(
+                    new_from,
+                    conn_d["from_port"],
+                    new_to,
+                    conn_d["to_port"],
+                )
+            except ValueError:
+                _logger.warning(
+                    "Merge: skipped connection %s.%s -> %s.%s "
+                    "(validation failed)",
+                    new_from,
+                    conn_d["from_port"],
+                    new_to,
+                    conn_d["to_port"],
+                )
 
         return merged
 

@@ -94,13 +94,14 @@ class TestCanvasTypeValidation:
         assert conn.to_node == "b"
 
     def test_connect_type_mismatch_returns_error(self):
-        """Connecting IMAGE output to TEXT input returns an error string."""
+        """Connecting IMAGE output to TEXT input raises ValueError."""
         canvas = Canvas("test")
         canvas.add_node("image_txt2img", id="img", prompt="cat")
         canvas.add_node("audio_tts", id="tts", text="hello", voice="v1")
-        result = canvas.connect("img", "image", "tts", "text")
-        assert isinstance(result, str)
-        assert "Type mismatch" in result or "not compatible" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("img", "image", "tts", "text")
+        msg = str(exc_info.value)
+        assert "类型不匹配" in msg or "不兼容" in msg
         # The connection must not have been created.
         assert len(canvas.list_connections()) == 0
 
@@ -124,23 +125,23 @@ class TestCanvasTypeValidation:
         assert len(canvas.list_connections()) == 1
 
     def test_connect_unknown_output_port_returns_error(self):
-        """Connecting from a non-existent output port returns an error."""
+        """Connecting from a non-existent output port raises ValueError."""
         canvas = Canvas("test")
         canvas.add_node("text_chat", id="a", prompt="hello")
         canvas.add_node("text_chat", id="b", prompt="world")
-        result = canvas.connect("a", "nonexistent_port", "b", "prompt")
-        assert isinstance(result, str)
-        assert "not a declared output" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("a", "nonexistent_port", "b", "prompt")
+        assert "声明输出" in str(exc_info.value)
         assert len(canvas.list_connections()) == 0
 
     def test_connect_unknown_input_port_returns_error(self):
-        """Connecting to a non-existent input port returns an error."""
+        """Connecting to a non-existent input port raises ValueError."""
         canvas = Canvas("test")
         canvas.add_node("text_chat", id="a", prompt="hello")
         canvas.add_node("text_chat", id="b", prompt="world")
-        result = canvas.connect("a", "text", "b", "nonexistent_port")
-        assert isinstance(result, str)
-        assert "not a declared input" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("a", "text", "b", "nonexistent_port")
+        assert "声明输入" in str(exc_info.value)
         assert len(canvas.list_connections()) == 0
 
     def test_connect_one_to_one_input_rejects_second(self):
@@ -153,29 +154,29 @@ class TestCanvasTypeValidation:
         conn1 = canvas.connect("a", "text", "b", "prompt")
         assert not isinstance(conn1, str)
         # Second connection to the same input should fail.
-        result = canvas.connect("c", "text", "b", "prompt")
-        assert isinstance(result, str)
-        assert "already has an incoming" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("c", "text", "b", "prompt")
+        assert "already has an incoming" in str(exc_info.value)
         assert len(canvas.list_connections()) == 1
 
     def test_connect_duplicate_returns_error(self):
-        """A duplicate connection returns an error string."""
+        """A duplicate connection raises ValueError."""
         canvas = Canvas("test")
         canvas.add_node("text_chat", id="a", prompt="hello")
         canvas.add_node("text_chat", id="b", prompt="world")
         canvas.connect("a", "text", "b", "prompt")
-        result = canvas.connect("a", "text", "b", "prompt")
-        assert isinstance(result, str)
-        assert "Duplicate" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("a", "text", "b", "prompt")
+        assert "重复" in str(exc_info.value)
         assert len(canvas.list_connections()) == 1
 
     def test_connect_self_loop_returns_error(self):
-        """A self-loop connection returns an error string."""
+        """A self-loop connection raises ValueError."""
         canvas = Canvas("test")
         canvas.add_node("text_chat", id="a", prompt="hello")
-        result = canvas.connect("a", "text", "a", "prompt")
-        assert isinstance(result, str)
-        assert "self-loop" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("a", "text", "a", "prompt")
+        assert "自环" in str(exc_info.value)
         assert len(canvas.list_connections()) == 0
 
     def test_connect_cycle_detection(self):
@@ -188,18 +189,18 @@ class TestCanvasTypeValidation:
         assert not isinstance(canvas.connect("a", "text", "b", "prompt"), str)
         assert not isinstance(canvas.connect("b", "text", "c", "prompt"), str)
         # c -> a would close the cycle a -> b -> c -> a.
-        result = canvas.connect("c", "text", "a", "prompt")
-        assert isinstance(result, str)
-        assert "cycle" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("c", "text", "a", "prompt")
+        assert "环" in str(exc_info.value)
         assert len(canvas.list_connections()) == 2
 
     def test_connect_missing_node_returns_error(self):
-        """Connecting to a non-existent node returns an error string."""
+        """Connecting to a non-existent node raises ValueError."""
         canvas = Canvas("test")
         canvas.add_node("text_chat", id="a", prompt="hello")
-        result = canvas.connect("a", "text", "nonexistent", "prompt")
-        assert isinstance(result, str)
-        assert "does not exist" in result
+        with pytest.raises(ValueError) as exc_info:
+            canvas.connect("a", "text", "nonexistent", "prompt")
+        assert "does not exist" in str(exc_info.value)
 
     def test_validate_detects_type_mismatch(self):
         """validate() reports type mismatches for pre-existing connections."""

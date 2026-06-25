@@ -244,8 +244,9 @@ class OutputFilter:
         """Screen ``image`` for NSFW content.
 
         When NudeNet is installed the maximum detection score among
-        explicit labels is used; otherwise a permissive pass is
-        returned.
+        explicit labels is used; otherwise a **fail-closed** verdict is
+        returned (``passed=False, action="flag"``) so that un-screened
+        images are never silently released.
 
         Args:
             image: A path, raw bytes or PIL image.
@@ -255,11 +256,13 @@ class OutputFilter:
         """
         if _HAS_NUDENET:
             return self._filter_image_nudenet(image)
+        # Fail-closed: without a backend we cannot guarantee the image is
+        # safe, so we flag it rather than passing it through.
         return FilterResult(
-            passed=True,
+            passed=False,
             score=0.0,
             categories=[],
-            action="pass",
+            action="flag",
         )
 
     # ------------------------------------------------------------------

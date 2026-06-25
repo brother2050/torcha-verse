@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional, Protocol, Union, runtime_checkable
 
 import torch
@@ -220,22 +221,34 @@ class DeviceManager:
 
     _instance: Optional["DeviceManager"] = None
     _initialized: bool = False
+    # Class-level lock guarding singleton creation / initialisation so
+    # that concurrent ``DeviceManager()`` calls cannot race past the
+    # ``_initialized`` flag (TOCTOU).
+    _singleton_lock: threading.Lock = threading.Lock()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "DeviceManager":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._singleton_lock:
+                if cls._instance is None:  # double-check
+                    cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, device: Optional[Union[str, torch.device]] = None) -> None:
+        # Fast path: already initialised -- avoid the lock entirely.
         if self._initialized:
             return
-        self._initialized = True
+        with self._singleton_lock:
+            # Double-check under the lock to prevent two threads from
+            # initialising concurrently.
+            if self._initialized:
+                return
+            self._initialized = True
 
-        self._device: torch.device = self._resolve_device(device)
-        self._dtype_policy: DTypePolicy = DTypePolicy()
-        self._ddp_initialized: bool = False
-        self._local_rank: int = 0
-        self._world_size: int = 1
+            self._device: torch.device = self._resolve_device(device)
+            self._dtype_policy: DTypePolicy = DTypePolicy()
+            self._ddp_initialized: bool = False
+            self._local_rank: int = 0
+            self._world_size: int = 1
 
     # ------------------------------------------------------------------
     # Device detection
@@ -522,5 +535,6 @@ class DeviceManager:
     @classmethod
     def reset(cls) -> None:
         """Reset the singleton instance (useful for testing)."""
-        cls._instance = None
-        cls._initialized = False
+        with cls._singleton_lock:
+            cls._instance = None
+            cls._initialized = False

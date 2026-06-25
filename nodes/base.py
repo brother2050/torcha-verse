@@ -48,10 +48,8 @@ from __future__ import annotations
 import abc
 import logging
 import threading
-import types
-import typing
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Union
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 from uuid import uuid4
 
 from core.module_bus import ModuleBus, ModuleNotFoundError as _BusNotFoundError
@@ -88,94 +86,6 @@ _NODE_CLASSES_LOCK: threading.RLock = threading.RLock()
 
 #: Module-level logger for the node system (stdlib only -- no torch).
 _logger: logging.Logger = get_logger("nodes")
-
-
-# ---------------------------------------------------------------------------
-# Type-checking helpers
-# ---------------------------------------------------------------------------
-_NoneType: type = type(None)
-
-
-def _type_origin(tp: Any) -> Any:
-    """Return the ``typing`` origin of ``tp`` or ``None`` for plain types.
-
-    Handles both :class:`typing.Union` / :data:`typing.Optional` and the
-    PEP 604 ``X | Y`` syntax (``types.UnionType``), as well as
-    parameterised generics such as ``list[int]``.
-    """
-    origin = typing.get_origin(tp)
-    if origin is None and isinstance(tp, types.UnionType):  # pragma: no cover
-        return types.UnionType
-    return origin
-
-
-def _is_optional(tp: Any) -> bool:
-    """Return ``True`` when ``None`` is an accepted value for ``tp``.
-
-    A type is considered optional when it is a union (``typing.Optional`` /
-    ``X | Y``) that explicitly includes ``NoneType`` among its arguments.
-    """
-    origin = _type_origin(tp)
-    if origin is Union or origin is types.UnionType:
-        return _NoneType in typing.get_args(tp)
-    return False
-
-
-def _type_matches(value: Any, expected: Any) -> bool:
-    """Best-effort ``isinstance`` check that understands type hints.
-
-    Supports:
-
-    * :data:`typing.Any` -- always matches.
-    * :class:`typing.Union` / :data:`typing.Optional` / PEP 604 unions --
-      matches when the value satisfies *any* arm.
-    * Parameterised generics (``list[int]``, ``dict[str, int]`` ...) --
-      matches against the *origin* (``list`` / ``dict``) only, ignoring the
-      parameters, mirroring the runtime behaviour of ``isinstance``.
-    * Plain classes -- plain ``isinstance``.
-
-    Two numeric-widening rules are applied so that user-friendly values are
-    not spuriously rejected:
-
-    * An ``int`` is accepted wherever a ``float`` is expected (e.g.
-      ``guidance_scale=7`` for a ``float`` input).
-    * :class:`bool` is *rejected* for both ``int`` and ``float`` inputs --
-      ``bool`` is a subclass of ``int`` in Python, so without this guard
-      ``steps=True`` would silently validate.
-
-    Any type that cannot be evaluated at runtime (e.g. a forward
-    reference) is treated as a match so that validation never raises on
-    exotic annotations.
-    """
-    if expected is Any:
-        return True
-
-    origin = _type_origin(expected)
-    if origin is Union or origin is types.UnionType:
-        return any(_type_matches(value, arm) for arm in typing.get_args(expected))
-
-    if origin is not None:
-        # Parameterised generic -- check against the origin only.
-        try:
-            return isinstance(value, origin)
-        except TypeError:
-            return True
-
-    # bool is a subclass of int -- reject it for numeric types to avoid
-    # silently accepting True/False where a number is expected.
-    if expected is float:
-        return isinstance(value, float) or (
-            isinstance(value, int) and not isinstance(value, bool)
-        )
-    if expected is int:
-        return isinstance(value, int) and not isinstance(value, bool)
-
-    try:
-        return isinstance(value, expected)
-    except TypeError:
-        # Non-runtime-evaluable annotation (e.g. a string forward ref):
-        # be permissive rather than raising.
-        return True
 
 
 # ---------------------------------------------------------------------------
