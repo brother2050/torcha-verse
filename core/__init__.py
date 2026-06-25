@@ -1,9 +1,8 @@
 """Core layer for the TorchaVerse framework.
 
 This package groups the domain-specific core components that sit above
-the infrastructure layer: the module assembly bus, paged KV cache,
-runtime scheduler, memory pool, unified sampler, diffusion scheduler,
-vocoder manager, and the tool registry.
+the infrastructure layer: the module assembly bus, the diffusion
+scheduler, and the tool registry.
 
 Import policy
 --------------
@@ -18,7 +17,7 @@ Concretely::
 
     import core                       # succeeds without torch
     from core import ModuleBus        # succeeds without torch
-    from core import PagedKVCache     # lazily imports torch on access
+    from core import NoiseSchedule    # lazily imports torch on access
 """
 
 from __future__ import annotations
@@ -34,27 +33,6 @@ __all__ = [
     "ModuleBus",
     "ModuleSpec",
     "register_module",
-    # kv_cache_v2
-    "EvictionResult",
-    "KVCacheConfig",
-    "KVCacheBlock",
-    "PagedKVCache",
-    # runtime_scheduler
-    "TaskPriority",
-    "Task",
-    "Future",
-    "RuntimeScheduler",
-    # memory_pool
-    "OffloadStrategy",
-    "MemoryBlock",
-    "MemoryPool",
-    "MemoryEstimate",
-    "MemoryEstimator",
-    "ModelOffloader",
-    # sampler (unified sampler abstraction)
-    "SamplerConfig",
-    "SamplerRegistry",
-    "register_sampler",
     # diffusion_scheduler
     "NoiseSchedule",
     "BaseSampler",
@@ -67,10 +45,6 @@ __all__ = [
     "StepController",
     "DiffusionScheduler",
     "SAMPLER_REGISTRY",
-    # vocoder_manager
-    "BaseVocoder",
-    "HiFiGANVocoder",
-    "VocoderManager",
     # tool_registry
     "BaseTool",
     "Tool",
@@ -84,27 +58,6 @@ __all__ = [
 #: imported lazily on first access so that ``import core`` does not pull in
 #: optional heavy dependencies such as ``torch``.
 _LAZY_IMPORTS: dict[str, str] = {
-    # kv_cache_v2
-    "EvictionResult": "kv_cache_v2",
-    "KVCacheConfig": "kv_cache_v2",
-    "KVCacheBlock": "kv_cache_v2",
-    "PagedKVCache": "kv_cache_v2",
-    # runtime_scheduler
-    "TaskPriority": "runtime_scheduler",
-    "Task": "runtime_scheduler",
-    "Future": "runtime_scheduler",
-    "RuntimeScheduler": "runtime_scheduler",
-    # memory_pool
-    "OffloadStrategy": "memory_pool",
-    "MemoryBlock": "memory_pool",
-    "MemoryPool": "memory_pool",
-    "MemoryEstimate": "memory_pool",
-    "MemoryEstimator": "memory_pool",
-    "ModelOffloader": "memory_pool",
-    # sampler
-    "SamplerConfig": "sampler",
-    "SamplerRegistry": "sampler",
-    "register_sampler": "sampler",
     # diffusion_scheduler
     "NoiseSchedule": "diffusion_scheduler",
     "BaseSampler": "diffusion_scheduler",
@@ -117,10 +70,6 @@ _LAZY_IMPORTS: dict[str, str] = {
     "StepController": "diffusion_scheduler",
     "DiffusionScheduler": "diffusion_scheduler",
     "SAMPLER_REGISTRY": "diffusion_scheduler",
-    # vocoder_manager
-    "BaseVocoder": "vocoder_manager",
-    "HiFiGANVocoder": "vocoder_manager",
-    "VocoderManager": "vocoder_manager",
     # tool_registry
     "BaseTool": "tool_registry",
     "Tool": "tool_registry",

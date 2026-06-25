@@ -282,6 +282,10 @@ class TTSTransformer(BaseModel):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Expand the text encoding by the predicted durations.
 
+        Vectorised implementation: ``torch.repeat_interleave`` expands
+        each token by its duration in a single GPU call, avoiding the
+        previous Python double-loop and ``.item()`` host syncs.
+
         Args:
             encoded: ``(batch, text_len, hidden)``.
             durations: ``(batch, text_len)`` integer durations.
@@ -289,33 +293,59 @@ class TTSTransformer(BaseModel):
 
         Returns:
             ``(aligned, mask)`` where ``aligned`` is
-            ``(batch, mel_len, hidden)`` and ``mask`` is a padding mask.
+            ``(batch, mel_len, hidden)`` and ``mask`` is a padding mask
+            (``True`` = pad).
         """
-        batch, text_len, hidden = encoded.shape
-        aligned_list: list = []
-        max_len = 0
-        for b in range(batch):
-            frames: list = []
-            for t in range(text_len):
-                d = int(durations[b, t].item())
-                if d > 0:
-                    frames.append(encoded[b, t].unsqueeze(0).repeat(d, 1))
-            if frames:
-                frame = torch.cat(frames, dim=0)
-            else:
-                frame = encoded[b, :1].repeat(1, 1)
-            aligned_list.append(frame)
-            max_len = max(max_len, frame.shape[0])
-
-        if max_mel_len is not None:
-            max_len = min(max_len, max_mel_len)
-
-        aligned = torch.zeros(batch, max_len, hidden, device=encoded.device, dtype=encoded.dtype)
-        mask = torch.ones(batch, max_len, device=encoded.device, dtype=torch.bool)  # True = pad
-        for b in range(batch):
-            n = min(aligned_list[b].shape[0], max_len)
-            aligned[b, :n] = aligned_list[b][:n]
-            mask[b, :n] = False
+        # repeat_interleave on durations broadcasts (batch, text_len) to
+        # (batch, mel_len) by repeating each token index the right number
+        # of times.  Negative durations are clipped to 0 for safety.
+        #
+        # We cannot use the bare ``torch.repeat_interleave(input, repeats)``
+        # helper with a 2-D ``repeats`` tensor (PyTorch requires 1-D).
+        # Instead, the per-sample method is vectorised via flattening:
+        #   1. repeat_interleave in 1-D over a flattened token-index stream,
+        #   2. rebuild the (batch, mel_len) tensor with right-padding.
+        safe_durations = durations.clamp_min(0).long()
+        text_len = encoded.shape[1]
+        batch_size = safe_durations.shape[0]
+        # Per-sample mel lengths; the maximum drives the padded length.
+        per_sample_mel = safe_durations.sum(dim=1)
+        max_mel_len_observed = int(per_sample_mel.max().item())  # single sync
+        # Flattened token index stream: [0,1,...,T-1] repeated batch_size times.
+        flat_index = (
+            torch.arange(text_len, device=encoded.device)
+            .repeat(batch_size)
+        )
+        # Element-wise repeat: ``safe_durations.view(-1)`` is
+        # (batch * text_len,) with row-major order matching ``flat_index``.
+        flat_repeated = torch.repeat_interleave(flat_index, safe_durations.view(-1))
+        # ``flat_repeated`` is a 1-D stream of total length
+        # ``sum(per_sample_mel)``.  The per-sample slices are not
+        # contiguous, so we build a (batch, max_mel_len_observed) padded
+        # index tensor by gathering with row offsets.
+        offsets = torch.zeros(batch_size, dtype=torch.long, device=encoded.device)
+        offsets[1:] = per_sample_mel.cumsum(0)[:-1]
+        # Column positions within each row, clipped to the row's mel_len
+        # for masking.
+        col = torch.arange(max_mel_len_observed, device=encoded.device).unsqueeze(0)
+        valid = col < per_sample_mel.unsqueeze(1)  # (batch, max_mel_len)
+        # Index of the i-th element of each row in ``flat_repeated``:
+        # ``offsets[b] + i`` for i in [0, per_sample_mel[b]).
+        gather_idx = offsets.unsqueeze(1) + col  # (batch, max_mel_len_observed)
+        gather_idx = gather_idx.clamp_max(flat_repeated.shape[0] - 1)
+        token_index = torch.where(
+            valid, flat_repeated[gather_idx], torch.zeros_like(gather_idx)
+        )
+        mel_len = max_mel_len_observed
+        # Padding mask: True where the position is past the row's mel_len.
+        mask = ~valid
+        aligned = torch.gather(
+            encoded, 1, token_index.unsqueeze(-1).expand(-1, -1, encoded.shape[-1])
+        )
+        if max_mel_len is not None and mel_len > max_mel_len:
+            aligned = aligned[:, :max_mel_len]
+            mask = mask[:, :max_mel_len]
+            mel_len = max_mel_len
         return aligned, mask
 
     # ------------------------------------------------------------------

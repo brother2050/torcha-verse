@@ -195,17 +195,19 @@ class SelfAttentionBlock(nn.Module):
         """
         residual = x
         x = self.norm(x)
-        batch, c, h, w = x.shape
+        batch, _c, h, w = x.shape
         qkv = self.qkv(x)
+        # (batch, num_heads, 3, head_dim, hw)
         qkv = qkv.reshape(batch, 3, self.num_heads, self.head_dim, h * w)
-        q, k, v = qkv.unbind(dim=1)  # each (batch, heads, head_dim, hw)
-        # (batch, heads, hw, head_dim)
-        q = q.permute(0, 1, 3, 2) * self.scale
-        k = k.permute(0, 1, 3, 2)
-        v = v.permute(0, 1, 3, 2)
-        attn = torch.softmax(torch.matmul(q, k.transpose(-2, -1)), dim=-1)
-        out = torch.matmul(attn, v)  # (batch, heads, hw, head_dim)
-        out = out.permute(0, 1, 3, 2).reshape(batch, -1, h, w)
+        q, k, v = qkv.unbind(dim=1)
+        # SDPA expects (batch, heads, seq, head_dim); transpose head_dim<->seq.
+        q = q.transpose(-1, -2)
+        k = k.transpose(-1, -2)
+        v = v.transpose(-1, -2)
+        # Defer to the fused SDPA kernel (Flash/Memory-Efficient/Math
+        # backends chosen automatically by PyTorch).
+        out = F.scaled_dot_product_attention(q, k, v)
+        out = out.transpose(-1, -2).reshape(batch, -1, h, w)
         return residual + self.out_proj(out)
 
 
@@ -258,16 +260,17 @@ class CrossAttentionBlock(nn.Module):
         """
         residual = x
         x = self.norm(x)
-        batch, c, h, w = x.shape
-        q = self.to_q(x).reshape(batch, self.num_heads, self.head_dim, h * w)
-        q = q.permute(0, 1, 3, 2) * self.scale  # (batch, heads, hw, head_dim)
-
-        k = self.to_k(context).reshape(batch, -1, self.num_heads, self.head_dim).permute(0, 2, 3, 1)
+        batch, _c, h, w = x.shape
+        seq = h * w
+        # Project to (batch, heads, seq, head_dim) -- the SDPA layout.
+        # ``to_k``/``to_v`` return (B, seq_ctx, num_heads, head_dim);
+        # ``permute(0, 2, 1, 3)`` reshuffles to (B, num_heads, seq_ctx, head_dim).
+        q = self.to_q(x).reshape(batch, self.num_heads, self.head_dim, seq).transpose(-1, -2)
+        k = self.to_k(context).reshape(batch, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.to_v(context).reshape(batch, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        attn = torch.softmax(torch.matmul(q, k), dim=-1)  # (batch, heads, hw, seq)
-        out = torch.matmul(attn, v)  # (batch, heads, hw, head_dim)
-        out = out.permute(0, 1, 3, 2).reshape(batch, -1, h, w)
+        out = F.scaled_dot_product_attention(q, k, v)
+        out = out.transpose(-1, -2).reshape(batch, -1, h, w)
         return residual + self.out_proj(out)
 
 

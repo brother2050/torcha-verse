@@ -36,9 +36,6 @@ def __getattr__(name: str):
     if name == "BudgetTracker":
         from .infrastructure.resource_budget import BudgetTracker
         return BudgetTracker
-    if name == "SourceRegistry":
-        from .infrastructure.source_fetcher import SourceRegistry
-        return SourceRegistry
 
     # L2 Assets
     if name == "AssetStore":
@@ -73,7 +70,6 @@ __all__ = [
     "AuditLogger",
     "ResourceBudget",
     "BudgetTracker",
-    "SourceRegistry",
     # L2 Assets
     "AssetStore",
     "AssetRef",

@@ -49,12 +49,11 @@ __all__ = [
     "DTypePolicy",
     "TensorParallel",
     "PipelineParallel",
-    # logging & errors
+    # logging & error helper
     "Logger",
     "get_logger",
     "set_log_level",
-    "ErrorHandler",
-    "with_error_handler",
+    "safe_call",
     # lifecycle utilities
     "CacheStore",
     "CheckpointManager",
@@ -70,20 +69,11 @@ __all__ = [
     "AllocationHandle",
     "BudgetExceededError",
     "FeasibilityEstimate",
-    # source fetching
-    "SourceFetcher",
-    "SourceRegistry",
-    "LocalSource",
-    "HuggingFaceSource",
-    "ModelScopeSource",
-    "ModelersSource",
-    "SourceLicenseRef",
-    "FetchError",
 ]
 
 #: Mapping of public attribute name -> submodule providing it.  These are
-#: imported lazily on first access so that ``import infrastructure`` does
-#: not eagerly pull in every submodule (and, in particular, does not trigger
+#: imported lazily on first access so that ``import infrastructure`` does not
+#: eagerly pull in every submodule (and, in particular, does not trigger
 #: :class:`ConfigCenter` initialization).
 _LAZY_IMPORTS: dict[str, str] = {
     # config_center
@@ -107,9 +97,8 @@ _LAZY_IMPORTS: dict[str, str] = {
     "Logger": "logger",
     "get_logger": "logger",
     "set_log_level": "logger",
-    # error_handler
-    "ErrorHandler": "error_handler",
-    "with_error_handler": "error_handler",
+    # safe_call (lightweight error helper)
+    "safe_call": "error_helper",
     # cache_store
     "CacheStore": "cache_store",
     # checkpoint_manager
@@ -127,15 +116,6 @@ _LAZY_IMPORTS: dict[str, str] = {
     "AllocationHandle": "resource_budget",
     "BudgetExceededError": "resource_budget",
     "FeasibilityEstimate": "resource_budget",
-    # source_fetcher
-    "SourceFetcher": "source_fetcher",
-    "SourceRegistry": "source_fetcher",
-    "LocalSource": "source_fetcher",
-    "HuggingFaceSource": "source_fetcher",
-    "ModelScopeSource": "source_fetcher",
-    "ModelersSource": "source_fetcher",
-    "SourceLicenseRef": "source_fetcher",
-    "FetchError": "source_fetcher",
 }
 
 

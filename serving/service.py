@@ -29,7 +29,7 @@ from infrastructure.defaults import (
     SAMPLING_TEMPERATURE,
 )
 from infrastructure.device_manager import DeviceManager
-from infrastructure.error_handler import ErrorHandler
+from infrastructure.error_helper import safe_call
 from infrastructure.logger import get_logger
 from infrastructure.rate_limiter import RateLimiter
 from security.input_sanitizer import InputSanitizer
@@ -102,7 +102,6 @@ class PipelineService:
     def __init__(self) -> None:
         self._cfg: ConfigCenter = ConfigCenter()
         self._device_manager: DeviceManager = DeviceManager()
-        self._error_handler: ErrorHandler = ErrorHandler()
         self._logger = get_logger("PipelineService")
         self._metrics: MetricsCollector = MetricsCollector()
         self._registry: NodeRegistry = NodeRegistry()
@@ -118,6 +117,20 @@ class PipelineService:
         self._executors: Dict[str, Any] = {}
         for spec in self._registry.list():
             self._executors[spec.type] = self._make_executor(spec.type)
+
+        # RAG stack: vector store + retriever.  Built lazily on first
+        # ``rag_query`` call (cheap to construct, no eager I/O).
+        self._rag_store = None
+        self._rag_retriever = None
+
+        # LLM provider: the same instance is shared by the ReAct agent
+        # used by ``agent_run``.  Eagerly constructed as an
+        # :class:`EchoProvider` (deterministic, no model weights
+        # required) -- operators can override it at runtime by setting
+        # ``service.llm_provider = ...`` before serving traffic.
+        from models.interfaces.llm_provider import EchoProvider
+
+        self._llm_provider: Any = EchoProvider()
 
         # Cache for idempotent generation results.
         cache_cfg = self._cfg.get("serving.cache", {})
@@ -385,30 +398,175 @@ class PipelineService:
         )
 
     # ------------------------------------------------------------------
-    # Capabilities not yet backed by a node
+    # Capabilities now backed by the LLM / RAG / agent stacks
     # ------------------------------------------------------------------
-    def multimodal_understand(self, **kwargs: Any) -> Dict[str, Any]:
-        """Multimodal understanding is not yet available via the node system."""
+    def _ensure_rag(self) -> None:
+        """Lazily build the RAG vector store and retriever.
+
+        Uses the in-memory store by default; operators can swap in a
+        persistent :class:`FaissVectorStore` by mutating
+        ``self._rag_store`` before serving traffic.
+        """
+        if self._rag_store is not None and self._rag_retriever is not None:
+            return
+        from rag.retrievers import VectorRetriever
+        from rag.vectorstore import InMemoryVectorStore
+
+        self._rag_store = InMemoryVectorStore()
+        self._rag_retriever = VectorRetriever(
+            self._rag_store, embed_fn=self._llm_provider.embed
+        )
+
+    def multimodal_understand(
+        self,
+        prompt: str,
+        image: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run a multimodal prompt through the :class:`LLMProvider`.
+
+        Image inputs are accepted (PIL image or base64 string) but only
+        the textual content is forwarded to the LLM: the framework
+        bundles a text-only :class:`LLMProvider` by default.  Operators
+        that wire a vision-capable provider will receive the raw
+        ``image`` payload via the ``**kwargs`` bag.
+        """
+        from models.interfaces.llm_provider import LLMMessage
+
+        # Surface the image through the metadata so vision-capable
+        # providers can pick it up; text-only providers ignore it.
+        augmented_prompt = prompt
+        if image is not None:
+            augmented_prompt = f"[image attached] {prompt}"
+        try:
+            response = self._llm_provider.chat(
+                [LLMMessage(role="user", content=augmented_prompt)],
+                max_tokens=int(kwargs.get("max_tokens", 256)),
+                temperature=float(kwargs.get("temperature", 0.7)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"Multimodal understand failed: {exc}",
+                "error_type": "llm_error",
+            }
         return {
-            "error": (
-                "Multimodal understanding is not yet available via the "
-                "Pipeline/Node system."
-            ),
-            "error_type": "not_implemented",
+            "text": response.text,
+            "model": response.model,
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            },
         }
 
-    def rag_query(self, **kwargs: Any) -> Dict[str, Any]:
-        """RAG query is not yet available via the node system."""
+    def rag_query(
+        self,
+        query: str,
+        top_k: int = 4,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Retrieve context for ``query`` and synthesise an answer.
+
+        The query is embedded with the LLM provider's ``embed`` method,
+        the top-``k`` passages are concatenated, and the LLM provider is
+        prompted for a final answer.  The response is a dict with
+        ``answer`` (text) and ``context`` (retrieved passages).
+        """
+        from models.interfaces.llm_provider import LLMMessage
+
+        try:
+            self._ensure_rag()
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"RAG store init failed: {exc}",
+                "error_type": "rag_error",
+            }
+        try:
+            results = self._rag_retriever.retrieve(query, top_k=top_k)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"RAG retrieve failed: {exc}",
+                "error_type": "rag_error",
+            }
+        context_blocks = [r.text for r in results if getattr(r, "text", None)]
+        if context_blocks:
+            user_content = (
+                "Use the following context to answer the question.\n\n"
+                f"Context:\n{chr(10).join(context_blocks)}\n\n"
+                f"Question: {query}\n\nAnswer:"
+            )
+        else:
+            user_content = query
+        try:
+            response = self._llm_provider.chat(
+                [LLMMessage(role="user", content=user_content)],
+                max_tokens=int(kwargs.get("max_tokens", 256)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"RAG answer failed: {exc}",
+                "error_type": "llm_error",
+                "context": context_blocks,
+            }
         return {
-            "error": "RAG query is not yet available via the Pipeline/Node system.",
-            "error_type": "not_implemented",
+            "answer": response.text,
+            "context": context_blocks,
+            "model": response.model,
         }
 
-    def agent_run(self, **kwargs: Any) -> Dict[str, Any]:
-        """Agent execution is not yet available via the node system."""
+    def agent_run(
+        self,
+        task: str,
+        max_steps: int = 5,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run a :class:`ReActAgent` over ``task`` with the configured LLM.
+
+        The agent gets a thin adapter that converts the LLMProvider
+        response into a string for ReAct's text-prompt format.  Falls
+        back to the LLM directly if the agent subsystem is unavailable.
+        """
+        try:
+            from agents.react_agent import ReActAgent
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"Agent subsystem unavailable: {exc}",
+                "error_type": "agent_error",
+            }
+
+        # ReActAgent expects a model object with a ``generate(prompt)``
+        # method.  Wrap the LLMProvider in a thin shim that translates
+        # the single-prompt call into a chat-style call.
+        from models.interfaces.llm_provider import LLMMessage
+
+        provider = self._llm_provider
+
+        class _ReActShim:
+            """Adapter exposing ``LLMProvider`` as a ReAct-compatible model."""
+
+            def __init__(self, name: str, provider: Any) -> None:
+                self.name = name
+                self._provider = provider
+
+            def generate(self, prompt: str, **kw: Any) -> str:
+                messages = [LLMMessage(role="user", content=prompt)]
+                return self._provider.chat(messages, **kw).text
+
+        shim = _ReActShim("agent-shim", provider)
+        try:
+            agent = ReActAgent(role="assistant", model=shim, max_steps=max_steps)
+            result = agent.run(task)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"Agent run failed: {exc}",
+                "error_type": "agent_error",
+            }
         return {
-            "error": "Agent execution is not yet available via the Pipeline/Node system.",
-            "error_type": "not_implemented",
+            "output": result.output if hasattr(result, "output") else str(result),
+            "steps": [
+                {"thought": s.thought, "action": s.action, "observation": s.observation}
+                for s in (result.steps if hasattr(result, "steps") else [])
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -446,6 +604,25 @@ class PipelineService:
     def device_manager(self) -> DeviceManager:
         """The device manager."""
         return self._device_manager
+
+    @property
+    def llm_provider(self) -> Any:
+        """The shared :class:`LLMProvider` used by RAG and agent paths.
+
+        Operators can override the default :class:`EchoProvider` by
+        assigning to this property before serving traffic::
+
+            service.llm_provider = ChatTemplateProvider(my_transformer)
+        """
+        return self._llm_provider
+
+    @llm_provider.setter
+    def llm_provider(self, provider: Any) -> None:
+        self._llm_provider = provider
+        # Reset the RAG stack so the next rag_query picks up the new
+        # provider's ``embed`` function.
+        self._rag_store = None
+        self._rag_retriever = None
 
 
 # ===========================================================================

@@ -12,7 +12,7 @@ from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager, DTypePolicy
 from infrastructure.checkpoint_manager import CheckpointManager
 from infrastructure.logger import get_logger
-from infrastructure.error_handler import ErrorHandler, with_error_handler
+from infrastructure.error_helper import safe_call
 from infrastructure.rate_limiter import RateLimiter
 from infrastructure.cache_store import CacheStore
 
@@ -83,25 +83,25 @@ class TestLogger:
         logger.warning("Test warning message")
 
 
-class TestErrorHandler:
-    """Test ErrorHandler."""
+class TestErrorHelper:
+    """Test the safe_call error helper."""
 
-    def test_register_and_handle(self):
-        """Registered handler is called for matching exception."""
-        eh = ErrorHandler()
-        called = []
-        eh.register_handler(ValueError, lambda e: called.append(str(e)))
-        eh.handle(ValueError("test error"))
-        assert called == ["test error"]
+    def test_returns_value_on_success(self):
+        """safe_call returns fn()'s value when no exception is raised."""
+        assert safe_call(lambda: 42) == 42
 
-    def test_decorator_default(self):
-        """with_error_handler decorator catches exceptions."""
-        @with_error_handler(default="fallback")
-        def func():
-            raise ValueError("oops")
-        result = func()
-        # The decorator may return None or the default value.
-        assert result is None or result == "fallback"
+    def test_returns_fallback_on_expected_exception(self):
+        """safe_call returns fallback when the expected exception fires."""
+        def boom():
+            raise ValueError("nope")
+        assert safe_call(boom, fallback="default") == "default"
+
+    def test_propagates_unexpected_exception(self):
+        """safe_call does NOT swallow exceptions outside ``expected``."""
+        def boom():
+            raise RuntimeError("different")
+        with pytest.raises(RuntimeError):
+            safe_call(boom, expected=ValueError, fallback="default")
 
 
 class TestRateLimiter:

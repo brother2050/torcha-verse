@@ -1,10 +1,14 @@
 """Root Mean Square Normalisation (RMSNorm).
 
-RMSNorm is a simplified variant of LayerNorm that only computes the
-root-mean-square normalisation without subtracting the mean.  It is
-computationally cheaper than LayerNorm and has become the default
-normalisation in modern large language models (e.g. LLaMA, Mistral,
-Qwen).
+This module is a thin compatibility wrapper around :class:`torch.nn.RMSNorm`
+(introduced in PyTorch 2.4).  It exists to:
+
+* Keep the public API stable for downstream code that reads
+  ``module.dim`` and ``module.eps`` attributes and uses the class as a
+  drop-in replacement for the previous hand-rolled implementation.
+* Defer to the PyTorch-native kernel, which is implemented in C++/CUDA
+  and is both faster and numerically more stable than the previous
+  Python implementation.
 
 Reference:
     Zhang & Sennrich, "Root Mean Square Layer Normalization" (2019).
@@ -12,52 +16,35 @@ Reference:
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
 
 __all__ = ["RMSNorm"]
 
 
-class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalisation.
+class RMSNorm(nn.RMSNorm):
+    """RMSNorm -- thin subclass of :class:`torch.nn.RMSNorm`.
 
-    For an input tensor ``x`` of shape ``(..., dim)`` the output is::
-
-        y = x * rsqrt(mean(x^2, -1) + eps) * weight
-
-    where ``weight`` is a learnable scale vector of shape ``(dim,)``.
+    Adds the ``dim`` integer attribute (PyTorch stores it as a
+    ``normalized_shape`` tuple) for backward compatibility with
+    downstream code, and an ``extra_repr`` consistent with the rest of
+    the framework.
 
     Args:
         dim: The size of the normalised (last) dimension.
         eps: Small constant added inside the square root for numerical
-            stability.
+            stability.  ``None`` falls back to the PyTorch default
+            (``1e-5``).
     """
 
-    def __init__(self, dim: int, eps: float = 1e-6) -> None:
-        super().__init__()
+    def __init__(self, dim: int, eps: float | None = None) -> None:
         if dim <= 0:
             raise ValueError(f"dim must be a positive integer, got {dim}.")
+        # PyTorch's native RMSNorm uses normalized_shape (int or tuple).
+        super().__init__(normalized_shape=dim, eps=eps, elementwise_affine=True)
         self.dim: int = dim
-        self.eps: float = eps
-        self.weight: nn.Parameter = nn.Parameter(torch.ones(dim))
-
-    # ------------------------------------------------------------------
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute the RMS normalisation (without the learnable scale)."""
-        # Compute in float32 for numerical stability then cast back.
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply RMS normalisation followed by the learnable scale.
-
-        Args:
-            x: Input tensor of shape ``(..., dim)``.
-
-        Returns:
-            Normalised tensor of the same shape as ``x``.
-        """
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+        # ``eps`` may be ``None`` on the underlying module when the user
+        # did not pass one; expose the resolved value for diagnostics.
+        self.eps: float = self.eps if self.eps is not None else 1e-5
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, eps={self.eps}"

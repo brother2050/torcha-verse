@@ -9,6 +9,9 @@ serialising model weights and training state.  It supports:
 * Automatic versioning and disk-space reclamation via ``save_total_limit``.
 * The ``safetensors`` format for weights, with a transparent fallback to
   ``torch.save`` when the library is unavailable.
+* A pluggable :class:`CheckpointBackend` Protocol so that downstream
+  code can swap in a remote (S3, HuggingFace Hub) or memory-mapped
+  storage backend without changing the manager's surface area.
 """
 
 from __future__ import annotations
@@ -19,14 +22,14 @@ import random
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
 import torch
 import torch.nn as nn
 
 from .logger import get_logger
 
-__all__ = ["CheckpointManager"]
+__all__ = ["CheckpointManager", "CheckpointBackend", "LocalCheckpointBackend"]
 
 # Optional safetensors dependency.
 try:  # pragma: no cover - import guard
@@ -43,6 +46,66 @@ _WEIGHTS_FILE = "model.safetensors"
 _WEIGHTS_FILE_FALLBACK = "model.pt"
 _STATE_FILE = "training_state.pt"
 _META_FILE = "metadata.json"
+
+
+# ---------------------------------------------------------------------------
+# Backend protocol + default implementation
+# ---------------------------------------------------------------------------
+@runtime_checkable
+class CheckpointBackend(Protocol):
+    """Pluggable storage backend for checkpoint payloads.
+
+    A backend is responsible for moving bytes between an in-memory
+    representation and a durable location.  The :class:`CheckpointManager`
+    calls :meth:`write` to persist a payload (a ``bytes`` blob plus a
+    logical ``key``) and :meth:`read` to retrieve it.
+
+    The default :class:`LocalCheckpointBackend` writes to a local
+    directory.  Custom backends can target S3, the HuggingFace Hub, an
+    in-memory cache, or anything else without changing the manager.
+    """
+
+    def write(self, key: str, data: bytes) -> str:
+        """Persist ``data`` under ``key``; return the resolved URI."""
+        ...
+
+    def read(self, key: str) -> bytes:
+        """Return the bytes previously stored under ``key``."""
+        ...
+
+    def exists(self, key: str) -> bool:
+        """Return ``True`` iff ``key`` has been previously written."""
+        ...
+
+
+class LocalCheckpointBackend:
+    """Default :class:`CheckpointBackend` that writes to a local directory.
+
+    Keys are translated to relative paths under ``root`` (a
+    :class:`pathlib.Path`).  ``read`` raises :class:`FileNotFoundError`
+    when the file is missing.
+    """
+
+    def __init__(self, root: Union[str, Path]) -> None:
+        self.root: Path = Path(root).expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def write(self, key: str, data: bytes) -> str:
+        target = self.root / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "wb") as handle:
+            handle.write(data)
+        return str(target)
+
+    def read(self, key: str) -> bytes:
+        target = self.root / key
+        if not target.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {target}")
+        with open(target, "rb") as handle:
+            return handle.read()
+
+    def exists(self, key: str) -> bool:
+        return (self.root / key).exists()
 
 
 class CheckpointManager:

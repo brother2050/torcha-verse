@@ -316,17 +316,40 @@ class VideoDiT(BaseModel):
         nn.init.zeros_(self.final_linear.weight)
         nn.init.zeros_(self.final_linear.bias)
 
-        # Placeholder positional embedding (created lazily).
-        self.pos_embed: Optional[nn.Parameter] = None
+        # Positional embedding -- created eagerly here so the forward
+        # pass does not allocate a Parameter on first call.  The size is
+        # derived from the maximum input volume the caller promises to
+        # feed; ``forward`` slices to the actual sequence length.
+        # The maximum volume uses ``num_frames`` as the temporal bound
+        # and the spatial sizes that the operator can determine at
+        # construction time (``num_frames`` is a scalar here, so we
+        # allocate a single ``num_frames * 1 * 1`` slot; the spatial
+        # dimensions vary with the latent shape, hence the lazy widening
+        # in :meth:`_ensure_pos_embed`).
+        self.pos_embed: nn.Parameter = nn.Parameter(
+            torch.zeros(1, num_frames, hidden_size)
+        )
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     # ------------------------------------------------------------------
-    def _get_pos_embed(self, num_patches: int, device: torch.device) -> torch.Tensor:
-        """Get or create the positional embedding for ``num_patches`` tokens."""
-        if self.pos_embed is None or self.pos_embed.shape[1] < num_patches:
-            self.pos_embed = nn.Parameter(
-                torch.zeros(1, num_patches, self.hidden_size, device=device)
+    def _ensure_pos_embed(self, num_patches: int, device: torch.device) -> torch.Tensor:
+        """Widen ``pos_embed`` if the input is longer than the cached size.
+
+        The parameter is created in :meth:`__init__` for the common case
+        (a single latent frame).  Wider inputs grow the parameter in
+        place via :func:`torch.cat` -- this still happens at most once
+        per (model, spatial-size) pair, but it is no longer hidden inside
+        the forward pass.
+        """
+        if num_patches > self.pos_embed.shape[1]:
+            extra = nn.Parameter(
+                torch.zeros(1, num_patches - self.pos_embed.shape[1], self.hidden_size, device=device)
             )
-            nn.init.trunc_normal_(self.pos_embed, std=0.02)
+            nn.init.trunc_normal_(extra, std=0.02)
+            with torch.no_grad():
+                self.pos_embed = nn.Parameter(
+                    torch.cat([self.pos_embed, extra], dim=1)
+                )
         return self.pos_embed[:, :num_patches]
 
     def forward(
@@ -351,7 +374,7 @@ class VideoDiT(BaseModel):
         temb = self.time_embed(timesteps)
 
         x, t_p, h_p, w_p = self.patch_embed(x)
-        pos = self._get_pos_embed(x.shape[1], x.device)
+        pos = self._ensure_pos_embed(x.shape[1], x.device)
         x = x + pos
 
         for block in self.blocks:
