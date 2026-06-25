@@ -16,6 +16,11 @@ relevant to production model fetches:
    different (repo_id, revision) keys; the second call should
    short-circuit on the content fingerprint and return
    ``from_cache=True`` without re-downloading.
+5. **Token resolution + expected_sha256s** -- show how the
+   fetcher picks up ``$HF_TOKEN`` automatically and how the
+   caller can pin a per-file ``sha256`` to refuse a tampered
+   mirror response.  Both ``GatedRepoError`` (401/403) and
+   :class:`ChecksumMismatch` are demonstrated.
 
 The example is **zero-network** by default: it uses an
 in-memory :class:`FakeTransport` (defined inline) instead of
@@ -40,7 +45,9 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.source import (
+    ChecksumMismatch,
     DownloadProgress,
+    GatedRepoError,
     HttpTransport,
     HuggingFaceSource,
     ModelCache,
@@ -48,7 +55,10 @@ from models.source import (
     MirrorHealth,
     MirrorSet,
     SourceRegistry,
+    TokenInfo,
+    auth_headers,
     check_all_mirrors,
+    resolve_token,
 )
 
 
@@ -65,10 +75,20 @@ class FakeTransport(HttpTransport):
 
     The "etag" we return is a real SHA-256 of the payload so the
     cache integrity check passes.
+
+    A *gated* base URL is supported (constructor arg) so the
+    token-resolution / :class:`GatedRepoError` demo can show
+    401/403 handling without a real network call.
     """
 
-    def __init__(self, working_base: str, bytes_per_file: int = 256) -> None:
+    def __init__(
+        self,
+        working_base: str,
+        bytes_per_file: int = 256,
+        gated_base: Optional[str] = None,
+    ) -> None:
         self._working_base = working_base.rstrip("/")
+        self._gated_base = gated_base.rstrip("/") if gated_base else None
         self._bytes_per_file = bytes_per_file
         self._hits: Dict[str, int] = {}
         self._lock = threading.Lock()
@@ -84,6 +104,9 @@ class FakeTransport(HttpTransport):
 
     def get_json(self, url: str, headers: Optional[Dict[str, str]] = None) -> Any:
         self._count(url)
+        if self._gated_base and url.startswith(self._gated_base):
+            import urllib.error
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
         if not url.startswith(self._working_base):
             raise ConnectionError("mirror not reachable: {}".format(url))
         if "/tree/" in url:
@@ -100,6 +123,9 @@ class FakeTransport(HttpTransport):
         self, url: str, headers: Optional[Dict[str, str]] = None
     ) -> Tuple[bytes, Dict[str, str]]:
         self._count(url)
+        if self._gated_base and url.startswith(self._gated_base):
+            import urllib.error
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
         if not url.startswith(self._working_base):
             raise ConnectionError("mirror not reachable: {}".format(url))
         # Pretend every file is 256 bytes; the SHA will be
@@ -242,6 +268,138 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if isinstance(transport, FakeTransport):
         print("\n[stats] fake transport served {} HTTP calls".format(transport.hit_count))
+
+    # ------------------------------------------------------------------
+    # 9. Token resolution demo -- show the lookup chain.
+    # ------------------------------------------------------------------
+    print("\n[7] token resolution (env + on-disk file fallback)")
+    ti_env = resolve_token(
+        env={"HF_TOKEN": "demo_hf_env"}, sources="huggingface",
+    )
+    print("  env var:        present={} source={} value_redacted={}".format(
+        ti_env.is_present, ti_env.source, ti_env.as_dict()["value_redacted"],
+    ))
+    print("  explicit None:  present={} source={}".format(
+        ti_env.is_present, ti_env.source,
+    ))
+    print("  empty explicit: present={} source={}".format(
+        resolve_token(explicit="", env={}).is_present,
+        resolve_token(explicit="", env={}).source,
+    ))
+    print("  no token:       present={} source={}".format(
+        resolve_token(env={}, sources="huggingface").is_present,
+        resolve_token(env={}, sources="huggingface").source,
+    ))
+    # Show the auth_headers helper builds the right shape.
+    print("  auth_headers(present) = {}".format(
+        auth_headers(ti_env),
+    ))
+    print("  auth_headers(None)    = {}".format(auth_headers(None)))
+
+    # ------------------------------------------------------------------
+    # 10. expected_sha256s + ChecksumMismatch demo.  We pin the
+    #     *correct* sha for one file and a *wrong* sha for another,
+    #     and the second fetch should raise ChecksumMismatch before
+    #     any bytes hit the cache.
+    # ------------------------------------------------------------------
+    print("\n[8] expected_sha256s demo")
+    # Compute the actual hashes of the "tiny" payload the
+    # FakeTransport serves.
+    config_payload = ("config.json|{}".format(
+        "x" * transport._bytes_per_file,
+    )).encode("utf-8")
+    weights_payload = ("model.safetensors|{}".format(
+        "x" * transport._bytes_per_file,
+    )).encode("utf-8")
+    config_sha = hashlib.sha256(config_payload).hexdigest()
+    weights_sha = hashlib.sha256(weights_payload).hexdigest()
+    # Use a fresh fetcher pointed at a *fresh* cache so we
+    # exercise the full download path.
+    cache2 = ModelCache(root=cache_root + "-integrity")
+    fetcher2 = ModelFetcher(cache=cache2, registry=registry, mirrors=mirrors)
+
+    # 10a. Correct pins -- write succeeds.
+    print("  [a] correct pins -- expect from_cache=False")
+    ok = fetcher2.fetch(
+        "huggingface", "demo/tiny-model", revision="v2",
+        expected_sha256s={
+            "config.json": config_sha,
+            "model.safetensors": weights_sha,
+        },
+    )
+    print("      from_cache={} files={}".format(
+        ok.from_cache, len(ok.manifest.files),
+    ))
+
+    # 10b. Wrong pin -- ChecksumMismatch.
+    print("  [b] wrong pin (config.json) -- expect ChecksumMismatch")
+    cache3 = ModelCache(root=cache_root + "-integrity-bad")
+    fetcher3 = ModelFetcher(cache=cache3, registry=registry, mirrors=mirrors)
+    try:
+        fetcher3.fetch(
+            "huggingface", "demo/tiny-model", revision="v3",
+            expected_sha256s={
+                "config.json": "f" * 64,  # intentionally wrong
+                "model.safetensors": weights_sha,
+            },
+        )
+        print("      ERROR: no exception raised!")
+    except ChecksumMismatch as exc:
+        print("      caught: {} file={} expected={}...".format(
+            type(exc).__name__, exc.file_name,
+            exc.expected_sha256[:8],
+        ))
+        # Crucially: no manifest was written.
+        assert not cache3.has("huggingface", "demo/tiny-model", "v3")
+        print("      manifest NOT written (cache stays clean)")
+
+    # 10c. validate_checksums=False -- the wrong pin is silently
+    #     accepted.  Use only for trusted internal feeds.
+    print("  [c] validate_checksums=False -- expect the wrong pin to pass")
+    cache4 = ModelCache(root=cache_root + "-integrity-skip")
+    fetcher4 = ModelFetcher(cache=cache4, registry=registry, mirrors=mirrors)
+    skipped = fetcher4.fetch(
+        "huggingface", "demo/tiny-model", revision="v4",
+        expected_sha256s={"config.json": "f" * 64},
+        validate_checksums=False,
+    )
+    print("      from_cache={} files={}".format(
+        skipped.from_cache, len(skipped.manifest.files),
+    ))
+
+    # ------------------------------------------------------------------
+    # 11. GatedRepoError demo -- point the fetch at a "gated" base
+    #     and confirm the 401 surfaces as a GatedRepoError rather
+    #     than a generic failure.
+    # ------------------------------------------------------------------
+    print("\n[9] GatedRepoError demo (401 surfaces with helpful hint)")
+    gated_mirrors = MirrorSet(
+        bases=("https://gated.example.com",) + tuple(mirrors.bases),
+    )
+    gated_transport = FakeTransport(
+        working_base=mirrors.bases[0], gated_base="https://gated.example.com",
+    )
+    gated_cache = ModelCache(root=cache_root + "-gated")
+    gated_reg = SourceRegistry()
+    gated_reg.register(
+        "huggingface",
+        HuggingFaceSource(mirrors=gated_mirrors, transport=gated_transport),
+    )
+    gated_fetcher = ModelFetcher(
+        cache=gated_cache, registry=gated_reg, mirrors=gated_mirrors,
+    )
+    try:
+        gated_fetcher.fetch(
+            "huggingface", "gated/secret-model", revision="main",
+            token="demo-secret-token",  # the fake still 401s -- the demo
+                                         # is about the *error* path
+        )
+        print("      ERROR: no exception raised!")
+    except GatedRepoError as exc:
+        print("      caught: GatedRepoError source={} status={}".format(
+            exc.source, exc.status_code,
+        ))
+        print("      hint:   {}".format(exc.hint))
 
     print("\nDemo complete!")
     return 0

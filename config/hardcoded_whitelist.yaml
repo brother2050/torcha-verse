@@ -1373,3 +1373,205 @@ exemptions:
     protocol_format: true
     content_contains: "Debug:"
     reason: "log message Debug 标签 (scanner 启发式冗余 fallback)"
+
+  # ---- P2++ 模型下载完整性校验 + token 解析 (v0.4.x 2026-06-25) ----
+  # models/source/auth.py -- 中心化 token 解析 (协议/格式/路径字面量)
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "value_redacted"
+    reason: "TokenInfo.as_dict() redaction key, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "huggingface"
+    reason: "source id 'huggingface', 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "civitai"
+    reason: "source id 'civitai', 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "empty-explicit"
+    reason: "TokenInfo.source 标签 'empty-explicit', 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Unknown token source"
+    reason: "resolve_token ValueError 模板, log message 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Access to"
+    reason: "GatedRepoError 模板, log message 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Checksum mismatch"
+    reason: "ChecksumMismatch 模板, log message 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "expected_sha256"
+    reason: "ChecksumMismatch as_dict 字段名, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "actual_sha256"
+    reason: "ChecksumMismatch as_dict 字段名, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "x-linked-etag"
+    reason: "HF LFS pointer ETag header name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "x-checksum-sha256"
+    reason: "HTTP checksum header name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "x-sha256"
+    reason: "HTTP x-sha256 header name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "etag"
+    reason: "HTTP ETag header name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Authorization"
+    reason: "HTTP Authorization header name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Bearer"
+    reason: "HTTP Bearer auth scheme, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "HF_TOKEN"
+    reason: "HF_TOKEN env-var name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "HUGGING_FACE_HUB_TOKEN"
+    reason: "legacy HF env-var name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "CIVITAI_TOKEN"
+    reason: "CIVITAI_TOKEN env-var name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "TORCHA_VERSE_TOKEN"
+    reason: "generic TORCHA_VERSE_TOKEN env-var name, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "explicit"
+    reason: "TokenInfo.source 'explicit' 标签, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "env"
+    reason: "TokenInfo.source 'env' 标签, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "file"
+    reason: "TokenInfo.source 'file' 标签, 协议标识"
+  - file: "models/source/auth.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "none"
+    reason: "TokenInfo.source 'none' 标签, 协议标识"
+  - file: "models/source/auth.py"
+    type: "path_literal"
+    protocol_format: true
+    content_contains: "huggingface/token"
+    reason: "HF token on-disk path, 协议路径标识"
+  - file: "models/source/auth.py"
+    type: "path_literal"
+    protocol_format: true
+    content_contains: "civitai/token"
+    reason: "Civitai token on-disk path, 协议路径标识"
+  - file: "models/source/auth.py"
+    type: "path_literal"
+    protocol_format: true
+    content_contains: "~/"
+    reason: "home directory 路径前缀, 协议路径标识"
+  - file: "models/source/auth.py"
+    type: "path_literal"
+    protocol_format: true
+    content_contains: ".cache"
+    reason: "XDG cache dir, 协议路径标识"
+  # models/source/huggingface.py -- P2++ (checksum pin + 401/403 GatedRepoError)
+  - file: "models/source/huggingface.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Set $HF_TOKEN"
+    reason: "HF 401/403 hint 模板, 协议标识"
+  - file: "models/source/huggingface.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "HuggingFaceSource(token=...)"
+    reason: "HF 401/403 hint 模板, 协议标识"
+  - file: "models/source/huggingface.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "x-linked-etag"
+    reason: "HF LFS pointer ETag header name, 协议标识"
+  - file: "models/source/huggingface.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Checksum mismatch"
+    reason: "ChecksumMismatch progress tick 模板, 协议标识"
+  # models/source/civitai.py -- P2++ (checksum pin + 401/403 GatedRepoError)
+  - file: "models/source/civitai.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Set $CIVITAI_TOKEN"
+    reason: "Civitai 401/403 hint 模板, 协议标识"
+  - file: "models/source/civitai.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "CivitaiSource(token=...)"
+    reason: "Civitai 401/403 hint 模板, 协议标识"
+  - file: "models/source/civitai.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "SHA256"
+    reason: "Civitai metadata hash dict key, 协议标识"
+  # examples/model_download.py -- P2++ demo
+  - file: "examples/model_download.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Bearer"
+    reason: "HTTP Bearer auth scheme (demo print), 协议标识"
+  - file: "examples/model_download.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "huggingface"
+    reason: "source id 'huggingface' (demo print), 协议标识"
+  - file: "examples/model_download.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "demo_secret"
+    reason: "demo token value, 协议标识"
+  # models/source/huggingface.py -- ChecksumMismatch progress tick
+  - file: "models/source/huggingface.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "checksum mismatch"
+    reason: "ChecksumMismatch progress tick log 模板, 协议标识"
+  - file: "models/source/huggingface.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "huggingface"
+    reason: "GatedRepoError source='huggingface', 协议标识"

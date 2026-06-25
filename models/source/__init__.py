@@ -35,6 +35,15 @@ serving process share the same cache and metadata state.
 
 from __future__ import annotations
 
+from .auth import (
+    ChecksumMismatch,
+    GatedRepoError,
+    TokenInfo,
+    auth_headers,
+    extract_expected_sha256_from_headers,
+    is_gated_http_error,
+    resolve_token,
+)
 from .cache import (
     CacheLocation,
     CachedFile,
@@ -82,6 +91,14 @@ __all__ = [
     "is_known_non_commercial",
     "get_default_allow_license",
     "extend_default_allow_license",
+    # auth
+    "TokenInfo",
+    "resolve_token",
+    "auth_headers",
+    "GatedRepoError",
+    "ChecksumMismatch",
+    "extract_expected_sha256_from_headers",
+    "is_gated_http_error",
     # cache
     "CacheLocation",
     "CachedFile",

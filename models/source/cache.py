@@ -39,6 +39,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 from infrastructure.logger import get_logger
 
+from .auth import ChecksumMismatch
+
 __all__ = [
     "CacheLocation",
     "CachedFile",
@@ -405,6 +407,7 @@ class ModelCache:
         license_id: str,
         url: str,
         files: Sequence[Dict[str, Any]],
+        expected_sha256s: Optional[Mapping[str, str]] = None,
     ) -> CachedModel:
         """Atomically write a list of files into the cache.
 
@@ -421,14 +424,53 @@ class ModelCache:
             license_id: SPDX license id (already verified).
             url: The upstream URL the model was fetched from.
             files: Sequence of file dicts (see above).
+            expected_sha256s: Optional ``{file_name: sha256_hex}``
+                map.  When present we treat the caller's pinned
+                hashes as a hard contract: a file whose local hash
+                does not match the pinned value triggers a
+                :class:`~models.source.auth.ChecksumMismatch`
+                *before* the manifest is written.  Use this for
+                supply-chain integrity: a malicious or corrupted
+                mirror cannot smuggle a tampered blob into the
+                cache.
 
         Returns:
             The :class:`CachedModel` manifest that was written.
+
+        Raises:
+            ChecksumMismatch: When ``expected_sha256s`` pins a file
+                and the local hash does not match.
         """
         if not files:
             raise ValueError("`files` must be non-empty")
         loc = self.location_for(source, repo_id, revision)
         target_dir = loc.path()
+        # Pre-flight: validate pinned checksums *before* touching
+        # the disk.  When the caller pinned a specific sha256 we
+        # verify against the in-memory bytes (data) and raise
+        # :class:`ChecksumMismatch` immediately on mismatch -- the
+        # cache directory stays untouched so a corrupted fetch
+        # cannot leave stray files behind.
+        if expected_sha256s:
+            for spec in files:
+                name = str(spec.get("name", ""))
+                pinned = str(expected_sha256s.get(name, "") or "")
+                if not pinned:
+                    continue
+                data = spec.get("data")
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                if not isinstance(data, (bytes, bytearray)):
+                    continue
+                local_sha = hashlib.sha256(bytes(data)).hexdigest()
+                if local_sha != pinned:
+                    raise ChecksumMismatch(
+                        source=source,
+                        repo_id=repo_id,
+                        file_name=name,
+                        expected_sha256=pinned,
+                        actual_sha256=local_sha,
+                    )
         with self._lock:
             target_dir.mkdir(parents=True, exist_ok=True)
             cached_files: List[CachedFile] = []

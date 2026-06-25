@@ -19,10 +19,19 @@ Layering (L1 -> L6):
 
 from __future__ import annotations
 
-import urllib.error
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+import hashlib
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from infrastructure.logger import get_logger
+
+from .auth import (
+    ChecksumMismatch,
+    GatedRepoError,
+    TokenInfo,
+    extract_expected_sha256_from_headers,
+    is_gated_http_error,
+    resolve_token,
+)
 
 from .huggingface import (
     DEFAULT_TIMEOUT,
@@ -78,15 +87,17 @@ class CivitaiSource:
     ) -> None:
         self._api_base: str = api_base.rstrip("/")
         self._transport: HttpTransport = transport or UrllibTransport()
-        self._token: Optional[str] = token
+        # Resolve the token through the centralised helper so
+        # env vars / on-disk files work out of the box.
+        self._token: TokenInfo = resolve_token(explicit=token, sources="civitai")
         self._logger = _logger
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
     def _auth_headers(self) -> Dict[str, str]:
-        if self._token:
-            return {"Authorization": "Bearer {}".format(self._token)}
+        if self._token and self._token.is_present:
+            return {"Authorization": "Bearer {}".format(self._token.value)}
         return {}
 
     def _version_url(self, version_id: str) -> str:
@@ -105,12 +116,23 @@ class CivitaiSource:
         verbatim -- the caller is expected to run the value through
         :func:`models.source.license_check.check_license` so an
         unknown id is rejected by default.
+
+        Raises:
+            GatedRepoError: When the version metadata endpoint
+                returns 401/403 (token required).
         """
         try:
             data = self._transport.get_json(
                 self._version_url(version_id), headers=self._auth_headers(),
             )
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        except Exception as exc:  # noqa: BLE001 - any failure
+            if is_gated_http_error(exc):
+                raise GatedRepoError(
+                    source="civitai",
+                    repo_id=version_id,
+                    status_code=int(getattr(exc, "code", 0)),
+                    hint="Set $CIVITAI_TOKEN or pass CivitaiSource(token=...) and retry.",
+                ) from exc
             self._logger.warning(
                 "Civitai metadata fetch failed for %s: %s", version_id, exc,
             )
@@ -148,12 +170,23 @@ class CivitaiSource:
         Returns:
             A list of file names (e.g. ``["model.safetensors",
             "config.json"]``).  Empty on error.
+
+        Raises:
+            GatedRepoError: When the version metadata endpoint
+                returns 401/403 (token required).
         """
         try:
             data = self._transport.get_json(
                 self._version_url(version_id), headers=self._auth_headers(),
             )
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        except Exception as exc:  # noqa: BLE001
+            if is_gated_http_error(exc):
+                raise GatedRepoError(
+                    source="civitai",
+                    repo_id=version_id,
+                    status_code=int(getattr(exc, "code", 0)),
+                    hint="Set $CIVITAI_TOKEN or pass CivitaiSource(token=...) and retry.",
+                ) from exc
             self._logger.warning(
                 "Civitai file listing failed for %s: %s", version_id, exc,
             )
@@ -176,6 +209,8 @@ class CivitaiSource:
         self,
         version_id: str,
         names: Sequence[str],
+        *,
+        expected_sha256s: Optional[Mapping[str, str]] = None,
     ) -> List[FileDownload]:
         """Download a list of files from a Civitai version.
 
@@ -183,14 +218,36 @@ class CivitaiSource:
         metadata, then issues one ``GET`` per name.  Missing files
         (404) are silently skipped -- the caller decides whether the
         absence is fatal.
-        """
-        import hashlib
 
+        Args:
+            version_id: Civitai model-version id.
+            names: Sequence of file names to download.  Names that
+                start with ``"~"`` are skipped (Civitai uses this
+                prefix for non-public checkpoint fragments, mirroring
+                the HF convention).
+            expected_sha256s: Optional ``{file_name: sha256_hex}``
+                map.  When a file's local hash does not match the
+                pinned value we raise
+                :class:`~models.source.auth.ChecksumMismatch`.
+
+        Raises:
+            GatedRepoError: When the version metadata endpoint
+                returns 401/403 (token required).
+            ChecksumMismatch: When ``expected_sha256s`` pins a file
+                and the local hash does not match.
+        """
         try:
             data = self._transport.get_json(
                 self._version_url(version_id), headers=self._auth_headers(),
             )
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        except Exception as exc:  # noqa: BLE001 - any failure
+            if is_gated_http_error(exc):
+                raise GatedRepoError(
+                    source="civitai",
+                    repo_id=version_id,
+                    status_code=int(getattr(exc, "code", 0)),
+                    hint="Set $CIVITAI_TOKEN or pass CivitaiSource(token=...) and retry.",
+                ) from exc
             self._logger.warning(
                 "Civitai metadata fetch (for download) failed for %s: %s",
                 version_id, exc,
@@ -211,7 +268,7 @@ class CivitaiSource:
 
         results: List[FileDownload] = []
         for name in names:
-            if not name:
+            if not name or name.startswith("~"):
                 continue
             url = url_by_name.get(name)
             if not url:
@@ -220,18 +277,55 @@ class CivitaiSource:
                 )
                 continue
             try:
-                body, _ = self._transport.get_bytes(
+                body, resp_headers = self._transport.get_bytes(
                     url, headers=self._auth_headers(),
                 )
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            except Exception as exc:  # noqa: BLE001
+                if is_gated_http_error(exc):
+                    raise GatedRepoError(
+                        source="civitai",
+                        repo_id=version_id,
+                        status_code=int(getattr(exc, "code", 0)),
+                        hint="Set $CIVITAI_TOKEN or pass CivitaiSource(token=...) and retry.",
+                    ) from exc
                 self._logger.warning(
                     "Civitai download failed for %s/%s: %s",
                     version_id, name, exc,
                 )
                 continue
             local_sha = hashlib.sha256(body).hexdigest()
+            upstream_sha = extract_expected_sha256_from_headers(
+                resp_headers, file_name=name,
+            )
+            # Civitai also exposes hashes via the version
+            # metadata; prefer that one when available.
+            for entry in data.get("files", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("name") == name:
+                    hashes = entry.get("hashes")
+                    if isinstance(hashes, dict):
+                        sha = hashes.get("SHA256")
+                        if isinstance(sha, str) and sha:
+                            upstream_sha = sha
+                    break
+            pinned = ""
+            if expected_sha256s is not None:
+                pinned = str(expected_sha256s.get(name, "") or "")
+            if pinned and local_sha != pinned:
+                raise ChecksumMismatch(
+                    source="civitai",
+                    repo_id=version_id,
+                    file_name=name,
+                    expected_sha256=pinned,
+                    actual_sha256=local_sha,
+                )
             results.append(
-                FileDownload(name=name, data=body, sha256=local_sha)
+                FileDownload(
+                    name=name,
+                    data=body,
+                    sha256=upstream_sha or local_sha,
+                )
             )
         return results
 

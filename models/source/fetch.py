@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from infrastructure.logger import get_logger
 
+from .auth import ChecksumMismatch, GatedRepoError
 from .cache import (
     CacheLocation,
     CachedModel,
@@ -70,6 +71,7 @@ __all__ = [
     "ModelFetcher",
     "FetchResult",
     "SourceRegistry",
+    "ChecksumMismatch",
 ]
 
 
@@ -282,6 +284,9 @@ class ModelFetcher:
         verify_cache: bool = True,
         mirrors: Optional[MirrorSet] = None,
         on_progress: Optional[Any] = None,
+        expected_sha256s: Optional[Mapping[str, str]] = None,
+        token: Optional[str] = None,
+        validate_checksums: bool = True,
     ) -> FetchResult:
         """Fetch a model, with caching and license verification.
 
@@ -313,6 +318,33 @@ class ModelFetcher:
                 :class:`DownloadProgress` tick before forwarding
                 to the HF adapter.  For sources other than HF
                 the parameter is silently ignored.
+            expected_sha256s: Optional ``{file_name: sha256_hex}``
+                map.  When supplied the caller's pinned hashes are
+                a hard contract: a file whose local hash does not
+                match the pinned value triggers
+                :class:`~models.source.auth.ChecksumMismatch`
+                *before* the manifest is written.  Useful for
+                supply-chain integrity -- the operator can pass a
+                manifest captured out-of-band (e.g. from
+                ``huggingface.co/api/models/.../tree/...``) and
+                refuse a tampered mirror response.
+            token: Optional per-call API token.  When supplied
+                the adapter is rebuilt for the duration of the
+                call so the value does *not* leak into the
+                singleton ``SourceRegistry``'s default
+                adapters -- this is the safe way to inject a
+                secret for one call.  When ``None`` the
+                adapter's existing token (env-var or on-disk
+                file) is used.  Honoured by both the HF and
+                Civitai adapters.
+            validate_checksums: When ``True`` (default), per-file
+                pin checks (``expected_sha256s``) are enforced
+                before writing to the cache.  When ``False`` the
+                caller's pins are ignored -- the manifest is
+                still written with whatever hashes the adapter
+                reported (upstream or local).  Use ``False`` only
+                for trusted internal feeds; the default is the
+                safe choice.
 
         Returns:
             A :class:`FetchResult` with the cache location, manifest,
@@ -323,6 +355,9 @@ class ModelFetcher:
             ValueError: When ``repo_id`` is empty.
             PermissionError: When the license is not on the
                 allow-list.
+            ChecksumMismatch: When ``expected_sha256s`` pins a
+                file and the local hash does not match (only
+                raised when ``validate_checksums=True``).
             RuntimeError: When the source adapter cannot resolve a
                 license or download any file.
         """
@@ -354,6 +389,30 @@ class ModelFetcher:
             prev_mirrors = adapter._api_base  # type: ignore[attr-defined]
             adapter._api_base = effective_mirrors.bases[0]  # type: ignore[attr-defined]
 
+        # ----- install per-call token on the adapter ----------------------
+        # The adapter owns a ``_token`` (TokenInfo or None).  We
+        # remember the previous value and restore it on the way
+        # out so the singleton registry is not mutated by a
+        # one-off call.  When ``token`` is ``None`` we keep the
+        # adapter's existing token (env-var / on-disk file).
+        prev_token_attr = None
+        prev_token = None
+        if token is not None and hasattr(adapter, "_token"):
+            from .auth import resolve_token
+            prev_token_attr = "_token"
+            prev_token = getattr(adapter, prev_token_attr, None)
+            new_tok = resolve_token(explicit=token, sources=canonical)
+            adapter._token = new_tok  # type: ignore[attr-defined]
+
+        # ----- effective expected_sha256s --------------------------------
+        # Empty map is treated as "no pins" so callers can pass
+        # ``{}`` without disabling the validation logic.
+        effective_pins: Mapping[str, str] = expected_sha256s or {}
+        # ``validate_checksums=False`` is the explicit opt-out --
+        # replace the map with an empty mapping.
+        if not validate_checksums:
+            effective_pins = {}
+
         try:
             return self._fetch_inner(
                 source=source,
@@ -364,10 +423,13 @@ class ModelFetcher:
                 verify_cache=verify_cache,
                 on_progress=on_progress,
                 adapter=adapter,
+                expected_sha256s=effective_pins,
             )
         finally:
             if prev_mirror_attr is not None and prev_mirrors is not None:
                 setattr(adapter, prev_mirror_attr, prev_mirrors)
+            if prev_token_attr is not None:
+                setattr(adapter, prev_token_attr, prev_token)
 
     def _fetch_inner(
         self,
@@ -380,6 +442,7 @@ class ModelFetcher:
         verify_cache: bool,
         on_progress: Optional[Any],
         adapter: Any,
+        expected_sha256s: Mapping[str, str],
     ) -> FetchResult:
 
         # ----- license check ------------------------------------------------
@@ -423,6 +486,7 @@ class ModelFetcher:
         # ----- download + dedup-aware write --------------------------------
         downloads = self._download_default_artifacts(
             adapter, repo_id, revision, canonical, on_progress=on_progress,
+            expected_sha256s=expected_sha256s,
         )
         if not downloads:
             raise RuntimeError(
@@ -472,6 +536,18 @@ class ModelFetcher:
             except (OSError, ValueError):
                 existing_manifest = None
             if existing_manifest is not None:
+                # When the caller pinned checksums, re-validate
+                # the existing manifest's recorded digests -- a
+                # stale manifest is the worst case for supply-
+                # chain integrity.  The local file on disk is
+                # byte-identical to the one we just downloaded
+                # (fingerprint match), so the per-file hash is
+                # already implicit; we just re-check that it
+                # matches the pins if any.
+                if expected_sha256s:
+                    self._validate_pins_against_manifest(
+                        existing_manifest, expected_sha256s,
+                    )
                 # Skip the write: serve the existing manifest
                 # directly.  The files on disk are content-equal
                 # (by construction -- same fingerprint).
@@ -491,6 +567,7 @@ class ModelFetcher:
             license_id=check.license_id,
             url=url,
             files=files_spec,
+            expected_sha256s=expected_sha256s or None,
         )
         # The just-written files are already sha256-verified by
         # ``write_files``; call :meth:`verify` to cross-check the
@@ -515,9 +592,23 @@ class ModelFetcher:
     def _resolve_license_id(
         self, adapter: Any, repo_id: str, canonical: str
     ) -> str:
-        """Call the adapter's ``resolve_license`` and normalise the result."""
+        """Call the adapter's ``resolve_license`` and normalise the result.
+
+        GatedRepoError is *not* swallowed: 401/403 is an
+        operator-actionable condition (set $HF_TOKEN, install
+        ``huggingface_hub`` and ``huggingface-cli login``, etc.)
+        so the caller deserves the original error.  Any other
+        adapter failure (5xx, network, JSON shape) is logged and
+        reduced to ``""`` -- the license check will then
+        short-circuit to "no license declared", which the
+        operator can re-try without configuring a token.
+        """
         try:
             raw = adapter.resolve_license(repo_id)
+        except GatedRepoError:
+            # 401/403: a token is required.  Do NOT swallow --
+            # surface the actionable error to the caller.
+            raise
         except Exception as exc:  # noqa: BLE001 - any adapter failure
             self._logger.warning(
                 "License resolution failed for %s/%s: %s",
@@ -529,6 +620,7 @@ class ModelFetcher:
     def _download_default_artifacts(
         self, adapter: Any, repo_id: str, revision: str, canonical: str,
         on_progress: Optional[Callable[..., None]] = None,
+        expected_sha256s: Optional[Mapping[str, str]] = None,
     ) -> List[FileDownload]:
         """Call the adapter's ``download_default_artifacts`` if present.
 
@@ -536,6 +628,12 @@ class ModelFetcher:
         keyword argument of the same name.  Adapters that do not
         accept a progress callback simply ignore the argument (the
         typical contract is "forgive extra kwargs").
+
+        ``expected_sha256s`` is forwarded to the adapter when it
+        accepts a keyword argument of the same name; otherwise it
+        is silently dropped.  The fetcher itself re-validates the
+        pins in :meth:`ModelCache.write_files` so a stripped kwarg
+        on the adapter is still safe.
 
         Two callback shapes are accepted (the fetcher docs explain
         why both are useful):
@@ -553,43 +651,106 @@ class ModelFetcher:
             )
         if canonical == "civitai":
             # Civitai's adapter does not take a revision and does
-            # not accept an on_progress callback.
+            # not accept an on_progress / expected_sha256s
+            # callback -- ``download_default_artifacts(version_id)``.
+            # Integrity pins are validated in
+            # :meth:`ModelCache.write_files` so a stripped kwarg
+            # is still safe.
             return fn(repo_id)  # type: ignore[arg-type]
-        if on_progress is None:
+        if on_progress is None and not expected_sha256s:
             return fn(repo_id, revision or "main")  # type: ignore[arg-type]
 
         # Normalise the callback.  We do this by *probing* the
         # callback's signature -- a 1-arg callback is treated as
         # the low-level ``DownloadProgress`` shape; everything
         # else is treated as the 4-arg ergonomic shape.
-        import inspect
-        try:
-            sig = inspect.signature(on_progress)
-            nargs = len([
-                p for p in sig.parameters.values()
-                if p.kind in (
-                    inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                )
-            ])
-        except (TypeError, ValueError):
-            nargs = 4  # default: assume ergonomic shape
+        if on_progress is not None:
+            import inspect
+            try:
+                sig = inspect.signature(on_progress)
+                nargs = len([
+                    p for p in sig.parameters.values()
+                    if p.kind in (
+                        inspect.Parameter.POSITIONAL_ONLY,
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    )
+                ])
+            except (TypeError, ValueError):
+                nargs = 4  # default: assume ergonomic shape
 
-        if nargs <= 1:
-            adapter_cb: Callable[..., None] = on_progress
+            if nargs <= 1:
+                adapter_cb: Optional[Callable[..., None]] = on_progress
+            else:
+                def adapter_cb(tick: DownloadProgress) -> None:
+                    on_progress(
+                        tick.file_name, tick.bytes_done, tick.bytes_total, tick.mirror,
+                    )
         else:
-            def adapter_cb(tick: DownloadProgress) -> None:
-                on_progress(
-                    tick.file_name, tick.bytes_done, tick.bytes_total, tick.mirror,
-                )
+            adapter_cb = None
 
+        # Try the most-featureful signature first; fall back
+        # gracefully when the adapter does not accept one of the
+        # kwargs.  Order: progress + pins, then progress only,
+        # then pins only, then no kwargs.
         try:
-            return fn(
-                repo_id, revision or "main", on_progress=adapter_cb,  # type: ignore[arg-type]
-            )
+            if adapter_cb is not None and expected_sha256s:
+                return fn(  # type: ignore[arg-type]
+                    repo_id, revision or "main",
+                    on_progress=adapter_cb,
+                    expected_sha256s=expected_sha256s,
+                )
+            if adapter_cb is not None:
+                return fn(  # type: ignore[arg-type]
+                    repo_id, revision or "main", on_progress=adapter_cb,
+                )
+            if expected_sha256s:
+                return fn(  # type: ignore[arg-type]
+                    repo_id, revision or "main", expected_sha256s=expected_sha256s,
+                )
+            return fn(repo_id, revision or "main")  # type: ignore[arg-type]
         except TypeError:
             # Adapter has the old signature -- fall back.
             return fn(repo_id, revision or "main")  # type: ignore[arg-type]
+
+    def _validate_pins_against_manifest(
+        self,
+        manifest: CachedModel,
+        expected_sha256s: Mapping[str, str],
+    ) -> None:
+        """Re-validate pinned sha256s against an *existing* manifest.
+
+        Used on a cross-mirror dedup hit: the on-disk files are
+        byte-identical to the ones we just downloaded (same
+        fingerprint), so the per-file hash is implicit.  We
+        therefore compare the pins to the manifest's recorded
+        digests rather than re-hashing every file -- a few
+        microseconds vs. a few hundred milliseconds.
+        """
+        recorded = {f.name: f.sha256 for f in manifest.files}
+        for name, pinned in expected_sha256s.items():
+            if not pinned:
+                continue
+            actual = recorded.get(name, "")
+            if not actual:
+                # The pinned file is not in this manifest -- the
+                # caller is asking for stricter coverage than the
+                # cached model has.  Refuse the dedup hit and let
+                # the caller's next fetch do a clean write.
+                raise ChecksumMismatch(
+                    source=manifest.source,
+                    repo_id=manifest.repo_id,
+                    file_name=name,
+                    expected_sha256=pinned,
+                    actual_sha256="<not-in-existing-manifest>",
+                )
+            if actual != pinned:
+                raise ChecksumMismatch(
+                    source=manifest.source,
+                    repo_id=manifest.repo_id,
+                    file_name=name,
+                    expected_sha256=pinned,
+                    actual_sha256=actual,
+                )
 
     @staticmethod
     def _build_url(
@@ -631,6 +792,11 @@ def fetch(
     revision: str = "",
     allow_license: Optional[Sequence[str]] = None,
     verify_cache: bool = True,
+    expected_sha256s: Optional[Mapping[str, str]] = None,
+    token: Optional[str] = None,
+    validate_checksums: bool = True,
+    on_progress: Optional[Any] = None,
+    mirrors: Optional[MirrorSet] = None,
 ) -> FetchResult:
     """Fetch a model from a registered source.
 
@@ -646,6 +812,13 @@ def fetch(
         revision: Source revision (default ``""`` == HEAD / latest).
         allow_license: Optional explicit allow-list.
         verify_cache: Whether to re-hash cached files on lookup.
+        expected_sha256s: Optional ``{file_name: sha256_hex}`` map;
+            see :meth:`ModelFetcher.fetch` for the contract.
+        token: Optional per-call API token; see
+            :meth:`ModelFetcher.fetch` for the contract.
+        validate_checksums: Whether to enforce ``expected_sha256s``.
+        on_progress: Optional download progress callback (HF only).
+        mirrors: Optional per-call mirror set (HF only).
 
     Returns:
         A :class:`FetchResult`.
@@ -656,4 +829,9 @@ def fetch(
         revision=revision,
         allow_license=allow_license,
         verify_cache=verify_cache,
+        expected_sha256s=expected_sha256s,
+        token=token,
+        validate_checksums=validate_checksums,
+        on_progress=on_progress,
+        mirrors=mirrors,
     )

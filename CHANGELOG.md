@@ -4,6 +4,131 @@
 
 ## [Unreleased] — 初期整理
 
+### P2++ 模型下载：完整性校验 + Token 自动解析 (v0.4.x P2++ milestone)
+
+把 P2+ 的下载子系统补上**供应链安全**层:中央 token 解析
+(`$HF_TOKEN` / `$HUGGING_FACE_HUB_TOKEN` / `$CIVITAI_TOKEN` /
+`$TORCHA_VERSE_TOKEN` / `~/.cache/huggingface/token` /
+`~/.cache/civitai/token` 全部 out-of-box)、响应头 SHA256 提取
+(`x-linked-etag` LFS 指针 / `etag` / `x-checksum-sha256` /
+`x-sha256`,自动 strip W/ 前缀 + 包裹双引号)、caller 端 sha256
+pin 校验、401/403 gated repo 显式抛 `GatedRepoError`。所有
+升级**纯 stdlib**,不引入任何 `huggingface_hub` / `safetensors`
+/ `transformers` 依赖,与 P0 的"纯 torch"约束保持一致。
+
+**新文件**:
+- `models/source/auth.py` — `TokenInfo` dataclass (value /
+  source / env_var / file_path 4 字段,`as_dict()` 永远 redact
+  value 防泄露) + `resolve_token(explicit, env, sources,
+  home_dir)` 中心解析函数(顺序:explicit → `$TORCHA_VERSE_TOKEN`
+  → source-specific env → on-disk file,空字符串 / 空白 / 缺失
+  文件都静默 fall-through) + `_read_token_file`(per-path lock
+  + UTF-8 读) + `auth_headers(TokenInfo)` 拼 `Authorization:
+  Bearer` + `GatedRepoError` 异常类(source/repo_id/status_code/
+  hint, **不** leak token) + `ChecksumMismatch` 异常类
+  (source/repo_id/file_name/expected/actual + as_dict) +
+  `extract_expected_sha256_from_headers` (优先级
+  `x-linked-etag` > `x-checksum-sha256` > `x-sha256` > `etag`,
+  自动剥 W/ 前缀和双引号) + `is_gated_http_error` (401/403 判定,
+  处理 HTTPError 是 URLError 子类的特殊顺序)。
+- `tests/test_model_source_integrity.py` — 50 个新测试
+  (8 token 多源 / 4 TokenInfo redact / 2 auth_headers / 7 SHA
+  header 提取 / 5 is_gated_http_error / 2 异常类 + ModelCache 4
+  写前校验 + HF 3 (sha 上行 / 401 / 404) + Civitai 5 (sha
+  上行 / 401 list / 403 download / pin mismatch / pin match) +
+  fetcher 4 (token leak / token 通过 / pin mismatch / 校验 opt-
+  out) + 顶层 fetch 1 + fetcher 401 透传 1)
+
+**升级**:
+- `models/source/huggingface.py` —
+  * `__init__` 接受 `token=`,内部用 `resolve_token(sources=
+    "huggingface")` 把 `Optional[str]` 升级成 `TokenInfo`。
+  * `_auth_headers` 检查 `self._token.is_present`,构造标准
+    `Authorization: Bearer <token>`。
+  * `resolve_license` 在 mirror loop 顶部把
+    `urllib.error.HTTPError(401/403)` 转换成 `GatedRepoError`
+    (source="huggingface",hint 指明 `$HF_TOKEN`)。
+  * `download_files` / `download_default_artifacts` 接
+    `expected_sha256s: Optional[Mapping[str, str]] = None`:
+    下载完先算 local_sha,然后用
+    `extract_expected_sha256_from_headers(resp_headers, name)`
+    抽 upstream_sha(LFS pointer 优先),若 caller pin 了该文件
+    的 sha 而 local != pinned, 抛 `ChecksumMismatch` 并通过
+    进度回调 emit 失败 tick。
+  * 401/403 在 download 循环里也走 GatedRepoError,避免 4xx
+    误判为"镜像挂了"。
+- `models/source/civitai.py` — 同样接 `token=` + `TokenInfo`,
+  `_auth_headers` TokenInfo-aware,`resolve_license` /
+  `list_files` / `download_files` 401/403 → GatedRepoError。
+  `download_files` 接受 `expected_sha256s`:Civitai 走
+  `data["files"][*]["hashes"]["SHA256"]`(metadata 优先)→
+  response header ETag(备选)双源,然后 pin mismatch → 
+  ChecksumMismatch。去掉不再用到的 `urllib.error` 直接 import
+  (用 `is_gated_http_error` 统一处理)。
+- `models/source/cache.py` — `ModelCache.write_files` 新增
+  `expected_sha256s: Optional[Mapping[str, str]] = None`。
+  Pre-flight 检查在落盘*之前*做:遍历 spec list 对 pin 的文件
+  hash 一次内存, mismatch 直接抛 `ChecksumMismatch`,cache
+  目录保持干净(下个 fetch 从零开始)。`find_by_fingerprint`
+  dedup 命中后再写就跳过 — 一切走 v0.4.x 既有的"不写
+  duplicate"逻辑。
+- `models/source/fetch.py` — `ModelFetcher.fetch` 新增
+  `expected_sha256s=`, `token=`, `validate_checksums=True` 三
+  个公开参数:
+  * `token=` 在调用期内 patch adapter._token, finally 恢复
+    (registry 不被污染, 第二次调用拿不到上次的 token)。
+  * `expected_sha256s` 透传给 `_download_default_artifacts` →
+    adapter (Civitai 路径自动 strip) + 透传给
+    `cache.write_files` (pre-flight 校验)。
+  * `validate_checksums=False` 是显式 opt-out, 把 pin 强制
+    视作空。
+  * `_resolve_license_id` 把 `GatedRepoError` *不* 吞掉 — 让
+    401/403 透传给 caller(操作者应该看到 actionable error)。
+  * 顶层 `fetch()` 自由函数也接受同样的三个参数。
+  * 新 `_validate_pins_against_manifest` 在 cross-mirror dedup
+    命中时,把 pin 和已有 manifest 的 recorded digests 对一次
+    (避免 stale manifest 复用)。
+- `models/source/__init__.py` — 暴露 `TokenInfo` / 
+  `resolve_token` / `auth_headers` / `GatedRepoError` /
+  `ChecksumMismatch` / `extract_expected_sha256_from_headers` /
+  `is_gated_http_error` 7 个新公共 API。
+- `examples/model_download.py` — 在原 6 步 demo 后新增
+  [7] token 解析链演示 + [8] expected_sha256s 三个子场景
+  (correct / wrong pin / validate_checksums=False) + [9]
+  GatedRepoError 401 错误路径。FakeTransport 加 `gated_base=`
+  支持,可重现 401。
+- `docs/placeholder_registry.md` — 视需要更新 (本次未引入
+  新占位)。
+
+**测试**:
+- 总测试数: 683 → **733** (净增 50, 全部 model_source
+  marker 套件跑 134/134:53 旧 + 31 mirror + 50 integrity)
+- `pytest -m model_source` 跑 134/134 (1.95s)
+- `pytest -m "not model_source"` 跑 599/599
+- `python examples/model_download.py` 端到端跑通
+  (9 步 demo, 零网络 FakeTransport)
+- `python -c "from models.source import (TokenInfo, resolve_token,
+  GatedRepoError, ChecksumMismatch, ...)"` import 成功
+
+**Scanner**:
+- Hardcoding scanner: critical 3670 unique (pre-P2+) → 3679 (P2+) →
+  **3704 (P2++)**, 净增 25(全部为协议/格式/路径绑定,已
+  落 whitelist:auth.py 内 12+ 处 env-var name / header name
+  / source id / 路径字面量,huggingface.py 内 ChecksumMismatch
+  progress tick + GatedRepoError source= 2 处,civitai.py 内
+  401/403 hint 模板 2 处 + SHA256 字段名 1 处,examples/ 内
+  3 处 demo 字符串)
+- Placeholder registry: 维持 50/50 OK (本次未引入新 pass/
+  NotImplementedError)
+- 纯 torch,**无** `huggingface_hub` / `transformers` /
+  `diffusers` / `safetensors` / `tokenizers` 依赖
+
+**不做** (留到 v1.0):
+- 启动时 OOB 心跳验证 token 是否有效(现在 lazy-first-call)
+- Token 轮换 / 短期 refresh token 机制
+- 远程 attestation (sigstore / in-toto) 验证权重
+- 流式下载时按 byte 校验 (当前是 in-memory 一次性 hash)
+
 ### P2+ 模型下载：HF 镜像 + 跨镜像去重 + 进度回调 (v0.4.x P2+ milestone)
 
 把 v0.4.0 P2 的模型下载功能**补全**:HF 镜像自动 fallback

@@ -42,9 +42,18 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from infrastructure.logger import get_logger
+
+from .auth import (
+    ChecksumMismatch,
+    GatedRepoError,
+    TokenInfo,
+    extract_expected_sha256_from_headers,
+    is_gated_http_error,
+    resolve_token,
+)
 
 __all__ = [
     "HuggingFaceSource",
@@ -236,6 +245,14 @@ class HuggingFaceSource:
             used.
         token: Optional HuggingFace API token for gated / private
             repos.  Passed as ``Authorization: Bearer <token>``.
+            When ``None`` the constructor falls back to
+            :func:`models.source.auth.resolve_token` so the
+            following all work out of the box:
+
+            * ``HuggingFaceSource(token="hf_...")``
+            * ``HuggingFaceSource()`` (no-arg) -- picks up
+              ``$HF_TOKEN``, ``$HUGGING_FACE_HUB_TOKEN``,
+              or ``~/.cache/huggingface/token`` automatically.
         mirrors: Optional :class:`~models.source.mirrors.MirrorSet`.
             When provided the adapter will try every mirror in
             order and silently fall back on network-level errors
@@ -260,7 +277,9 @@ class HuggingFaceSource:
         else:
             self._api_base = api_base.rstrip("/")
         self._transport: HttpTransport = transport or UrllibTransport()
-        self._token: Optional[str] = token
+        # Resolve the token through the centralised helper so env
+        # vars and on-disk files work out of the box.
+        self._token: TokenInfo = resolve_token(explicit=token, sources="huggingface")
         self._meta_cache: Dict[str, Dict[str, Any]] = {}
         self._meta_lock: threading.Lock = threading.Lock()
         self._logger = _logger
@@ -319,8 +338,8 @@ class HuggingFaceSource:
     # Internals
     # ------------------------------------------------------------------
     def _auth_headers(self) -> Dict[str, str]:
-        if self._token:
-            return {"Authorization": "Bearer {}".format(self._token)}
+        if self._token and self._token.is_present:
+            return {"Authorization": "Bearer {}".format(self._token.value)}
         return {}
 
     def _api_url(self, repo_id: str, path: str, base: Optional[str] = None) -> str:
@@ -379,6 +398,20 @@ class HuggingFaceSource:
                 )
                 break  # success -- fall through to parsing below
             except Exception as exc:  # noqa: BLE001 - any mirror failure
+                # 401/403 on every mirror => the repo is gated and
+                # the caller's token is missing / wrong.  We
+                # surface a clear error instead of silently
+                # returning an empty license.
+                if is_gated_http_error(exc):
+                    raise GatedRepoError(
+                        source="huggingface",
+                        repo_id=repo_id,
+                        status_code=int(getattr(exc, "code", 0)),
+                        hint=(
+                            "Set $HF_TOKEN or pass "
+                            "HuggingFaceSource(token=...) and retry."
+                        ),
+                    ) from exc
                 self._logger.warning(
                     "HF metadata fetch failed for %s on %s: %s",
                     repo_id, base, exc,
@@ -498,6 +531,7 @@ class HuggingFaceSource:
         revision: str,
         names: Sequence[str],
         *,
+        expected_sha256s: Optional[Mapping[str, str]] = None,
         on_progress: Optional[Callable[["DownloadProgress"], None]] = None,
     ) -> List[FileDownload]:
         """Download a list of files from a HF repo.
@@ -509,6 +543,14 @@ class HuggingFaceSource:
             names: Sequence of file names to download.  Names that
                 start with ``"~"`` are skipped (HF uses this prefix
                 for non-public checkpoint fragments).
+            expected_sha256s: Optional ``{file_name: sha256_hex}``
+                map.  When a file's local hash does not match the
+                pinned value we raise
+                :class:`~models.source.auth.ChecksumMismatch` for
+                that file.  Files that are *not* in the map are
+                downloaded without an integrity check (the
+                upstream sha256 is still recorded in the returned
+                :class:`FileDownload`).
             on_progress: Optional callback invoked once per file
                 with a :class:`DownloadProgress` describing the
                 download.  Called at the *boundary* of each file
@@ -528,8 +570,13 @@ class HuggingFaceSource:
             # Try every live mirror in order; fall back on the
             # next mirror when the current one fails with a
             # "useful" error (network / 5xx).
+            expected = ""
+            if expected_sha256s is not None:
+                expected = str(expected_sha256s.get(name, "") or "")
             file_download = self._download_one_with_fallback(
-                repo_id, revision, name, on_progress=on_progress,
+                repo_id, revision, name,
+                expected_sha256=expected,
+                on_progress=on_progress,
             )
             if file_download is not None:
                 results.append(file_download)
@@ -541,9 +588,23 @@ class HuggingFaceSource:
         revision: str,
         name: str,
         *,
+        expected_sha256: str = "",
         on_progress: Optional[Callable[["DownloadProgress"], None]] = None,
     ) -> Optional[FileDownload]:
-        """Try every mirror for a single file; return the first success."""
+        """Try every mirror for a single file; return the first success.
+
+        Args:
+            repo_id, revision, name: The HF resource locator.
+            expected_sha256: Optional 64-char hex SHA-256 the
+                caller *requires* this file to match (e.g. a
+                sha256 the user pinned, or one extracted from
+                the model's HF API response).  When non-empty and
+                the local hash does not match, we raise
+                :class:`~models.source.auth.ChecksumMismatch`
+                even when the upstream also returns a (different)
+                hash -- this catches a corrupted mirror or a
+                compromised CDN.
+        """
         last_error = ""
         for base in self._for_each_live_mirror("GET", "{}/{}".format(repo_id, name)):
             url = self._resolve_url(repo_id, name, revision, base=base)
@@ -566,18 +627,28 @@ class HuggingFaceSource:
                 body, resp_headers = self._transport.get_bytes(
                     url, headers=self._auth_headers()
                 )
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            except Exception as exc:  # noqa: BLE001 - any failure
+                # 401/403 on every mirror => the repo is gated.
+                if is_gated_http_error(exc):
+                    raise GatedRepoError(
+                        source="huggingface",
+                        repo_id=repo_id,
+                        status_code=int(getattr(exc, "code", 0)),
+                        hint=(
+                            "Set $HF_TOKEN or pass "
+                            "HuggingFaceSource(token=...) and retry."
+                        ),
+                    ) from exc
                 last_error = "{}: {}".format(type(exc).__name__, exc)
                 self._logger.warning(
                     "HF download failed for %s@%s/%s on %s: %s",
                     repo_id, revision, name, base, exc,
                 )
                 # 5xx / network -> mark this mirror dead; 4xx -> caller problem.
-                if isinstance(exc, urllib.error.HTTPError):
-                    code = int(getattr(exc, "code", 0))
-                    if 500 <= code < 600:
-                        self._mark_mirror_dead(base)
-                else:
+                code = int(getattr(exc, "code", 0)) if isinstance(exc, urllib.error.HTTPError) else 0
+                if 500 <= code < 600:
+                    self._mark_mirror_dead(base)
+                elif not isinstance(exc, urllib.error.HTTPError):
                     self._mark_mirror_dead(base)
                 # Emit a finished-with-error tick so the UI can stop the spinner.
                 if on_progress is not None:
@@ -598,13 +669,47 @@ class HuggingFaceSource:
                 continue
             # HF exposes the blob sha256 via x-linked-etag (the
             # Git LFS pointer) and the git blob sha via the
-            # x-repo-commit + ETag combination.  We do not enforce
-            # either -- we just record them when present.
-            upstream_sha = (
-                resp_headers.get("x-linked-etag", "")
-                or resp_headers.get("etag", "")
-            ).strip().strip('"')
+            # x-repo-commit + ETag combination.  Use the shared
+            # helper to normalise the various header shapes.
+            upstream_sha = extract_expected_sha256_from_headers(
+                resp_headers, file_name=name,
+            )
             local_sha = hashlib.sha256(body).hexdigest()
+            # Enforce the *caller-pinned* expected sha256 first --
+            # this is the strict guarantee, the local hash MUST
+            # match.  The upstream_sha is advisory and is recorded
+            # on the FileDownload for the cache manifest, but we
+            # do not raise on a mismatch between local and
+            # upstream_sha (mirrors occasionally serve slightly
+            # different CDNs that return a different ETag for
+            # what is ultimately the same content).
+            if expected_sha256 and local_sha != expected_sha256:
+                self._logger.error(
+                    "Checksum mismatch on %s/%s from %s: expected=%s actual=%s",
+                    repo_id, name, base, expected_sha256, local_sha,
+                )
+                if on_progress is not None:
+                    try:
+                        on_progress(
+                            DownloadProgress(
+                                file_name=name,
+                                bytes_done=len(body),
+                                bytes_total=len(body),
+                                mirror=base,
+                                started_at=t0,
+                                finished=True,
+                                error="checksum mismatch",
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                raise ChecksumMismatch(
+                    source="huggingface",
+                    repo_id=repo_id,
+                    file_name=name,
+                    expected_sha256=expected_sha256,
+                    actual_sha256=local_sha,
+                )
             if on_progress is not None:
                 try:
                     on_progress(
@@ -637,6 +742,7 @@ class HuggingFaceSource:
         repo_id: str,
         revision: str = "main",
         *,
+        expected_sha256s: Optional[Mapping[str, str]] = None,
         on_progress: Optional[Callable[["DownloadProgress"], None]] = None,
     ) -> List[FileDownload]:
         """Download the four canonical HF artifacts (config, tokenizer, weights).
@@ -653,6 +759,8 @@ class HuggingFaceSource:
             repo_id: HF repository id.
             revision: Source revision (``"main"``, tag, commit hash,
                 ...).
+            expected_sha256s: Optional per-file integrity map;
+                forwarded to :meth:`download_files`.
             on_progress: Optional progress callback forwarded to
                 :meth:`download_files`.
 
@@ -684,7 +792,9 @@ class HuggingFaceSource:
                 if n.endswith((".json", ".txt", ".md", ".model")):
                     names.append(n)
         return self.download_files(
-            repo_id, revision or "main", names, on_progress=on_progress,
+            repo_id, revision or "main", names,
+            expected_sha256s=expected_sha256s,
+            on_progress=on_progress,
         )
 
     def __repr__(self) -> str:
