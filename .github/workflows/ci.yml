@@ -46,11 +46,11 @@ jobs:
 
       - name: Lint
         run: |
-          python -m compileall -q agents assets canvas config consistency core infrastructure models nodes pipeline plugins rag security serving tools training || true
+          python -m compileall -q agents assets canvas config consistency core infrastructure models nodes pipeline plugins rag security serving tools training
 
-      - name: Hardcoding check
+      - name: CI Gates (hardcoding + placeholders + degrade_logging)
         run: |
-          python scripts/check_hardcoding.py --path . --whitelist config/hardcoded_whitelist.yaml || true
+          python scripts/check_ci_gates.py
 
       - name: Run tests
         run: |

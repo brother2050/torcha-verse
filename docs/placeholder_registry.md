@@ -36,7 +36,7 @@
 | 4 | `training/dataset.py:235` | `BaseTorchDataset` | `_load` | 子类按文件格式覆盖 |
 | 5 | `papers/adapter.py:88` | `PaperAdapter` | `load_model` | `@abc.abstractmethod` 装饰 |
 | 6 | `papers/adapter.py:101` | `PaperAdapter` | `infer` | `@abc.abstractmethod` 装饰 |
-| 7 | `nodes/base.py:401` | `BaseNode` | `execute` | `@abc.abstractmethod` 装饰;30 节点均已实现 |
+| 7 | `nodes/base.py:401` | `BaseNode` | `execute` | `@abc.abstractmethod` 装饰;29 节点均已实现 |
 
 ### 2.2 TP/PP placeholder(`tp_pp`,2 条)
 

@@ -67,6 +67,8 @@ bus.register("model.text", "my-llm", MyLLM())
 ```
 
 无模型注册时,节点会回退到内置的 echo 工厂,流水线仍可端到端跑通。
+入门示例见 [`examples/basic_text_gen.py`](examples/basic_text_gen.py) 和
+[`examples/agent_demo.py`](examples/agent_demo.py)。
 
 ## 测试
 
@@ -78,6 +80,13 @@ python -m pytest tests/ -q
 
 - [架构设计](docs/architecture.md)
 - [操作指南](docs/operations.md)
+- [路线图](docs/ROADMAP.md)
+- [延后任务](docs/DEFERRED_TASKS.md)
+- [未处理项清单](docs/open_items.md)
+- [示例目录](docs/examples_catalog.md)
+- [硬编码规约](docs/hardcoding_convention.md)
+- [占位注册表](docs/placeholder_registry.md)
+- [配置访问指南](docs/config_access.md)
 
 ## 许可证
 

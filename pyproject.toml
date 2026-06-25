@@ -138,3 +138,55 @@ enabled = true
 # D3 stage three: 默认 disabled, 等 38 处 silent-degrade 补完再 enabled = true
 # 当前可用 `python scripts/check_degrade_logging.py` 单跑看进度
 enabled = false
+
+# ---------------------------------------------------------------------------
+# Type checking (mypy)
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+exclude = [
+    "tests/",
+    "examples/",
+    "build/",
+    "dist/",
+]
+
+# ---------------------------------------------------------------------------
+# Linting (ruff)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401"]  # unused imports in tests (fixtures)
+
+# ---------------------------------------------------------------------------
+# Formatting (black)
+# ---------------------------------------------------------------------------
+[tool.black]
+target-version = ["py310"]
+line-length = 100
+extend-exclude = "/(build|dist)/"

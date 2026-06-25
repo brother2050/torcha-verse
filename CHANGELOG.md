@@ -1,8 +1,37 @@
 # Changelog
 
-项目初期变更记录。初期重点：架构简洁、节点能跑、测试可过。
+项目变更记录。初期重点：架构简洁、节点能跑、测试可过。
 
-## [Unreleased] — 初期整理
+## [Unreleased]
+
+## [v0.4.0] - 2026-06-25
+
+### A 档: 工程规约失约收口 (CI 入口 / 文档口径 / 文档索引)
+
+v0.4.x 14 项 P/D 中 12 项已完成, 但 4 处工程规约承诺未兑现, 本次收口:
+- **A1+A2**: `.github/workflows/ci.yml` 的 "Hardcoding check" step
+  (调 `check_hardcoding.py` 未带 `--severity critical` / `--ci`,
+  带 `|| true`) 替换为 `python scripts/check_ci_gates.py` 统一入口
+  (覆盖 hardcoding + placeholders + degrade_logging 三个 gate),
+  Lint step 去掉 `|| true`。
+- **A3**: `docs/ROADMAP.md` 5 处 + `docs/placeholder_registry.md` 1 处
+  写 "30 节点" 修正为 "29 节点" (实际 BaseNode 子类 29 个, 与 README 统一)。
+- **A4**: `README.md` "文档" 一节从 2 个链接补到 9 个
+  (新增 ROADMAP / DEFERRED_TASKS / open_items / examples_catalog /
+  hardcoding_convention / placeholder_registry / config_access)。
+
+### D 档: 低优长尾顺手清
+
+- **D1**: `pyproject.toml` 补 `[tool.mypy]` / `[tool.ruff]` / `[tool.black]` 配置。
+- **D7**: `README.md` echo 工厂段补链接到 `examples/basic_text_gen.py` /
+  `examples/agent_demo.py`。
+
+### B3: release tag 化
+
+v0.4.x 14 项中 12 完成 1 partial 1 进行中, 切 `[v0.4.0] - 2026-06-25` 段,
+`git tag v0.4.0`。
+
+### 之前的历史记录
 
 ### Docs:open_items.md 集中化未处理项 + ROADMAP/DEFERRED 精简
 
@@ -689,3 +718,7 @@ CI 上 31 个新测试覆盖 4 个模态的端到端 forward pass。
 - 新增 `docs/DEFERRED_TASKS.md`,登记开发初期延后处理的任务(当前条目:hardcoding 规约化)。
 - 新增 `docs/ROADMAP.md`(v0.4.x 准生产化 12 周计划 + v1.0.0 纲要),
   P1 评估模块 2026-06-25 标记完成。
+
+---
+
+[v0.4.0]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.0
