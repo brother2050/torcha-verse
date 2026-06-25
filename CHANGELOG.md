@@ -4,7 +4,40 @@
 
 ## [Unreleased] — 初期整理
 
-### D3 阶段三：降级协议化 + degrade_logging CI 闸口 (v0.4.x D3 stage three)
+### D1 阶段三·补:3 个新 Rule 扩展 - fstring / regex / dict (informational)
+
+把 D1 阶段三打下的 Rule 扩展点 + per-rule opt-out 用上, 加 3 个
+informational Rule, 验证 Rule 协议 + applies_to 多形态节点
+(Constant / List / JoinedStr / Dict / Call) 全栈可用。
+
+**新 Rule** (默认 severity=info, 不影响 critical 计数):
+- `FStringTemplateRule` (Rule #5) — 扫 `ast.JoinedStr`,
+  FSTRING_MIN_LENGTH=20, in_docstring / in_log_call 豁免
+- `RegexPatternRule` (Rule #6) — 扫 `re.{compile,match,search,
+  sub,findall,split,fullmatch,subn}` 的第一个 positional /
+  `pattern=` kwarg
+- `DictLiteralRule` (Rule #7) — 扫 `ast.Dict` ≥ 5 键, 仅函数内
+
+**修改文件**:
+- `scripts/check_hardcoding_rules.py` — DEFAULT_RULES 从 4 扩
+  到 7; `__all__` 同步加 3 个类名
+- `scripts/check_hardcoding.py` — visitor 加 3 个新 dispatcher
+  (visit_JoinedStr / visit_Dict / visit_Call), 每个都按 Rule
+  的 applies_to(node) 派发 (visitor 不再硬编码"只 Constant + List")
+- `tests/test_hardcoding_rules.py` — 22 个新测试 (3 个 class),
+  旧硬编码"4 条 Rule"的 3 处断言改对
+- `docs/placeholder_registry.md` — #63 行号 137 → 140 (新加
+  docstring 后 line drift), "4 个内置 Rule 子类" → "7 个"
+
+**统计**:
+- 总测试数: 830 → **852** pass (全过, 22.22s)
+- scanner critical 仍 0
+- 新增 449 个 info (284 fstring + 112 dict + 45 regex + 8 string)
+  可观测, 不阻塞 CI
+- 默认 cfg: critical=0 + 449 info 是 design intent (info 不 fail
+  CI, 但提供"哪些地方用 fstring/regex/大 dict"的可观测面)
+
+### D3 阶段三:降级协议化 + degrade_logging CI 闸口 (v0.4.x D3 stage three)
 
 把 v0.4.x D3 阶段二已经建立的"placeholder 集中化"再向前推一步:
 把"silent degrade"(只 `except ...: pass` 不留任何 trace 的降级路径)
