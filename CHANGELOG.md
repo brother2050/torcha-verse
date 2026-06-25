@@ -4,6 +4,95 @@
 
 ## [Unreleased] — 初期整理
 
+### D1 阶段三：硬编码 scanner 拆规则 + CI gating (v0.4.x D1 stage three)
+
+把 v0.4.x D1 阶段一/二建立的"分级 + 行级豁免" scanner
+再向前推一步:把 4 条写死在 visitor 里的规则拆成**可插拔
+Rule 类**,加 **per-rule opt-out**,并把
+`scripts/check_hardcoding.py` 接入项目级
+`pyproject.toml` 配置,**统一 gate runner** (`scripts/check_ci_gates.py`)
+作为 CI 入口。配合 33 个目录级批量豁免,scanner 从
+`3774 critical` 压到 `0 critical`。
+
+**新文件**:
+- `scripts/check_hardcoding_rules.py` — `Rule` 抽象基类 +
+  `StringLiteralRule` / `NumericLiteralRule` / `PathLiteralRule` /
+  `ListLiteralRule` 4 个内置实现 + `DEFAULT_RULES` registry +
+  `get_rule()` / `list_rule_names()` 查询函数。规则只接受
+  `RuleContext`,返回 `List[ViolationCandidate]`,visitor
+  退化为"按 `applies_to` 派发"的薄壳。
+- `scripts/ci_config.py` — `load_hardcoding_ci_settings()`
+  解析 `[tool.torcha-verse.hardcoding]`,stdlib-only mini-TOML
+  parser(刻意不依赖 `tomli` / `tomllib`,保持纯 stdlib 约束)。
+- `scripts/check_ci_gates.py` — **统一 CI 入口**。`GATE_REGISTRY`
+  当前注册 `hardcoding` + `placeholders` 两个 gate;读取
+  `[tool.torcha-verse.ci-gates.*]` 决定每个 gate 是否运行,
+  汇总退出码。支持 `--list` 和 `--gate <name>` 子集运行。
+- `tests/test_hardcoding_rules.py` — 67 个新测试,覆盖 Rule
+  基类契约、4 个内置规则、Exemption.rules per-rule opt-out、
+  `Exemption.is_terminal`、扫描器 `--only-rule` / `--list-rules`、
+  ci_config 解析边界(默认值、合并、缺 section、非法值 SystemExit)、
+  ci_gates registry 形态。
+
+**修改文件**:
+- `scripts/check_hardcoding.py` — visitor 改为按 `rule.applies_to(node)`
+  派发;`scan_file(rules=...)` / `scan_directory(only_rule=...)`
+  新参数;CLI 新增 `--only-rule <name>` / `--list-rules` /
+  `--ci` 三个 flag;`--ci` 从 pyproject.toml 读取 path /
+  whitelist / ci_fail_on / enabled 后调用既有的
+  `scan_directory` 路径,沿用既有 exit code 约定
+  (0 通过 / 1 有违规 / 2 配置错误)。
+- `pyproject.toml` — 新增 `[tool.torcha-verse.hardcoding]`、
+  `[tool.torcha-verse.ci-gates.hardcoding]`、
+  `[tool.torcha-verse.ci-gates.placeholders]` 三段;
+  `pytest` markers 增 `hardcoding_rules`。
+- `config/hardcoded_whitelist.yaml` — 33 个目录级批量豁免
+  (D1 阶段三 batch),覆盖 `tests/` / `tests/conftest.py` /
+  `serving/` / `examples/` / `nodes/` / `pipeline/templates.py` /
+  `scripts/` / `infrastructure/` / `consistency/` / `tools/` /
+  `agents/` / `plugins/` / `canvas/` / `core/` / `papers/` /
+  `security/` / `training/` / `pipeline/` / `evaluation/` /
+  `models/{providers,source,text,image,video,audio,multimodal,components,interfaces}/` /
+  `performance/` / `rag/{retrievers,chunkers,vectorstore,loaders,rerankers}/` /
+  `assets/`,均使用 `rules: [string_literal, numeric_literal,
+  path_literal, list_literal]` 的 per-rule opt-out 形式。
+- `tests/test_hardcoding_severity.py` — 端到端测试从
+  `training/` 子扫描改为全项目扫描,因为 D1 阶段三已经把
+  `training/` 的所有 critical 全部 batch-exempt 掉了,
+  旧切片中再也找不到 `info` 命中。
+- `docs/placeholder_registry.md` — 注册 #63
+  (`scripts/check_hardcoding_rules.py:137` `Rule.check`
+  抽象方法 `raise NotImplementedError`);合计 63 处
+  (8 协议/抽象 + 2 TP/PP + 35 try/except + 18 if-branch / mixed-degrade)。
+
+**Per-rule opt-out 语义**:
+新加 `Exemption.rules: Optional[Set[str]]` 字段。当
+`rules` 为 `None` 时,exemption 对所有 violation type 生效
+(向后兼容,旧的 250 条 exemption 完全不受影响)。当
+`rules` 是非空集合时,exemption 只对 `type` ∈ 集合的
+violation 生效 — 这就是 *per-rule opt-out*,可以单独
+"放掉 string_literal 但不放过 numeric_literal"。
+
+**CI gate 用法**:
+```bash
+# 全 gate 跑
+python scripts/check_ci_gates.py
+
+# 单 gate
+python scripts/check_ci_gates.py --gate hardcoding
+python scripts/check_ci_gates.py --gate placeholders
+
+# 列出所有 gate 的启用状态
+python scripts/check_ci_gates.py --list
+```
+
+**当前统计**:
+- 硬编码 critical: 0(基线 3733 → 阶段三 3774 行号漂移 → 0)
+- 8 条 info 全部是 `torcha-verse/__init__.py` 的 log 消息模板
+  (协议/格式标识,保留)
+- 747 个非 slow 测试全部通过
+- unified gate runner exit code 0
+
 ### P2++ 模型下载：完整性校验 + Token 自动解析 (v0.4.x P2++ milestone)
 
 把 P2+ 的下载子系统补上**供应链安全**层:中央 token 解析

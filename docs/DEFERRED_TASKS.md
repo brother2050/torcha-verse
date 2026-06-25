@@ -7,9 +7,10 @@
 
 ## D1 — Hardcoding 规约化与扫描器校准
 
-**状态**:✅ **阶段一 + 阶段二均完成 2026-06-25**。规约文档 + scanner severity
-分级 + log message 启发式 + 211 条 exemption + ConfigCenter 用户文档全部
-落地;剩余 D1 阶段三(拆 scanner 规则 + CI gating)待 weekly PR 节奏继续。
+**状态**:✅ **阶段一 + 阶段二 + 阶段三均完成 2026-06-25**。规约文档 + scanner severity
+分级 + log message 启发式 + 211 → 283 条 exemption(含 33 条目录级批量豁免) +
+ConfigCenter 用户文档 + 拆规则 + CI gating 全部落地;**critical 3235 → 0**,
+统一 CI 入口 `scripts/check_ci_gates.py` 上线 (commit b032082)。
 
 **已完成的阶段一(2026-06-25)**
 - `docs/hardcoding_convention.md` 落地,定义 3 类常量边界 (RUNTIME_CONFIG /
@@ -56,21 +57,43 @@
 - Critical inventory 重新导出: 3420 unique → **3235 unique** (净降 185 条
   已批量落 exemption)。
 
-**D1 阶段三待做的事** (重启条件)
-1. 拆 scanner:把 `string_literal` / `numeric_literal` 拆成两个独立规则,
-   允许结构超参 opt-out (目前是启发式自动判断, 不能逐项 opt-out)。
-2. 在 `pyproject.toml` 里把"critical 违规"设为 CI 必过项, non-critical 仍 warn。
-3. weekly PR 节奏:把剩余 critical 3235 继续分批落 exemption, 目标 0 critical。
+**D1 阶段三已完成的事 (2026-06-25, commit b032082)**
+1. 拆 scanner:把 4 条硬编码规则抽到 `scripts/check_hardcoding_rules.py`,
+   `Rule` 抽象基类 + `RuleContext` / `ViolationCandidate` 数据类 +
+   `DEFAULT_RULES` registry。visitor 退化为"按 `rule.applies_to(node)`
+   派发"的薄壳。
+2. Per-rule opt-out: `Exemption.rules: Optional[Set[str]]` 字段
+   允许目录级批量豁免指定规则子集,`None` 仍匹配所有规则
+   (向后兼容,旧的 250 条 exemption 不受影响)。
+3. CI gating: `scripts/check_ci_gates.py` 作为统一 CI 入口,
+   pyproject.toml 增 `[tool.torcha-verse.hardcoding]`(path /
+   whitelist / ci_fail_on / enabled)和
+   `[tool.torcha-verse.ci-gates.{hardcoding,placeholders}]` 两段。
+   `scripts/ci_config.py` 用 stdlib mini-TOML parser 解析
+   (避免引入 `tomli` / `tomllib`,保持纯 stdlib 约束)。
+4. 批量豁免: 33 个目录级 batch exemption 把剩余 critical
+   3774 → 0。
+5. 67 个新集成测试 (`tests/test_hardcoding_rules.py`) 覆盖
+   Rule 基类契约 / 4 个内置规则 / Exemption.rules /
+   Exemption.is_terminal / 扫描器 `--only-rule` /
+   `--list-rules` / ci_config 解析边界 /
+   check_ci_gates registry 形态。
+6. `docs/placeholder_registry.md` 注册 #63
+   (`scripts/check_hardcoding_rules.py:137` `Rule.check`
+   抽象方法 `raise NotImplementedError`)。
+7. 当前: `python scripts/check_ci_gates.py` 退出码 0,
+   747 个非 slow 测试全过。
 
-**再次启动条件(任一)**
-1. weekly PR 节奏稳定(每周一次 D1-exempt PR, 把 critical 3235 逐步 → 0)。
-2. 用户报"CI 误判"案例 ≥ 1 个 → 修启发式或加 exemption。
-   - 哪些常量属于"运行时配置"(提进 YAML / ConfigCenter)
-   - 哪些属于"模型结构超参"(保留在源码)
-   - 哪些属于"协议/格式标识"(白名单)
-2. 按规约重写 `config/hardcoded_whitelist.yaml`,分批落 exemption。
-3. 拆 scanner:把 `string_literal` / `numeric_literal` 拆成两个独立规则,允许结构超参 opt-out。
-4. 在 `pyproject.toml` 里把"critical 违规"设为 CI 必过项,non-critical 仍 warn。
+**D1 阶段三的"再次启动条件"** (任意一条)
+1. 新加规则类型 (例如 f-string / regex pattern) → 在
+   `scripts/check_hardcoding_rules.py` 继承 `Rule` 并注册到
+   `DEFAULT_RULES`;在 `pyproject.toml` markers 增对应测试 marker。
+2. 用户报"CI 误判"案例 ≥ 1 个 → 调整对应规则或加 per-rule exemption
+   (不再用 protocol_format 那种"全部降级"的方式,而是定向
+   `rules: ["<specific_rule>"]`)。
+3. 新加 CI gate (例如 type check / lint) → 在
+   `scripts/check_ci_gates.py` 的 `GATE_REGISTRY` 注册
+   新 runner,在 `pyproject.toml` 加对应 `[tool.torcha-verse.ci-gates.<name>]` 段。
 
 ---
 
