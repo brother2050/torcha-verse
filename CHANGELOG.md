@@ -4,6 +4,49 @@
 
 ## [Unreleased] — 初期整理
 
+### Docs:open_items.md 集中化未处理项 + ROADMAP/DEFERRED 精简
+
+把散在 `docs/ROADMAP.md` (v1.0.0 段 130 行 + D3 阶段三 38 处表 25 行)
+和 `docs/DEFERRED_TASKS.md` (D3 阶段三 第二批 段 30 行 + D4 v1.0.0 段 35 行)
+的"未处理项"详细信息 (共 ~220 行) 抽出, 集中到**单一新文档**
+[`docs/open_items.md`](docs/open_items.md) (131 行), 作为仓库
+"未处理项的唯一权威清单"。
+
+**结构**:
+- **A 档 (高优)**: 4 条工程规约失约 (CI 入口 / 文档口径 / 文档索引 /
+  release tag), 估时 1-2 周, 不动业务代码
+- **B 档 (中优)**: 4 条部分完成 (D3 阶段三 38 处补 warning / P5
+  维护 / release tag 化 / D3 TP/PP 占位)
+- **C 档 (v1.0.0)**: 8 条未启动子任务 (M0 / M1 / M2a / M2b / M2c /
+  M3a / M3b / C8 真实大模型 e2e)
+- **D 档 (低优)**: 8 条长尾 (mypy/ruff/coverage 配置 / 53 个 slow
+  测试 CI / README demo 链接 / 文档一致性等)
+
+**行数变化**:
+- ROADMAP: 859 → 738 (-121, 删 v1.0.0 详细子任务 + D3 阶段三 38 处表)
+- DEFERRED: 265 → 216 (-49, 删 D3 阶段三 第二批列表 + D4 v1.0.0 详细)
+- open_items.md: +131
+- 合计 1124 → 1085 (-39), 净减但**信息没丢** (全部迁移到 open_items.md)
+
+**指针约定** (从 ROADMAP / DEFERRED 跳到 open_items.md):
+- ROADMAP D3 阶段三 段: 38 处表 → "见 open_items.md B1"
+- ROADMAP v1.0.0 段: 7 主题盘点 + 4 milestone 详细 → 7 行概要表 + "见 open_items.md C"
+- DEFERRED D3 阶段三 第二批: 38 处列表 + 重启条件 + 重启动作 → "见 open_items.md B1" + 3 行命令
+- DEFERRED D4 v1.0.0: 启动条件 + 4 milestone + 风险 + 重启动作 → "见 open_items.md C" 一句指针
+- DEFERRED D3 主条目 "为什么延后": 拆解到 B4 / C3 / B1
+
+**维护约定** (open_items.md 末尾):
+- 每次 P/D 状态变化 (commit / 决定启动 milestone) 必须同步本文件
+- 任何 v0.4.x 新问题发现 → 加到本文件, 标明发现时间 + 关联 commit
+- ROADMAP 的状态表格: 删详细, 只保留 ✅ / ⏳ / partial 标记 + 一句指针
+- DEFERRED_TASKS: D3 阶段三 第二批 / D4 段缩为 5-10 行状态摘要 + 指针
+
+**验证**:
+- 852 个非 slow 测试仍全过
+- `python scripts/check_ci_gates.py` 仍 PASS
+- `python scripts/check_degrade_logging.py --stats` 仍列 38 处
+  (扫描器不依赖文档, 是 AST 扫描, 信息不丢)
+
 ### D1 阶段三·补:3 个新 Rule 扩展 - fstring / regex / dict (informational)
 
 把 D1 阶段三打下的 Rule 扩展点 + per-rule opt-out 用上, 加 3 个
