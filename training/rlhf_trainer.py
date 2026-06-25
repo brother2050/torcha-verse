@@ -30,7 +30,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from models.base import BaseModel
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
@@ -103,7 +103,7 @@ class RLHFConfig:
     @classmethod
     def from_yaml(cls) -> "RLHFConfig":
         """Build an :class:`RLHFConfig` from the global YAML configuration."""
-        cfg = ConfigManager()
+        cfg = ConfigCenter()
         rlhf_cfg = cfg.get("rlhf", {})
         optimizer_cfg = cfg.get("optimizer", {})
         training_cfg = cfg.get("training", {})

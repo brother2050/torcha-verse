@@ -48,7 +48,7 @@ __all__ = [
     "ModelScopeSource",
     "ModelersSource",
     "SourceRegistry",
-    "LicenseRef",
+    "SourceLicenseRef",
     "FetchError",
 ]
 
@@ -99,10 +99,10 @@ class FetchError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# LicenseRef dataclass
+# SourceLicenseRef dataclass
 # ---------------------------------------------------------------------------
 @dataclass
-class LicenseRef:
+class SourceLicenseRef:
     """Reference to a software/data license.
 
     Attributes:
@@ -149,7 +149,7 @@ class SourceFetcher(ABC):
     * :meth:`can_handle` -- decide whether this fetcher understands ``ref``.
     * :meth:`fetch` -- download/copy the resource to ``dst``.
     * :meth:`verify` -- verify the integrity (sha256) of a fetched resource.
-    * :meth:`license` -- return the :class:`LicenseRef` for ``ref`` (if known).
+    * :meth:`license` -- return the :class:`SourceLicenseRef` for ``ref`` (if known).
     * :meth:`cleanup_partial` -- remove any partial download artefacts.
 
     Subclasses may also set :attr:`supports_parallel` to ``True`` to opt into
@@ -209,8 +209,8 @@ class SourceFetcher(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def license(self, ref: str) -> Optional[LicenseRef]:
-        """Return the :class:`LicenseRef` for ``ref`` if known."""
+    def license(self, ref: str) -> Optional[SourceLicenseRef]:
+        """Return the :class:`SourceLicenseRef` for ``ref`` if known."""
         raise NotImplementedError
 
     @abstractmethod
@@ -340,7 +340,7 @@ class LocalSource(SourceFetcher):
             return True
         return self._sha256(path) == expected_sha256.lower()
 
-    def license(self, ref: str) -> Optional[LicenseRef]:
+    def license(self, ref: str) -> Optional[SourceLicenseRef]:
         # Local sources carry no intrinsic license metadata.
         return None
 
@@ -440,7 +440,7 @@ class HuggingFaceSource(SourceFetcher):
             return True
         return LocalSource._sha256(path) == expected_sha256.lower()
 
-    def license(self, ref: str) -> Optional[LicenseRef]:
+    def license(self, ref: str) -> Optional[SourceLicenseRef]:
         if not _HAS_HUGGINGFACE:
             return None
         repo_id, _ = self._split_ref(ref)
@@ -452,7 +452,7 @@ class HuggingFaceSource(SourceFetcher):
         raw = card_data.get("license") if isinstance(card_data, dict) else None
         if not raw:
             return None
-        return LicenseRef(
+        return SourceLicenseRef(
             spdx_id=str(raw),
             name=str(raw),
             url=f"https://huggingface.co/{repo_id}",
@@ -528,7 +528,7 @@ class ModelScopeSource(SourceFetcher):
             return True
         return LocalSource._sha256(path) == expected_sha256.lower()
 
-    def license(self, ref: str) -> Optional[LicenseRef]:
+    def license(self, ref: str) -> Optional[SourceLicenseRef]:
         return None
 
     def cleanup_partial(self, ref: str, dst: Path) -> None:
@@ -591,7 +591,7 @@ class ModelersSource(SourceFetcher):
             return True
         return LocalSource._sha256(path) == expected_sha256.lower()
 
-    def license(self, ref: str) -> Optional[LicenseRef]:
+    def license(self, ref: str) -> Optional[SourceLicenseRef]:
         return None
 
     def cleanup_partial(self, ref: str, dst: Path) -> None:
@@ -781,8 +781,8 @@ class SourceRegistry:
             return path.exists()
         return fetcher.verify(path, expected_sha256)
 
-    def license(self, ref: str) -> Optional[LicenseRef]:
-        """Return the :class:`LicenseRef` for ``ref`` if any fetcher knows it."""
+    def license(self, ref: str) -> Optional[SourceLicenseRef]:
+        """Return the :class:`SourceLicenseRef` for ``ref`` if any fetcher knows it."""
         fetcher = self._select_fetcher(ref)
         if fetcher is None:
             return None

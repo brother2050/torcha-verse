@@ -27,7 +27,7 @@ import io
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 

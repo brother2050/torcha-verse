@@ -29,7 +29,7 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Type
 
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
@@ -488,7 +488,7 @@ class BenchmarkRunner:
         self.model_name: str = model_name
         self.tasks: List[str] = tasks or _TaskRegistry.list_tasks()
         self.config: Dict[str, Any] = config or {}
-        self._cfg_manager: ConfigManager = ConfigManager()
+        self._cfg_manager: ConfigCenter = ConfigCenter()
         self._device_manager: DeviceManager = DeviceManager()
         self._logger = logger
 

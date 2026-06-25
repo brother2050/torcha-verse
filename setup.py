@@ -6,7 +6,7 @@ setup(
     description="TorchaVerse: A pure PyTorch all-modal generative AI framework",
     author="TorchaVerse Team",
     license="Apache-2.0",
-    packages=find_packages(),
+    packages=find_packages(exclude=["tests*", "tests.*", "examples*", "examples.*", "scripts*", "scripts.*"]),
     python_requires=">=3.9",
     install_requires=[
         "torch>=2.1.0",

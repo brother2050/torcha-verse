@@ -11,7 +11,7 @@ Layering (L1 -> L4):
 * L1 ``infrastructure`` -- config, logging, devices, caching.
 * L2 ``assets`` (this package) -- the asset model + store.
 * L3 ``core`` -- model registry, schedulers, tokenizers.
-* L4 ``engines`` -- text / image / audio / video / multimodal engines.
+* L4 ``nodes`` -- text / image / audio / video / multimodal nodes.
 
 Assets are referenced across layers through immutable :class:`AssetRef`
 handles, so that wiring between modules never silently drifts to a

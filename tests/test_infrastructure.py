@@ -8,7 +8,7 @@ import tempfile
 import pytest
 import torch
 
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager, DTypePolicy
 from infrastructure.checkpoint_manager import CheckpointManager
 from infrastructure.logger import get_logger
@@ -17,23 +17,23 @@ from infrastructure.rate_limiter import RateLimiter
 from infrastructure.cache_store import CacheStore
 
 
-class TestConfigManager:
-    """Test ConfigManager."""
+class TestConfigCenter:
+    """Test ConfigCenter."""
 
     def test_get_default(self):
         """get() returns default when key is missing."""
-        cm = ConfigManager()
+        cm = ConfigCenter()
         assert cm.get("nonexistent.key", "default") == "default"
 
     def test_set_and_get(self):
         """set() then get() returns the value."""
-        cm = ConfigManager()
+        cm = ConfigCenter()
         cm.set("test.key", 42)
         assert cm.get("test.key") == 42
 
     def test_nested_key(self):
         """Dot-notation keys work for nested dicts."""
-        cm = ConfigManager()
+        cm = ConfigCenter()
         cm.set("a.b.c", "value")
         assert cm.get("a.b.c") == "value"
 

@@ -18,9 +18,6 @@ __author__ = "TorchaVerse Team"
 def __getattr__(name: str):
     """Lazy attribute access for top-level exports."""
     # L1 Infrastructure
-    if name == "ConfigManager":
-        from .infrastructure.config_manager import ConfigManager
-        return ConfigManager
     if name == "ConfigCenter":
         from .infrastructure.config_center import ConfigCenter
         return ConfigCenter
@@ -70,7 +67,6 @@ def __getattr__(name: str):
 
 __all__ = [
     # L1 Infrastructure
-    "ConfigManager",
     "ConfigCenter",
     "DeviceManager",
     "get_logger",

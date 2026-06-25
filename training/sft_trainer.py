@@ -33,7 +33,7 @@ from torch.utils.data import DataLoader
 
 from models.base import BaseModel
 from infrastructure.checkpoint_manager import CheckpointManager
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
@@ -134,7 +134,7 @@ class SFTConfig:
     @classmethod
     def from_yaml(cls) -> "SFTConfig":
         """Build an :class:`SFTConfig` from the global YAML configuration."""
-        cfg = ConfigManager()
+        cfg = ConfigCenter()
         optimizer_cfg = cfg.get("optimizer", {})
         scheduler_cfg = cfg.get("lr_scheduler", {})
         training_cfg = cfg.get("training", {})

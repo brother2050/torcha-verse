@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import click
 
-from infrastructure.config_manager import ConfigManager
+from infrastructure.config_center import ConfigCenter
 from infrastructure.defaults import (
     DIFFUSION_STEPS,
     DIFFUSION_GUIDANCE_SCALE,
@@ -711,7 +711,7 @@ def _print_step(step: Any) -> None:
 @cli.command()
 def info() -> None:
     """Display framework and device information."""
-    cfg = ConfigManager()
+    cfg = ConfigCenter()
     device_mgr = DeviceManager()
     device_info = device_mgr.get_device_info()
 
