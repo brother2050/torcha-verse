@@ -189,20 +189,15 @@ class TextNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        prompt_tokens = max(1, len(prompt.split()))
-        completion_tokens = max(1, min(max_tokens, 16))
-        text = (
-            "[text_chat placeholder] model={!r}: ".format(model)
-            + prompt[: 64]
+        from ._helpers import call_text_backend
+
+        return call_text_backend(
+            ctx.bus,
+            model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "model": model,
-        }
-        return {"text": text, "usage": usage}
 
 
 @register_node("text_completion")
@@ -327,17 +322,12 @@ class TextCompletionNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        prompt_tokens = max(1, len(prompt.split()))
-        completion_tokens = max(1, min(max_tokens, 16))
-        text = (
-            "[text_completion placeholder] model={!r}: ".format(model)
-            + prompt[: 64]
+        from ._helpers import call_text_backend
+
+        return call_text_backend(
+            ctx.bus,
+            model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=SAMPLING_TEMPERATURE,
         )
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "model": model,
-        }
-        return {"text": text, "usage": usage}

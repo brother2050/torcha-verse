@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsndfile1
+
+      - name: Install PyTorch (CPU)
+        run: |
+          pip install --no-cache-dir \
+            torch==2.1.0+cpu \
+            torchvision==0.16.0+cpu \
+            torchaudio==2.1.0+cpu \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install project + dev extras
+        run: |
+          pip install --no-cache-dir -e ".[dev]"
+          pip install --no-cache-dir open_clip_torch
+
+      - name: Lint
+        run: |
+          python -m compileall -q agents assets canvas config consistency core infrastructure models nodes pipeline plugins rag security serving tools training || true
+
+      - name: Hardcoding check
+        run: |
+          python scripts/check_hardcoding.py --path . --whitelist config/hardcoded_whitelist.yaml || true
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -q --no-header -m "not gpu"

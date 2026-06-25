@@ -202,16 +202,21 @@ class AudioTTSNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        audio = {
-            "kind": "placeholder_audio",
-            "voice": voice,
-            "speed": speed,
-            "emotion": emotion,
-            "text": text[: 64],
-            "sample_rate": sample_rate,
-        }
-        return {"audio": audio, "sample_rate": sample_rate}
+        from ._helpers import call_audio_backend
+
+        # ``speed`` is applied post hoc by the audio backend if it
+        # supports the keyword; otherwise it is accepted silently.
+        result = call_audio_backend(
+            ctx.bus,
+            model,
+            text=text,
+            sample_rate=sample_rate,
+            duration_s=max(0.1, len(text.split()) * 0.3 / max(0.1, float(speed))),
+            voice=voice,
+            speed=float(speed),
+            emotion=emotion,
+        )
+        return {"audio": result, "sample_rate": sample_rate}
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +339,14 @@ class AudioMusicNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        audio = {
-            "kind": "placeholder_music",
-            "duration": duration,
-            "prompt": prompt[: 64],
-        }
-        return {"audio": audio}
+        from ._helpers import call_audio_backend
+
+        sample_rate = int(inputs.get("sample_rate", 22050))
+        result = call_audio_backend(
+            ctx.bus,
+            model,
+            text=prompt,
+            sample_rate=sample_rate,
+            duration_s=float(duration),
+        )
+        return {"audio": result}

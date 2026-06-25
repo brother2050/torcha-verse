@@ -22,12 +22,17 @@ Two kinds of primitives are exposed:
   - :meth:`ScoreCalculator.ssim` -- structural similarity index
     (``1`` = identical, ``0`` = unrelated).
 
-The CLIP / DINOv2 feature extractors are lightweight, randomly
-initialised :class:`torch.nn.Module` placeholders -- they do not depend
-on the ``transformers`` library.  They produce deterministic, fixed-dim
-feature vectors so that the distance metrics are reproducible within a
-process, while remaining a drop-in target for a future pretrained
-backbone.
+The CLIP / DINOv2 feature extractors use a small convolutional backbone
+initialised with a fixed seed.  The project ships a lightweight fallback
+that produces deterministic, fixed-dim feature vectors so the distance
+metrics work out of the box.  When the optional dependencies
+``open_clip_torch`` / ``torchvision`` are installed, the score calculator
+will preferentially use the real CLIP / DINOv2 networks for stronger
+semantic alignment.
+
+The detector lives in :func:`_try_load_real_extractors` and is called
+once at :class:`ScoreCalculator` initialisation.  Operators who want
+to force the placeholder behaviour can pass ``use_pretrained=False``.
 
 Layering (L1 -> L6):
 
@@ -274,6 +279,65 @@ def _gaussian_kernel(
 
 
 # ---------------------------------------------------------------------------
+# Optional real CLIP / DINOv2 backends (try-import, no hard dependency)
+# ---------------------------------------------------------------------------
+def _try_load_real_extractors(device: torch.device) -> Dict[str, Any]:
+    """Best-effort load of pretrained CLIP / DINOv2 networks.
+
+    Returns a dict ``{"clip": nn.Module | None, "dino": nn.Module | None}``.
+    Each entry is ``None`` when the corresponding optional dependency is
+    not installed.  Both networks are wrapped behind a thin
+    :class:`torch.nn.Module` adapter so :class:`ScoreCalculator` can call
+    them through the same ``forward(x) -> features`` interface it uses
+    for the placeholder extractors.
+    """
+    result: Dict[str, Any] = {"clip": None, "dino": None}
+
+    # ---- CLIP via open_clip_torch (preferred) ----------------------------
+    try:
+        import open_clip  # type: ignore[import-not-found]
+
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        )
+        model = model.visual.to(device).eval()
+
+        class _OpenCLIPAdapter(nn.Module):
+            def __init__(self, visual: nn.Module) -> None:
+                super().__init__()
+                self.visual = visual
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                # ``open_clip`` visual head returns ``(N, dim)``.
+                return F.normalize(self.visual(x), dim=-1)
+
+        result["clip"] = _OpenCLIPAdapter(model)
+    except Exception:  # noqa: BLE001 - any failure keeps the placeholder
+        pass
+
+    # ---- DINOv2 via torch.hub (fallback) ---------------------------------
+    try:
+        backbone = torch.hub.load(
+            "facebookresearch/dinov2", "dinov2_vits14", trust_repo=True
+        )
+        backbone = backbone.to(device).eval()
+
+        class _DINOv2Adapter(nn.Module):
+            def __init__(self, model: nn.Module) -> None:
+                super().__init__()
+                self.model = model
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return F.normalize(self.model(x), dim=-1)
+
+        result["dino"] = _DINOv2Adapter(backbone)
+    except Exception:  # noqa: BLE001 - any failure keeps the placeholder
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Placeholder feature extractors
 # ---------------------------------------------------------------------------
 class _CLIPFeatureExtractor(nn.Module):
@@ -505,6 +569,7 @@ class ScoreCalculator:
         image_size: int = _DEFAULT_IMAGE_SIZE,
         clip_feature_dim: int = _CLIP_FEATURE_DIM,
         dino_feature_dim: int = _DINO_FEATURE_DIM,
+        use_pretrained: bool = True,
     ) -> None:
         self._device: torch.device = (
             torch.device(device) if isinstance(device, str)
@@ -514,9 +579,12 @@ class ScoreCalculator:
         self._image_size: int = int(image_size)
         self._clip_feature_dim: int = int(clip_feature_dim)
         self._dino_feature_dim: int = int(dino_feature_dim)
+        self._use_pretrained: bool = bool(use_pretrained)
 
-        self._clip_extractor: Optional[_CLIPFeatureExtractor] = None
-        self._dino_extractor: Optional[_DINOFeatureExtractor] = None
+        self._clip_extractor: Optional[nn.Module] = None
+        self._dino_extractor: Optional[nn.Module] = None
+        self._clip_is_pretrained: bool = False
+        self._dino_is_pretrained: bool = False
         self._lock: threading.Lock = threading.Lock()
         self._logger = _logger
 
@@ -536,29 +604,65 @@ class ScoreCalculator:
     # ------------------------------------------------------------------
     # Lazy feature-extractor initialisation
     # ------------------------------------------------------------------
-    def _get_clip_extractor(self) -> _CLIPFeatureExtractor:
-        """Return the (lazily initialised) CLIP feature extractor."""
+    def _get_clip_extractor(self) -> nn.Module:
+        """Return the (lazily initialised) CLIP feature extractor.
+
+        When ``use_pretrained`` is ``True`` (default) the calculator
+        first attempts to load a real CLIP backbone via
+        :func:`_try_load_real_extractors`; on success the pretrained
+        network is returned and the lightweight placeholder is skipped.
+        The pretrained network is cached behind a lock so subsequent
+        calls reuse it.
+        """
         if self._clip_extractor is None:
             with self._lock:
                 if self._clip_extractor is None:
-                    extractor = _CLIPFeatureExtractor(
-                        feature_dim=self._clip_feature_dim
-                    ).to(self._device)
-                    extractor.eval()
-                    self._clip_extractor = extractor
+                    pretrained: Optional[nn.Module] = None
+                    if self._use_pretrained:
+                        pretrained = _try_load_real_extractors(
+                            self._device
+                        ).get("clip")
+                    if pretrained is not None:
+                        self._clip_extractor = pretrained
+                        self._clip_is_pretrained = True
+                    else:
+                        extractor = _CLIPFeatureExtractor(
+                            feature_dim=self._clip_feature_dim
+                        ).to(self._device)
+                        extractor.eval()
+                        self._clip_extractor = extractor
         return self._clip_extractor  # type: ignore[return-value]
 
-    def _get_dino_extractor(self) -> _DINOFeatureExtractor:
+    def _get_dino_extractor(self) -> nn.Module:
         """Return the (lazily initialised) DINOv2 feature extractor."""
         if self._dino_extractor is None:
             with self._lock:
                 if self._dino_extractor is None:
-                    extractor = _DINOFeatureExtractor(
-                        feature_dim=self._dino_feature_dim
-                    ).to(self._device)
-                    extractor.eval()
-                    self._dino_extractor = extractor
+                    pretrained: Optional[nn.Module] = None
+                    if self._use_pretrained:
+                        pretrained = _try_load_real_extractors(
+                            self._device
+                        ).get("dino")
+                    if pretrained is not None:
+                        self._dino_extractor = pretrained
+                        self._dino_is_pretrained = True
+                    else:
+                        extractor = _DINOFeatureExtractor(
+                            feature_dim=self._dino_feature_dim
+                        ).to(self._device)
+                        extractor.eval()
+                        self._dino_extractor = extractor
         return self._dino_extractor  # type: ignore[return-value]
+
+    @property
+    def using_pretrained_clip(self) -> bool:
+        """``True`` when the CLIP extractor is a pretrained backbone."""
+        return self._clip_is_pretrained
+
+    @property
+    def using_pretrained_dino(self) -> bool:
+        """``True`` when the DINOv2 extractor is a pretrained backbone."""
+        return self._dino_is_pretrained
 
     # ------------------------------------------------------------------
     # Distance metrics

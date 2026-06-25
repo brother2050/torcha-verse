@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torcha-verse"
+version = "0.3.0"
+description = "Pure PyTorch all-modal generative AI framework"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+authors = [{ name = "TorchaVerse Team" }]
+dependencies = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "torchaudio>=2.1.0",
+    "PyYAML>=6.0",
+    "numpy>=1.24.0",
+    "Pillow>=10.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "click>=8.1.0",
+    "safetensors>=0.4.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "gradio>=4.0.0",
+    "faiss-cpu>=1.7.4",
+]
+
+[project.optional-dependencies]
+quantization = ["bitsandbytes>=0.41.0"]
+clip = ["open_clip_torch>=2.24.0"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.1.0"]
+
+[project.scripts]
+torcha = "serving.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/torcha-verse/torcha-verse"
+
+# ---------------------------------------------------------------------------
+# Pytest configuration
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require a GPU (deselect with '-m \"not gpu\"')",
+]
+
+# ---------------------------------------------------------------------------
+# Coverage configuration
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = [
+    "agents",
+    "assets",
+    "canvas",
+    "config",
+    "consistency",
+    "core",
+    "infrastructure",
+    "models",
+    "nodes",
+    "pipeline",
+    "plugins",
+    "rag",
+    "security",
+    "serving",
+    "tools",
+    "training",
+]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/.pytest_cache/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false

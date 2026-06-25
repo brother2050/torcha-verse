@@ -276,17 +276,20 @@ class VideoTxt2VidNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_video",
-            "num_frames": num_frames,
-            "fps": fps,
-            "width": width,
-            "height": height,
-            "prompt": prompt[: 64],
-            "seed": seed,
-        }
-        return {"video": video, "seed": seed}
+        from ._helpers import call_video_backend
+
+        result = call_video_backend(
+            ctx.bus,
+            model,
+            prompt=prompt,
+            num_frames=num_frames,
+            fps=fps,
+            width=width,
+            height=height,
+            num_inference_steps=int(steps),
+            seed=int(seed),
+        )
+        return {"video": result, "seed": int(seed)}
 
 
 # ---------------------------------------------------------------------------
@@ -393,12 +396,21 @@ class VideoInterpolateNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_interpolated_video",
-            "target_fps": target_fps,
-        }
-        return {"video": video}
+        from ._helpers import call_video_backend
+
+        # Frame interpolation: target fps is encoded as a thin call into
+        # the video backend.  Backends that do not support interpolation
+        # should ignore the ``target_fps`` keyword and return the
+        # original frames unchanged (a behaviour the echo backend uses).
+        result = call_video_backend(
+            ctx.bus,
+            model or "frame-interpolator",
+            prompt="interpolate",
+            num_frames=0,
+            fps=int(target_fps),
+            input_video=inputs.get("video"),
+        )
+        return {"video": result}
 
 
 # ---------------------------------------------------------------------------
@@ -506,10 +518,19 @@ class VideoStitchNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_stitched_video",
-            "num_clips": len(videos),
-            "transition": transition,
-        }
-        return {"video": video}
+        from ._helpers import call_video_backend
+
+        # Stitching: we hand the backend the concatenated input list and
+        # the desired transition.  The echo backend ignores both and
+        # returns a zero-filled clip; production backends (e.g. ffmpeg
+        # wrappers) consume them.
+        result = call_video_backend(
+            ctx.bus,
+            "video-stitcher",
+            prompt="stitch",
+            num_frames=0,
+            fps=0,
+            input_videos=list(videos),
+            transition=transition,
+        )
+        return {"video": result}

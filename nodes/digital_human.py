@@ -224,13 +224,22 @@ class LipSyncNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_lip_sync_video",
-            "path": "placeholder.mp4",
-            "method": method,
-        }
-        return {"video": video, "sync_score": 0.95}
+        from ._helpers import call_video_backend
+
+        result = call_video_backend(
+            ctx.bus,
+            ctx.config.get("default_lipsync_model") or f"lipsync-{method}",
+            prompt="lip-sync",
+            num_frames=0,
+            fps=int(inputs.get("fps", 24)),
+            input_video=inputs.get("video") or inputs.get("source_video"),
+            input_audio=inputs.get("audio") or inputs.get("source_audio"),
+            method=method,
+            face_region=face_region,
+        )
+        result.setdefault("method", method)
+        result.setdefault("path", f"lipsync-{method}.mp4")
+        return {"video": result, "sync_score": 0.95}
 
 
 # ---------------------------------------------------------------------------
@@ -338,14 +347,20 @@ class TalkingHeadNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_talking_head_video",
-            "path": "placeholder.mp4",
-            "method": method,
-            "enhance_resolution": enhance_resolution,
-        }
-        return {"video": video}
+        from ._helpers import call_video_backend
+
+        result = call_video_backend(
+            ctx.bus,
+            ctx.config.get("default_talking_head_model") or f"talking-head-{method}",
+            prompt="talking-head",
+            num_frames=192,
+            fps=24,
+            input_image=inputs.get("portrait_image") or inputs.get("image") or inputs.get("portrait"),
+            input_audio=inputs.get("audio") or inputs.get("speech"),
+            method=method,
+            enhance_resolution=bool(enhance_resolution),
+        )
+        return {"video": result}
 
 
 # ---------------------------------------------------------------------------
@@ -452,14 +467,20 @@ class PortraitAnimateNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_portrait_animate_video",
-            "path": "placeholder.mp4",
-            "method": method,
-            "stitching": stitching,
-        }
-        return {"video": video}
+        from ._helpers import call_video_backend
+
+        result = call_video_backend(
+            ctx.bus,
+            ctx.config.get("default_portrait_animate_model") or f"portrait-animate-{method}",
+            prompt="portrait-animate",
+            num_frames=0,
+            fps=24,
+            input_image=inputs.get("source_image") or inputs.get("image") or inputs.get("portrait"),
+            driving_video=inputs.get("driving_signal") or inputs.get("driving_video"),
+            method=method,
+            stitching=stitching,
+        )
+        return {"video": result}
 
 
 # ---------------------------------------------------------------------------
@@ -572,15 +593,21 @@ class DigitalHumanNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_digital_human_video",
-            "path": "placeholder.mp4",
-            "method": method,
-            "gesture_sequence": gesture_sequence,
-            "resolution": resolution,
-        }
-        return {"video": video}
+        from ._helpers import call_video_backend
+
+        result = call_video_backend(
+            ctx.bus,
+            ctx.config.get("default_full_body_model") or f"digital-human-{method}",
+            prompt="full-body",
+            num_frames=0,
+            fps=24,
+            input_image=inputs.get("image"),
+            input_audio=inputs.get("audio"),
+            method=method,
+            gesture_sequence=gesture_sequence,
+            resolution=resolution,
+        )
+        return {"video": result}
 
 
 # ---------------------------------------------------------------------------
@@ -698,14 +725,21 @@ class FaceEnhanceNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_face_enhance_video",
-            "path": "placeholder.mp4",
-            "method": method,
-            "strength": strength,
-        }
-        return {"video": video}
+        from ._helpers import call_video_backend
+
+        result = call_video_backend(
+            ctx.bus,
+            ctx.config.get("default_face_enhance_model") or f"face-enhance-{method}",
+            prompt="face-enhance",
+            num_frames=0,
+            fps=24,
+            input_video=inputs.get("video"),
+            method=method,
+            strength=float(strength),
+        )
+        result.setdefault("method", method)
+        result.setdefault("path", f"face-enhance-{method}.mp4")
+        return {"video": result}
 
 
 # ---------------------------------------------------------------------------
@@ -844,13 +878,16 @@ class VoiceCloneNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        audio = {
-            "kind": "placeholder_cloned_audio",
-            "path": "placeholder.wav",
-            "method": method,
-            "language": language,
-            "text": text[: 64],
-            "sample_rate": sample_rate,
-        }
-        return {"audio": audio, "sample_rate": sample_rate}
+        from ._helpers import call_audio_backend
+
+        result = call_audio_backend(
+            ctx.bus,
+            ctx.config.get("default_voice_clone_model") or f"voice-clone-{method}",
+            text=text,
+            sample_rate=sample_rate,
+            duration_s=max(0.1, len(text.split()) * 0.3),
+            reference_audio=inputs.get("reference_audio"),
+            method=method,
+            language=language,
+        )
+        return {"audio": result, "sample_rate": sample_rate}

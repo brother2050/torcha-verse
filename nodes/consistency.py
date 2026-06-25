@@ -204,16 +204,19 @@ class CharacterApplyNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_character_image",
-            "character": _ref_id(character),
-            "width": width,
-            "height": height,
-            "prompt": prompt[: 64],
-            "_character_weight": weight,
-        }
-        return {"image": image}
+        from ._helpers import call_image_backend
+
+        return call_image_backend(
+            ctx.bus,
+            ctx.config.get("default_image_model") or "character-apply",
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=int(inputs.get("steps", 30)),
+            guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+            character_ref=_ref_id(character),
+            character_weight=float(weight if weight is not None else 1.0),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -298,13 +301,20 @@ class OutfitApplyNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_outfit_image",
-            "outfit": _ref_id(outfit),
-            "_outfit_weight": weight,
-        }
-        return {"image": image}
+        from ._helpers import call_image_backend
+
+        return call_image_backend(
+            ctx.bus,
+            ctx.config.get("default_image_model") or "outfit-apply",
+            prompt=str(inputs.get("prompt", "")),
+            width=_coerce_int(inputs.get("width")) or 512,
+            height=_coerce_int(inputs.get("height")) or 512,
+            num_inference_steps=int(inputs.get("steps", 30)),
+            guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+            outfit_ref=_ref_id(outfit),
+            outfit_weight=float(weight if weight is not None else 1.0),
+            input_image=inputs.get("image"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -389,13 +399,20 @@ class SceneApplyNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_scene_image",
-            "scene": _ref_id(scene),
-            "_scene_weight": weight,
-        }
-        return {"image": image}
+        from ._helpers import call_image_backend
+
+        return call_image_backend(
+            ctx.bus,
+            ctx.config.get("default_image_model") or "scene-apply",
+            prompt=str(inputs.get("prompt", "")),
+            width=_coerce_int(inputs.get("width")) or 512,
+            height=_coerce_int(inputs.get("height")) or 512,
+            num_inference_steps=int(inputs.get("steps", 30)),
+            guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+            scene_ref=_ref_id(scene),
+            scene_weight=float(weight if weight is not None else 1.0),
+            input_image=inputs.get("image"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -496,11 +513,30 @@ class DepthConditionNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
+        # ------------------------------------------------------------------
+        # Depth conditioning.  We dispatch to the image backend with
+        # ``method`` as a hint; the backend may opt to run a depth
+        # estimator and return the predicted depth map alongside the
+        # original image.  The echo backend returns a metadata-only
+        # record so the pipeline remains observable end-to-end.
+        # ------------------------------------------------------------------
+        from ._helpers import call_image_backend
+
+        result = call_image_backend(
+            ctx.bus,
+            ctx.config.get("default_depth_model") or f"depth-{method}",
+            prompt=str(inputs.get("image") or inputs.get("source_image") or ""),
+            width=0,
+            height=0,
+            num_inference_steps=8,
+            method=method,
+            depth_weight=float(weight if weight is not None else 1.0),
+        )
         depth_map = {
-            "kind": "placeholder_depth_map",
+            "kind": "depth_map",
             "method": method,
-            "_depth_weight": weight,
+            "weight": float(weight if weight is not None else 1.0),
+            "result": result,
         }
         return {"depth_map": depth_map}
 
@@ -610,14 +646,33 @@ class FiveViewNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
+        # ------------------------------------------------------------------
+        # Five-view rendering: run the image backend once per view with
+        # a view-specific prompt suffix so the resulting set is diverse.
+        # The echo backend returns five zero-filled tiles; production
+        # backends (e.g. SyncMunchkin, CharacterGen) consume the same
+        # call shape and return real image tensors.
+        # ------------------------------------------------------------------
+        from ._helpers import call_image_backend
+
         view_labels = ("front", "back", "left", "right", "three_quarter")
-        five_views = [
-            {
-                "kind": "placeholder_five_view",
-                "view": label,
-                "character_name": character_name,
-            }
-            for label in view_labels
-        ]
+        five_views = []
+        for view in view_labels:
+            result = call_image_backend(
+                ctx.bus,
+                model or f"five-view-{view}",
+                prompt=f"{character_name}, {view} view",
+                width=512,
+                height=512,
+                num_inference_steps=int(inputs.get("steps", 25)),
+                guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+                reference_image=inputs.get("reference_image"),
+            )
+            five_views.append(
+                {
+                    "view": view,
+                    "character_name": character_name,
+                    "result": result,
+                }
+            )
         return {"five_views": five_views}

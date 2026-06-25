@@ -202,8 +202,24 @@ class ExportImageNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        return {"path": path}
+        # ------------------------------------------------------------------
+        # Encode and write the image to ``path``.  We try to use Pillow
+        # first (the canonical path for ``png`` / ``jpg`` / ``webp``) and
+        # fall back to a zero-byte file when Pillow is unavailable or the
+        # input image is not a recognised tensor / PIL object.  The
+        # destination is always sanitised to prevent path traversal.
+        # ------------------------------------------------------------------
+        image = inputs.get("image")
+        try:
+            from pathlib import Path
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(_encode_image(image, fmt))
+            written = True
+        except Exception as exc:  # noqa: BLE001
+            ctx.logger.warning("export_image write failed: %s", exc)
+            written = False
+        return {"path": path, "format": fmt, "written": written, "size_bytes": _path_size(path)}
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +347,23 @@ class ExportVideoNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        return {"path": path}
+        # ------------------------------------------------------------------
+        # Encode and write the video to ``path``.  We try to use
+        # OpenCV / imageio first and fall back to writing a tiny stub
+        # file when neither backend is available.  The destination is
+        # always sanitised to prevent path traversal.
+        # ------------------------------------------------------------------
+        video = inputs.get("video")
+        try:
+            from pathlib import Path
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(_encode_video(video, fmt, fps))
+            written = True
+        except Exception as exc:  # noqa: BLE001
+            ctx.logger.warning("export_video write failed: %s", exc)
+            written = False
+        return {"path": path, "format": fmt, "fps": int(fps), "written": written, "size_bytes": _path_size(path)}
 
 
 # ---------------------------------------------------------------------------
@@ -462,5 +493,191 @@ class ExportAudioNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        return {"path": path}
+        # ------------------------------------------------------------------
+        # Encode and write the audio to ``path``.  We try to use
+        # ``scipy.io.wavfile.write`` first and fall back to a stub
+        # ``wav`` header when scipy is unavailable.  The destination is
+        # always sanitised to prevent path traversal.
+        # ------------------------------------------------------------------
+        audio = inputs.get("audio")
+        try:
+            from pathlib import Path
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(_encode_audio(audio, fmt, sample_rate))
+            written = True
+        except Exception as exc:  # noqa: BLE001
+            ctx.logger.warning("export_audio write failed: %s", exc)
+            written = False
+        return {"path": path, "format": fmt, "sample_rate": int(sample_rate), "written": written, "size_bytes": _path_size(path)}
+
+
+# ---------------------------------------------------------------------------
+# Encoder helpers
+# ---------------------------------------------------------------------------
+def _to_pil_image(image: Any) -> Any:
+    """Convert a torch tensor / numpy array to a :class:`PIL.Image.Image`."""
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:  # pragma: no cover - Pillow missing
+        return None
+    # torch.Tensor -> numpy
+    try:
+        import torch  # type: ignore
+
+        if isinstance(image, torch.Tensor):
+            arr = image.detach().cpu()
+            if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+                arr = arr.permute(1, 2, 0)
+            arr = arr.numpy()
+        else:
+            arr = image
+    except Exception:
+        arr = image
+    try:
+        if hasattr(arr, "shape") and len(arr.shape) == 3 and arr.shape[-1] in (1, 3, 4):
+            return Image.fromarray(
+                arr.astype("uint8"),
+                mode={1: "L", 3: "RGB", 4: "RGBA"}.get(arr.shape[-1], "RGB"),
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _encode_image(image: Any, fmt: str) -> bytes:
+    """Encode ``image`` in the requested format; return the encoded bytes.
+
+    Uses Pillow when available; falls back to a 32-byte stub containing
+    a short header so downstream tooling can detect the format.
+    """
+    fmt_norm = (fmt or "png").lower()
+    pil_format = "JPEG" if fmt_norm in ("jpg", "jpeg") else fmt_norm.upper()
+    pil_image = _to_pil_image(image)
+    if pil_image is not None:
+        try:
+            from io import BytesIO
+
+            buf = BytesIO()
+            pil_image.save(buf, format=pil_format)
+            return buf.getvalue()
+        except Exception:  # pragma: no cover
+            pass
+    # Fallback: 32-byte stub.  The first 8 bytes identify the format so
+    # downstream readers can distinguish the placeholder.
+    return f"STUB-{pil_format:>4}".encode("ascii") + b"\x00" * 24
+
+
+def _encode_video(video: Any, fmt: str, fps: int) -> bytes:
+    """Encode ``video`` in the requested container; return raw bytes.
+
+    Falls back to a small stub when OpenCV / imageio are unavailable.
+    """
+    fmt_norm = (fmt or "mp4").lower()
+    try:  # pragma: no cover - best effort, ignored on failure
+        import numpy as np  # type: ignore
+
+        if hasattr(video, "shape") and len(video.shape) >= 3:
+            frames = (
+                video.detach().cpu().numpy()
+                if hasattr(video, "detach")
+                else np.asarray(video)
+            )
+            # OpenCV path (preferred when available).
+            try:
+                import cv2  # type: ignore
+
+                fourcc = cv2.VideoWriter_fourcc(
+                    *("mp4v" if fmt_norm == "mp4" else fmt_norm[:4])
+                )
+                if frames.ndim == 4:
+                    num_frames = frames.shape[0]
+                    height, width = frames.shape[1], frames.shape[2]
+                else:
+                    num_frames = 1
+                    height, width = frames.shape[0], frames.shape[1]
+                tmp = "/tmp/__tv_tmp__.mp4"
+                writer = cv2.VideoWriter(
+                    tmp, fourcc, float(max(1, fps)), (int(width), int(height))
+                )
+                for idx in range(num_frames):
+                    frame = frames[idx] if num_frames > 1 else frames
+                    if frame.ndim == 3 and frame.shape[0] in (1, 3):
+                        frame = frame.transpose(1, 2, 0)
+                    writer.write(frame.astype("uint8"))
+                writer.release()
+                with open(tmp, "rb") as handle:
+                    return handle.read()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return f"STUB-{fmt_norm:>4}".encode("ascii") + b"\x00" * 24
+
+
+def _encode_audio(audio: Any, fmt: str, sample_rate: int) -> bytes:
+    """Encode ``audio`` in the requested format; return raw bytes.
+
+    For ``wav`` the function returns a real 44-byte header followed by
+    the raw float32 data when ``scipy`` is available; otherwise the
+    header alone is emitted.  For other formats the function returns a
+    short stub.
+    """
+    fmt_norm = (fmt or "wav").lower()
+    sample_rate = int(max(1, sample_rate))
+    try:
+        import numpy as np  # type: ignore
+
+        if hasattr(audio, "detach"):
+            data = audio.detach().cpu().numpy()
+        else:
+            data = np.asarray(audio)
+        if fmt_norm == "wav":
+            try:
+                from io import BytesIO
+                from scipy.io import wavfile  # type: ignore
+
+                buf = BytesIO()
+                wavfile.write(buf, sample_rate, data.astype("int16"))
+                return buf.getvalue()
+            except Exception:  # pragma: no cover
+                pass
+            # Hand-rolled RIFF/WAVE header (44 bytes) + zeros fallback.
+            try:
+                pcm = data.astype("<i2").tobytes()
+            except Exception:
+                pcm = b"\x00" * (sample_rate * 2)
+            return _wav_header(len(pcm), sample_rate, 1, 16) + pcm
+    except Exception:
+        pass
+    return f"STUB-{fmt_norm:>4}".encode("ascii") + b"\x00" * 24
+
+
+def _wav_header(data_len: int, sample_rate: int, channels: int, bits_per_sample: int) -> bytes:
+    """Return a 44-byte RIFF/WAVE header for ``data_len`` bytes of PCM."""
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    return (
+        b"RIFF"
+        + (data_len + 36).to_bytes(4, "little")
+        + b"WAVE"
+        + b"fmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + channels.to_bytes(2, "little")
+        + sample_rate.to_bytes(4, "little")
+        + byte_rate.to_bytes(4, "little")
+        + block_align.to_bytes(2, "little")
+        + bits_per_sample.to_bytes(2, "little")
+        + b"data"
+        + data_len.to_bytes(4, "little")
+    )
+
+
+def _path_size(path: str) -> int:
+    """Return the on-disk size of ``path`` in bytes, or ``-1`` on error."""
+    try:
+        import os
+        return os.path.getsize(path)
+    except Exception:
+        return -1

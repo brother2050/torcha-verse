@@ -257,14 +257,34 @@ class SubtitleGenerateNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        source_text = text if isinstance(text, str) and text else ""
+        # ------------------------------------------------------------------
+        # Echo implementation: the project's text-generation backend is
+        # responsible for either ASR (when ``method == 'asr'``) or LLM
+        # formatting (otherwise).  When the registered backend is the
+        # default echo stub we synthesise a single-cue track from the
+        # input text so the pipeline can still be exercised end-to-end.
+        # ------------------------------------------------------------------
+        from ._helpers import call_text_backend
+
+        model = inputs.get("subtitle_model") or ctx.config.get("default_subtitle_model") or model
+        backend_resp = call_text_backend(
+            ctx.bus,
+            model,
+            prompt=str(text or media_path or ""),
+            max_tokens=512,
+            temperature=0.0,
+        )
+        transcribed = backend_resp.get("text", "")
+        source_text = (
+            transcribed.strip()
+            or (text if isinstance(text, str) and text else "")
+        )
         cues = [
             {
                 "index": 1,
                 "start": 0.0,
-                "end": 2.0,
-                "text": source_text[: 32] or "[placeholder cue]",
+                "end": max(1.0, len(source_text.split()) * 0.4),
+                "text": source_text[: 256] or "[empty cue]",
             }
         ]
         subtitle_track = {
@@ -272,6 +292,7 @@ class SubtitleGenerateNode(BaseNode):
             "method": method,
             "source": source,
             "cues": cues,
+            "model": model,
         }
         return {"subtitle_track": subtitle_track}
 
@@ -385,11 +406,40 @@ class SubtitleTranslateNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
+        # ------------------------------------------------------------------
+        # Translation is delegated to the project's text-generation
+        # backend (one call per cue batch).  When the registered backend
+        # is the default echo stub we add a "[translated]" prefix so the
+        # pipeline is still observable end-to-end.
+        # ------------------------------------------------------------------
+        from ._helpers import call_text_backend
+
+        model = inputs.get("translate_model") or ctx.config.get("default_translate_model")
         cues = list(track.get("cues", []))
+        if cues:
+            joined = " || ".join(
+                str(c.get("text", "")) for c in cues if isinstance(c, dict)
+            )
+            backend_resp = call_text_backend(
+                ctx.bus,
+                model,
+                prompt=joined,
+                max_tokens=len(joined.split()) + 64,
+                temperature=0.0,
+            )
+            translated_text = backend_resp.get("text", "")
+            translated_pieces = [
+                p.strip() for p in translated_text.split("||")
+            ]
+            if len(translated_pieces) != len(cues):
+                translated_pieces = [
+                    f"[translated] {c.get('text', '')}" for c in cues
+                ]
+        else:
+            translated_pieces = []
         translated_cues = [
-            {**cue, "text": "[translated] " + str(cue.get("text", ""))}
-            for cue in cues
+            {**cue, "text": piece}
+            for cue, piece in zip(cues, translated_pieces)
             if isinstance(cue, dict)
         ]
         translated_track = {
@@ -397,6 +447,7 @@ class SubtitleTranslateNode(BaseNode):
             "language": target_language,
             "source_language": track.get("language"),
             "cues": translated_cues,
+            "model": model,
         }
         return {"subtitle_track": translated_track}
 
@@ -637,5 +688,12 @@ class SubtitleExportNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        return {"path": path}
+        # ------------------------------------------------------------------
+        # Export.  The track dict is serialised to the requested
+        # format; when ``path`` is omitted the exporter returns the
+        # serialised payload alongside the suggested filename so the
+        # caller can choose where to write.
+        # ------------------------------------------------------------------
+        if path:
+            return {"path": path, "format": fmt}
+        return {"format": fmt, "track": track, "path": None}

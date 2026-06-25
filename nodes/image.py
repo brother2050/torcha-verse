@@ -269,15 +269,28 @@ class ImageTxt2ImgNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_image",
-            "width": width,
-            "height": height,
-            "prompt": prompt[: 64],
-            "seed": seed,
-        }
-        return {"image": image, "seed": seed}
+        from ._helpers import call_image_backend
+
+        # The image backend accepts ``num_inference_steps`` (the
+        # node-level input is ``steps`` for symmetry with the
+        # diffusion scheduler).  We pick a sensible default for
+        # ``guidance_scale`` so the call shape matches real
+        # diffusion pipelines.
+        return call_image_backend(
+            ctx.bus,
+            model,
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=int(steps),
+            guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+            seed=seed,
+            character_ref=_ref_id(inputs.get("character")),
+            outfit_ref=_ref_id(inputs.get("outfit")),
+            scene_ref=_ref_id(inputs.get("scene")),
+            depth_ref=_ref_id(inputs.get("depth")),
+            num_loras=_num_loras(inputs.get("loras")),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -466,16 +479,20 @@ class ImageImg2ImgNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_image",
-            "width": width,
-            "height": height,
-            "prompt": prompt[: 64],
-            "strength": strength,
-            "seed": seed,
-        }
-        return {"image": image, "seed": seed}
+        from ._helpers import call_image_backend
+
+        return call_image_backend(
+            ctx.bus,
+            model,
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=int(steps),
+            guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+            input_image=inputs.get("image"),
+            strength=float(strength),
+            seed=int(seed),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -582,13 +599,38 @@ class ImageUpscaleNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_upscaled_image",
-            "scale": scale,
-            "model": model,
-        }
-        return {"image": image}
+        from ._helpers import call_image_backend
+
+        # The upscale backend is expected to also expose ``generate``
+        # with a width/height pair; we pass the source image as the
+        # ``input_image`` keyword for backends that consume it.  Upscale
+        # only takes a single diffusion pass so we keep the step count
+        # low; operators can override by registering a backend that
+        # consumes its own ``num_inference_steps`` argument.  We also
+        # forward the input image reference so downstream chain nodes
+        # (e.g. composite/export) can read ``inputs.image`` directly.
+        source_image = inputs.get("image") or inputs.get("source_image")
+        result = call_image_backend(
+            ctx.bus,
+            model or "upscale",
+            prompt="upscale",
+            width=0,
+            height=0,
+            input_image=source_image,
+            num_inference_steps=8,
+            scale=int(scale),
+        )
+        # The default echo backend returns a placeholder dict; merge
+        # the input image so callers that look up ``image`` on the
+        # output can find the source.
+        if not isinstance(result, dict) or "image" not in result:
+            if isinstance(result, dict):
+                result["image"] = source_image or {"kind": "placeholder", "scale": int(scale)}
+        elif source_image is not None and isinstance(result.get("image"), dict) and result["image"].get("kind") == "placeholder_image":
+            result["image"]["scale"] = int(scale)
+            result["image"]["input_image"] = source_image
+        result.setdefault("scale", int(scale))
+        return {"image": result}
 
 
 # ---------------------------------------------------------------------------
@@ -694,12 +736,26 @@ class ImageInpaintNode(BaseNode):
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        image = {
-            "kind": "placeholder_inpaint_image",
-            "prompt": prompt[: 64],
-        }
-        return {"image": image}
+        from ._helpers import call_image_backend
+
+        # Inpaint nodes accept only ``image`` / ``mask`` / ``prompt``;
+        # diffusion hyperparameters default to safe values for a quick
+        # demo run.  Operators can register a real inpaint backend via
+        # ``register_default_image_backend`` or by attaching a model to
+        # the ``ModuleBus`` under ``model.image``.
+        return call_image_backend(
+            ctx.bus,
+            model or "inpaint",
+            prompt=prompt,
+            width=512,
+            height=512,
+            num_inference_steps=20,
+            guidance_scale=7.5,
+            mask=inputs.get("mask"),
+            input_image=inputs.get("image") or inputs.get("source_image"),
+            negative_prompt=inputs.get("negative_prompt"),
+            seed=None,
+        )
 
 
 # ---------------------------------------------------------------------------
