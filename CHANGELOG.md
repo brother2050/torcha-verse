@@ -87,6 +87,15 @@ opportunistic 入口 / 路径隔离 / 双后端 swap-in / 报告 / CI 自动化)
 - **B2 维护**: `docs/ROADMAP.md` HEAD + next release 段同步 v0.4.3, C 段
   status table 把 C1/C2/C4/C5/C6/C7 标 `✅ 骨架 + v0.4.3 加深`, 速览表行数变化
   全锁; `docs/open_items.md` C 段每行尾部追加 v0.4.3 加深条目 + 一句话总结加 1 句。
+- **路线声明 (本批补)**: v0.4.x 明确为**单系统**路线, 分布式 (跨节点 /
+  NCCL / Gloo / Ray / DDP 之外的分布式库) **不**进 v0.4.x 范围。
+  原 C3 Gloo 分布式 (open_items.md C 段 1 行) + B4 D3 TP/PP 占位
+  (open_items.md B 段 1 行) **2 条**全部移出 v0.4.x 跟踪, 推到
+  v1.0.0 之后按需启动 (单系统天花板: 单节点 8 GPU + NVLink + 大内存
+  不够用时再启)。`docs/open_items.md` 总条数 24 → 23, 速览表 + 段
+  合计 + 一句话总结全部同步; `docs/ROADMAP.md` 顶部「定位」段把
+  "分布式"从 v1.0.0 目标降级到「v1.0.0 之后」段, Milestone 表 M2a
+  行划掉改成移出声明; `CHANGELOG.md` 本段「不做」段同步更新。
 
 ### 关键数字
 
@@ -98,13 +107,19 @@ opportunistic 入口 / 路径隔离 / 双后端 swap-in / 报告 / CI 自动化)
 - `python -m compileall infrastructure evaluation tests` 全过
 - 4 个新公共 API + 7 个新类成员, 全部带测试覆盖
 
-### 不做 (留到 v1.0.0)
+### 不做 (留到 v1.0.0+)
 
 - 真实 GPU scheduler (CUDA stream / NCCL 集成)
 - Grafana 面板 JSON 导出 (C4b 已把 wire-format 锁定, 面板 JSON 留 ops 阶段)
-- 分布式 backend 选型 (C3 Gloo 仍是 C 档唯一未启动的 1/8)
 - 真实大模型 e2e (C8 仍是 v1.0.0 硬前置, Q4 之前不动)
 - Multi-tenant 鉴权 / 配额硬限 (C6b 路径隔离已备, 鉴权留 v1.1)
+- **🗑️ 分布式 (跨节点 / NCCL / Gloo / Ray / DDP 之外的分布式库)** —
+  v0.4.x 路线明确为**单系统** (单进程多 GPU + 多 thread + ProcessPool)。
+  原 C3 Gloo 分布式 + B4 D3 TP/PP 占位 2 条**移出 v0.4.x 跟踪**,
+  留 v1.0.0 之后按需启动 (真启动条件: 单节点 8 GPU + NVLink + 大内存
+  不够用时)。`infrastructure/device_manager._tensor_parallel_impl` /
+  `_pipeline_parallel_impl` 占位代码保留作为 v1.0.0+ 接口预留,
+  `infrastructure/placeholder_registry.md` 的 #8 / #9 条目不动。
 
 ## [v0.4.2] - 2026-06-25
 

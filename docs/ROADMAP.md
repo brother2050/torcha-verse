@@ -8,9 +8,11 @@
 初期项目已完成架构骨架(6 层 · 29 节点 · ModuleBus · 369 测试),**没有任何真模型实际跑通**。路线图分两段:
 
 - **v0.4.x 准生产化**(当前在做):补齐工程质量、跑通 1-2 个真模型、补薄弱的包
-- **v1.0.0 生产化**(后续):分布式 / 多租户 / 监控 / 完整评估
+- **v1.0.0 生产化**(后续):多租户 / 监控 / 完整评估 / 真实大模型 e2e
+- **(v1.0.0 之后) 分布式**:跨节点 / NCCL / Gloo / Ray 等, 单系统在天花板
+  (单节点 8 GPU + NVLink + 大内存) 不够用时再启动
 
-> **v0.4.3 状态 (2026-06-25)**: C 档 v1.0.0 子任务 6/8 骨架 (v0.4.2 commit `de35b14`) + 6 个 v0.4.3 加深 (C1b/C2b/C4b/C5b/C6b/C7b, +56 测试, +920 行), B 档 B1 silent degrade 38→0 全清 (v0.4.1), D 档 8/8 ✅. 剩余 C3 Gloo 分布式 (启动条件: 选 backend) + C8 真实大模型 e2e (启动条件: HF/Civitai 镜像 + GPU). 总测试数 986 个非 slow 全过, scanner 双 0 维持.
+> **v0.4.3 状态 (2026-06-25)**: C 档 v1.0.0 子任务 6/8 骨架 (v0.4.2 commit `de35b14`) + 6 个 v0.4.3 加深 (C1b/C2b/C4b/C5b/C6b/C7b, +56 测试, +920 行), B 档 B1 silent degrade 38→0 全清 (v0.4.1), D 档 8/8 ✅. **v0.4.x 路线明确为单系统** (单进程多 GPU + 多 thread + ProcessPool), **分布式 (C3 Gloo + B4 TP/PP 占位) 2 条移出 v0.4.x 跟踪, 留 v1.0.0 之后**. 剩余 C8 真实大模型 e2e (启动条件: HF/Civitai 镜像 + GPU). 总测试数 986 个非 slow 全过, scanner 双 0 维持.
 
 ---
 
@@ -722,9 +724,10 @@ tests/test_training_synthetic_data.py    # ~80 行
 > v1.0.0 启动前必须有 M0-M3 的落地评估 + acceptance criteria 锁定。
 > 4 个 milestone 把"v1.0.0 纲要"拆成可独立排期的小段, 避免 Q4 启动时
 > 找不到起点。详细子任务 + 启动条件 + 风险登记见
-> [`docs/open_items.md`](open_items.md) C 段; 7 主题 v0.4.x 现状盘点
-> (ResourceBudget / RuntimeScheduler / 分布式 / 监控 / 多租户 / 评估 / 部署)
-> 也已合并到 `open_items.md` C1-C8, 不在本文件重复。
+> [`docs/open_items.md`](open_items.md) C 段; 6 主题 v0.4.x 现状盘点
+> (ResourceBudget / RuntimeScheduler / 监控 / 多租户 / 评估 / 部署;
+> **原"分布式"主题已移出 v0.4.x 范围**) 也已合并到 `open_items.md` C1-C8,
+> 不在本文件重复。
 
 ### v1.0.0 启动条件(任一)
 
@@ -738,7 +741,7 @@ tests/test_training_synthetic_data.py    # ~80 行
 |---|---|---:|---|
 | **M0** | `BudgetTracker` 真实调度(排队 + 超时) | 1 周 | `allocate_or_wait` + `tests/test_resource_budget.py` 30+ 测试 + `examples/budget_queueing_demo.py` |
 | **M1** | `RuntimeScheduler` 抽象 + 3 种实现 | 1-2 周 | `infrastructure/runtime_scheduler.py` (~400 行) + 40+ 测试 + `examples/scheduler_demo.py` |
-| **M2a** | Gloo 分布式 (TP/PP) | 1-1.5 周 | `infrastructure/device_manager._tensor_parallel_impl` 真实现 + 2-process 测试 |
+| ~~**M2a**~~ | ~~Gloo 分布式 (TP/PP)~~ | ~~1-1.5 周~~ | 🗑️ **移出 v1.0.0** — 单系统路线明确, 跨节点分布式推迟到 v1.0.0 之后 (原 C3 / B4 同源). 真启动条件: "单节点 8 GPU + NVLink + 大内存" 不够用时. `_tensor_parallel_impl` / `_pipeline_parallel_impl` 占位代码保留作为接口预留. |
 | **M2b** | Prometheus metrics | 0.5-1 周 | `infrastructure/metrics.py` + `serving/app.py` `/metrics` + Grafana 4-panel JSON |
 | **M2c** | Dockerfile + compose | 0.5-1 周 | `Dockerfile` (基于 `python:3.10-slim`) + `docker-compose.yml` + `docs/deployment_docker.md` |
 | **M3a** | 多租户 | 1 周 | `infrastructure/multi_tenant.py` + per-tenant BudgetTracker + 命名空间目录 |
