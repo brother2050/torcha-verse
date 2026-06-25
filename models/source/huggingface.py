@@ -35,8 +35,10 @@ Layering (L1 -> L6):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -49,6 +51,7 @@ __all__ = [
     "HttpTransport",
     "UrllibTransport",
     "FileDownload",
+    "DownloadProgress",
     # Constants exported for the sibling Civitai adapter so it can
     # construct a default transport with the same user-agent /
     # timeout.
@@ -96,6 +99,53 @@ class FileDownload:
     name: str
     data: bytes
     sha256: str = ""
+
+
+@dataclass
+class DownloadProgress:
+    """A single progress tick for a long-running download.
+
+    Attributes:
+        file_name: The file being downloaded.
+        bytes_done: Bytes received so far for ``file_name``.
+        bytes_total: Total expected bytes (``-1`` when the server
+            did not advertise ``Content-Length``).
+        mirror: The mirror base URL the bytes came from.  Useful
+            for showing the user which mirror actually worked.
+        started_at: Unix timestamp at the start of the download.
+        finished: ``True`` on the final tick (i.e. when ``bytes_done``
+            equals ``bytes_total``, or when the download errored
+            before completion and ``error`` is set).
+        error: Empty string on success, otherwise a short error
+            description.
+    """
+
+    file_name: str
+    bytes_done: int = 0
+    bytes_total: int = -1
+    mirror: str = ""
+    started_at: float = 0.0
+    finished: bool = False
+    error: str = ""
+
+    @property
+    def percent(self) -> float:
+        """``bytes_done / bytes_total`` as a fraction in ``[0, 1]``."""
+        if self.bytes_total <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self.bytes_done / self.bytes_total))
+
+    def as_dict(self) -> dict:
+        return {
+            "file_name": self.file_name,
+            "bytes_done": self.bytes_done,
+            "bytes_total": self.bytes_total,
+            "mirror": self.mirror,
+            "started_at": self.started_at,
+            "finished": self.finished,
+            "error": self.error,
+            "percent": round(self.percent, 4),
+        }
 
 
 class HttpTransport:
@@ -178,12 +228,20 @@ class HuggingFaceSource:
 
     Args:
         api_base: Base URL for the HF API.  Defaults to
-            ``"https://huggingface.co"``.
+            ``"https://huggingface.co"``.  Ignored when ``mirrors``
+            is provided -- the first mirror becomes the primary
+            base.
         transport: Optional :class:`HttpTransport` (mainly for
             testing).  When ``None`` a :class:`UrllibTransport` is
             used.
         token: Optional HuggingFace API token for gated / private
             repos.  Passed as ``Authorization: Bearer <token>``.
+        mirrors: Optional :class:`~models.source.mirrors.MirrorSet`.
+            When provided the adapter will try every mirror in
+            order and silently fall back on network-level errors
+            (see :func:`models.source.mirrors.is_useful_mirror_error`).
+            When ``None`` the adapter uses the single ``api_base``
+            URL (legacy behaviour).
     """
 
     def __init__(
@@ -191,13 +249,71 @@ class HuggingFaceSource:
         api_base: str = DEFAULT_API_BASE,
         transport: Optional[HttpTransport] = None,
         token: Optional[str] = None,
+        mirrors: Optional["MirrorSet"] = None,  # noqa: F821 - forward ref
     ) -> None:
-        self._api_base: str = api_base.rstrip("/")
+        self._mirrors: "MirrorSet"  # type: ignore[valid-type]
+        if mirrors is not None:
+            self._mirrors = mirrors
+            # Keep ``api_base`` pointing at the primary mirror for
+            # backwards compatibility (e.g. repr, _build_url callers).
+            self._api_base: str = mirrors.bases[0]
+        else:
+            self._api_base = api_base.rstrip("/")
         self._transport: HttpTransport = transport or UrllibTransport()
         self._token: Optional[str] = token
         self._meta_cache: Dict[str, Dict[str, Any]] = {}
         self._meta_lock: threading.Lock = threading.Lock()
         self._logger = _logger
+        # Thread-safe mirror-failure memory: a base URL that just
+        # failed is *suppressed* for the remainder of the process
+        # so we do not pay the network round-trip twice.
+        self._dead_mirrors: Dict[str, float] = {}
+        self._dead_lock: threading.Lock = threading.Lock()
+        self._dead_ttl_s: float = 60.0  # 1 minute TTL on "dead" memory
+
+    @property
+    def mirrors(self) -> Tuple[str, ...]:
+        """Return the ordered mirror base URLs the adapter will try."""
+        if hasattr(self, "_mirrors"):
+            return self._mirrors.bases
+        return (self._api_base,)
+
+    def _is_mirror_dead(self, base: str) -> bool:
+        """Return ``True`` if ``base`` recently failed and is still cooling off."""
+        with self._dead_lock:
+            ts = self._dead_mirrors.get(base)
+            if ts is None:
+                return False
+            if (time.time() - ts) > self._dead_ttl_s:
+                # Expired: drop the entry and try again next time.
+                self._dead_mirrors.pop(base, None)
+                return False
+            return True
+
+    def _mark_mirror_dead(self, base: str) -> None:
+        with self._dead_lock:
+            self._dead_mirrors[base] = time.time()
+
+    def _for_each_live_mirror(
+        self,
+        method: str,
+        path: str,
+        *,
+        auth: bool = True,
+    ) -> List[str]:
+        """Return the live mirror base URLs (most-preferred first)
+        for the given ``method + path``.
+
+        "Live" means: not in the recent-failure set.  Used by the
+        download loop to iterate the mirrors without paying for
+        network calls against known-broken ones.
+        """
+        out: List[str] = []
+        for base in self.mirrors:
+            if self._is_mirror_dead(base):
+                continue
+            out.append(base)
+        return out
 
     # ------------------------------------------------------------------
     # Internals
@@ -207,20 +323,23 @@ class HuggingFaceSource:
             return {"Authorization": "Bearer {}".format(self._token)}
         return {}
 
-    def _api_url(self, repo_id: str, path: str) -> str:
-        return "{}/api/models/{}".format(self._api_base, repo_id)
+    def _api_url(self, repo_id: str, path: str, base: Optional[str] = None) -> str:
+        return "{}/api/models/{}".format(base or self._api_base, repo_id)
         # NOTE: ``path`` is reserved for future endpoint expansion
         # (e.g. tree listing) without changing the public signature.
         _ = path
 
-    def _resolve_url(self, repo_id: str, name: str, revision: str) -> str:
+    def _resolve_url(
+        self, repo_id: str, name: str, revision: str, base: Optional[str] = None
+    ) -> str:
         """Build the public download URL for a file."""
+        b = (base or self._api_base).rstrip("/")
         if revision:
             return "{}/{}/resolve/{}/{}".format(
-                self._api_base, repo_id, revision, name,
+                b, repo_id, revision, name,
             )
         return "{}/{}/resolve/HEAD/{}".format(
-            self._api_base, repo_id, name,
+            b, repo_id, name,
         )
 
     # ------------------------------------------------------------------
@@ -248,15 +367,35 @@ class HuggingFaceSource:
                 if repo_id in self._meta_cache:
                     return str(self._meta_cache[repo_id].get("license", ""))
 
-        url = self._api_url(repo_id, "")
-        try:
-            data = self._transport.get_json(
-                url, headers=self._auth_headers()
-            )
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-            self._logger.warning(
-                "HF metadata fetch failed for %s: %s", repo_id, exc,
-            )
+        # Try every live mirror in order; record "useful" failures
+        # so we do not retry the same broken mirror on the next
+        # file in the same fetch.
+        data: Any = None
+        for base in self._for_each_live_mirror("GET", "/api/models/{}".format(repo_id)):
+            url = self._api_url(repo_id, "", base=base)
+            try:
+                data = self._transport.get_json(
+                    url, headers=self._auth_headers()
+                )
+                break  # success -- fall through to parsing below
+            except Exception as exc:  # noqa: BLE001 - any mirror failure
+                self._logger.warning(
+                    "HF metadata fetch failed for %s on %s: %s",
+                    repo_id, base, exc,
+                )
+                # 5xx / network -> mark this mirror dead; 4xx -> caller problem.
+                code = int(getattr(exc, "code", 0)) if isinstance(exc, urllib.error.HTTPError) else 0
+                if 500 <= code < 600:
+                    self._mark_mirror_dead(base)
+                else:
+                    # Treat all non-HTTPError as network-class -- the
+                    # mirror is *probably* down for us right now.
+                    if not isinstance(exc, urllib.error.HTTPError):
+                        self._mark_mirror_dead(base)
+                continue
+        if data is None:
+            # Every mirror failed; return empty so the license
+            # check short-circuits to "no license declared".
             return ""
 
         if not isinstance(data, dict):
@@ -309,40 +448,57 @@ class HuggingFaceSource:
 
         Uses the ``/api/models/{repo_id}/tree/{revision}`` endpoint
         and returns the ``path`` of every entry whose ``type`` is
-        ``"file"``.  When the request fails the method returns an
-        empty list (so the caller falls back to a configured default
+        ``"file"``.  When the request fails the method falls back
+        to the next mirror in the configured :class:`MirrorSet`,
+        and only when *every* mirror has failed returns an empty
+        list (so the caller can fall back to a configured default
         file list, if any).
         """
-        url = "{}/api/models/{}/tree/{}".format(
-            self._api_base, repo_id, revision or "main",
-        )
-        try:
-            data = self._transport.get_json(
-                url, headers=self._auth_headers()
+        # Try every live mirror in order; the first successful
+        # response wins.
+        for base in self._for_each_live_mirror(
+            "GET", "/api/models/{}/tree/{}".format(repo_id, revision or "main"),
+        ):
+            url = "{}/api/models/{}/tree/{}".format(
+                base, repo_id, revision or "main",
             )
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-            self._logger.warning(
-                "HF tree listing failed for %s@%s: %s", repo_id, revision, exc,
-            )
-            return []
-        if not isinstance(data, list):
-            return []
-        names: List[str] = []
-        for entry in data:
-            if not isinstance(entry, dict):
+            try:
+                data = self._transport.get_json(
+                    url, headers=self._auth_headers()
+                )
+            except Exception as exc:  # noqa: BLE001 - mirror is best-effort
+                self._logger.warning(
+                    "HF tree listing failed for %s@%s on %s: %s",
+                    repo_id, revision, base, exc,
+                )
+                # 5xx / network -> mark this mirror dead; 4xx -> caller-broken.
+                code = int(getattr(exc, "code", 0)) if isinstance(exc, urllib.error.HTTPError) else 0
+                if 500 <= code < 600:
+                    self._mark_mirror_dead(base)
+                elif not isinstance(exc, urllib.error.HTTPError):
+                    self._mark_mirror_dead(base)
                 continue
-            if entry.get("type") != "file":
-                continue
-            path = entry.get("path")
-            if isinstance(path, str) and path:
-                names.append(path)
-        return names
+            if not isinstance(data, list):
+                return []
+            names: List[str] = []
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("type") != "file":
+                    continue
+                path = entry.get("path")
+                if isinstance(path, str) and path:
+                    names.append(path)
+            return names
+        return []
 
     def download_files(
         self,
         repo_id: str,
         revision: str,
         names: Sequence[str],
+        *,
+        on_progress: Optional[Callable[["DownloadProgress"], None]] = None,
     ) -> List[FileDownload]:
         """Download a list of files from a HF repo.
 
@@ -353,6 +509,11 @@ class HuggingFaceSource:
             names: Sequence of file names to download.  Names that
                 start with ``"~"`` are skipped (HF uses this prefix
                 for non-public checkpoint fragments).
+            on_progress: Optional callback invoked once per file
+                with a :class:`DownloadProgress` describing the
+                download.  Called at the *boundary* of each file
+                (start tick + end tick) -- transport-level byte
+                streaming is not exposed by :class:`HttpTransport`.
 
         Returns:
             A list of :class:`FileDownload` entries, in the same
@@ -360,22 +521,80 @@ class HuggingFaceSource:
             from the result -- the caller can decide whether to
             treat the missing file as fatal.
         """
-        import hashlib
-
         results: List[FileDownload] = []
         for name in names:
             if not name or name.startswith("~"):
                 continue
-            url = self._resolve_url(repo_id, name, revision)
+            # Try every live mirror in order; fall back on the
+            # next mirror when the current one fails with a
+            # "useful" error (network / 5xx).
+            file_download = self._download_one_with_fallback(
+                repo_id, revision, name, on_progress=on_progress,
+            )
+            if file_download is not None:
+                results.append(file_download)
+        return results
+
+    def _download_one_with_fallback(
+        self,
+        repo_id: str,
+        revision: str,
+        name: str,
+        *,
+        on_progress: Optional[Callable[["DownloadProgress"], None]] = None,
+    ) -> Optional[FileDownload]:
+        """Try every mirror for a single file; return the first success."""
+        last_error = ""
+        for base in self._for_each_live_mirror("GET", "{}/{}".format(repo_id, name)):
+            url = self._resolve_url(repo_id, name, revision, base=base)
+            t0 = time.time()
+            if on_progress is not None:
+                try:
+                    on_progress(
+                        DownloadProgress(
+                            file_name=name,
+                            bytes_done=0,
+                            bytes_total=-1,
+                            mirror=base,
+                            started_at=t0,
+                            finished=False,
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - progress must never break the download
+                    pass
             try:
                 body, resp_headers = self._transport.get_bytes(
                     url, headers=self._auth_headers()
                 )
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+                last_error = "{}: {}".format(type(exc).__name__, exc)
                 self._logger.warning(
-                    "HF download failed for %s@%s/%s: %s",
-                    repo_id, revision, name, exc,
+                    "HF download failed for %s@%s/%s on %s: %s",
+                    repo_id, revision, name, base, exc,
                 )
+                # 5xx / network -> mark this mirror dead; 4xx -> caller problem.
+                if isinstance(exc, urllib.error.HTTPError):
+                    code = int(getattr(exc, "code", 0))
+                    if 500 <= code < 600:
+                        self._mark_mirror_dead(base)
+                else:
+                    self._mark_mirror_dead(base)
+                # Emit a finished-with-error tick so the UI can stop the spinner.
+                if on_progress is not None:
+                    try:
+                        on_progress(
+                            DownloadProgress(
+                                file_name=name,
+                                bytes_done=0,
+                                bytes_total=-1,
+                                mirror=base,
+                                started_at=t0,
+                                finished=True,
+                                error=last_error,
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 continue
             # HF exposes the blob sha256 via x-linked-etag (the
             # Git LFS pointer) and the git blob sha via the
@@ -386,19 +605,39 @@ class HuggingFaceSource:
                 or resp_headers.get("etag", "")
             ).strip().strip('"')
             local_sha = hashlib.sha256(body).hexdigest()
-            results.append(
-                FileDownload(
-                    name=name,
-                    data=body,
-                    sha256=upstream_sha or local_sha,
-                )
+            if on_progress is not None:
+                try:
+                    on_progress(
+                        DownloadProgress(
+                            file_name=name,
+                            bytes_done=len(body),
+                            bytes_total=len(body),
+                            mirror=base,
+                            started_at=t0,
+                            finished=True,
+                            error="",
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            return FileDownload(
+                name=name,
+                data=body,
+                sha256=upstream_sha or local_sha,
             )
-        return results
+        # Every mirror failed.
+        self._logger.warning(
+            "HF download exhausted all mirrors for %s@%s/%s (last error: %s)",
+            repo_id, revision, name, last_error,
+        )
+        return None
 
     def download_default_artifacts(
         self,
         repo_id: str,
         revision: str = "main",
+        *,
+        on_progress: Optional[Callable[["DownloadProgress"], None]] = None,
     ) -> List[FileDownload]:
         """Download the four canonical HF artifacts (config, tokenizer, weights).
 
@@ -410,6 +649,13 @@ class HuggingFaceSource:
         * ``model.safetensors`` (preferred) or ``pytorch_model.bin``
           (fallback) -- the weights.
 
+        Args:
+            repo_id: HF repository id.
+            revision: Source revision (``"main"``, tag, commit hash,
+                ...).
+            on_progress: Optional progress callback forwarded to
+                :meth:`download_files`.
+
         Returns:
             A list of :class:`FileDownload` entries (in the order
             they were resolved).  May be empty if the repo is
@@ -417,7 +663,7 @@ class HuggingFaceSource:
             expected to surface a useful error.
         """
         names: List[str] = []
-        available = self.list_files(repo_id, revision)
+        available = self.list_files(repo_id, revision or "main")
         has = set(available)
         for candidate in (
             "config.json",
@@ -437,7 +683,9 @@ class HuggingFaceSource:
             for n in available[:8]:
                 if n.endswith((".json", ".txt", ".md", ".model")):
                     names.append(n)
-        return self.download_files(repo_id, revision, names)
+        return self.download_files(
+            repo_id, revision or "main", names, on_progress=on_progress,
+        )
 
     def __repr__(self) -> str:
         return "HuggingFaceSource(api_base={!r})".format(self._api_base)

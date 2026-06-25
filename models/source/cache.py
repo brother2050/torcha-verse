@@ -44,6 +44,7 @@ __all__ = [
     "CachedFile",
     "CachedModel",
     "default_cache_root",
+    "compute_content_fingerprint",
     "ModelCache",
 ]
 
@@ -83,6 +84,38 @@ def default_cache_root() -> Path:
     else:
         base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     return Path(base).expanduser().resolve() / _CACHE_DIRNAME
+
+
+def compute_content_fingerprint(
+    files: Sequence[Dict[str, Any]],
+) -> str:
+    """Return a stable content fingerprint for a list of file specs.
+
+    The fingerprint is the sorted ``(name, sha256)`` joined by
+    ``|`` and re-hashed (sha256).  Two manifests with the same
+    name/sha256 pair set always produce the same fingerprint,
+    *regardless* of the order in which the files were listed.
+    This makes the fingerprint safe to use for cross-mirror
+    deduplication -- if the same file set is available on two
+    mirrors, they hash to the same value.
+
+    Args:
+        files: Iterable of dicts, each with at least ``name`` and
+            ``sha256`` keys.  ``sha256`` is treated as empty string
+            when missing (the caller is expected to compute it
+            upstream if a strong fingerprint is needed).
+
+    Returns:
+        A 64-character hex-encoded SHA-256 digest.
+    """
+    pairs = []
+    for f in files:
+        name = str(f.get("name", ""))
+        sha = str(f.get("sha256", ""))
+        pairs.append((name, sha))
+    pairs.sort()
+    joined = "|".join("{}={}".format(n, s) for n, s in pairs)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +237,20 @@ class CachedModel:
         """Serialise to a JSON string."""
         return json.dumps(self.as_dict(), indent=indent, sort_keys=True)
 
+    @property
+    def content_fingerprint(self) -> str:
+        """Return a stable content fingerprint for this manifest.
+
+        See :func:`compute_content_fingerprint` for the exact
+        recipe.  Two manifests with the same ``(name, sha256)`` set
+        always have the same fingerprint regardless of the order
+        in which files were listed; this is what makes it safe to
+        use for cross-mirror deduplication.
+        """
+        return compute_content_fingerprint(
+            [{"name": f.name, "sha256": f.sha256} for f in self.files]
+        )
+
 
 # ---------------------------------------------------------------------------
 # ModelCache
@@ -268,6 +315,67 @@ class ModelCache:
         """Return ``True`` if a manifest exists for the given model."""
         loc = self.location_for(source, repo_id, revision)
         return loc.manifest_path().is_file()
+
+    def find_by_fingerprint(
+        self,
+        source: str,
+        fingerprint: str,
+    ) -> Optional[CacheLocation]:
+        """Locate a cached model by its content fingerprint.
+
+        Walks every ``<root>/<source>/**/manifest.json`` entry and
+        returns the first one whose manifest's
+        :attr:`CachedModel.content_fingerprint` matches ``fingerprint``.
+        Returns ``None`` when no match is found.
+
+        The path is searched recursively (``rglob``) rather than
+        fixed-depth because HF-style ``repo_id`` values may
+        contain ``/`` (e.g. ``"Qwen/Qwen2.5"``) which Path treats
+        as a directory separator; the on-disk layout ends up
+        several levels deep but every manifest file is still at
+        a known suffix.
+
+        Use this for **cross-mirror / cross-revision deduplication**:
+        if you already cached the same blob from a different mirror
+        (or under a different revision tag), this is how you find it
+        without re-downloading.
+
+        Note: the search is O(N) over every cached manifest.  Callers
+        that hit the cache heavily should add a memo layer on top.
+        """
+        if not fingerprint:
+            return None
+        base = self._root / source
+        if not base.is_dir():
+            return None
+        with self._lock:
+            for manifest_path in base.rglob(_MANIFEST_FILENAME):
+                if not manifest_path.is_file():
+                    continue
+                try:
+                    with manifest_path.open("r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    m = CachedModel.from_dict(data)
+                except (OSError, ValueError):
+                    continue
+                if m.content_fingerprint == fingerprint:
+                    # Reconstruct the CacheLocation from the
+                    # manifest path: <root>/<source>/<repo_id>/<revision>/manifest.json
+                    rel = manifest_path.relative_to(self._root)
+                    parts = rel.parts
+                    # parts[0] is the source; the rest splits into
+                    # repo_id (all-but-last) and revision (last-1).
+                    if len(parts) < 3:
+                        continue
+                    revision = parts[-2]
+                    repo_id = "/".join(parts[1:-2])
+                    return CacheLocation(
+                        root=self._root,
+                        source=parts[0],
+                        repo_id=repo_id,
+                        revision=revision,
+                    )
+        return None
 
     def load_manifest(
         self,

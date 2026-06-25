@@ -40,11 +40,16 @@ from .cache import (
     CachedFile,
     CachedModel,
     ModelCache,
+    compute_content_fingerprint,
     default_cache_root,
 )
 from .civitai import CivitaiSource
 from .fetch import FetchResult, ModelFetcher, SourceRegistry, fetch
 from .huggingface import (
+    DEFAULT_API_BASE,
+    DEFAULT_TIMEOUT,
+    DEFAULT_USER_AGENT,
+    DownloadProgress,
     FileDownload,
     HttpTransport,
     HuggingFaceSource,
@@ -58,6 +63,14 @@ from .license_check import (
     get_default_allow_license,
     is_known_non_commercial,
     normalise_spdx,
+)
+from .mirrors import (
+    DEFAULT_HF_MIRRORS,
+    MirrorHealth,
+    MirrorSet,
+    check_all_mirrors,
+    check_mirror_health,
+    is_useful_mirror_error,
 )
 
 __all__ = [
@@ -75,13 +88,25 @@ __all__ = [
     "CachedModel",
     "ModelCache",
     "default_cache_root",
+    "compute_content_fingerprint",
     # huggingface
     "FileDownload",
     "HttpTransport",
     "HuggingFaceSource",
     "UrllibTransport",
+    "DownloadProgress",
+    "DEFAULT_API_BASE",
+    "DEFAULT_TIMEOUT",
+    "DEFAULT_USER_AGENT",
     # civitai
     "CivitaiSource",
+    # mirrors
+    "DEFAULT_HF_MIRRORS",
+    "MirrorSet",
+    "MirrorHealth",
+    "check_mirror_health",
+    "check_all_mirrors",
+    "is_useful_mirror_error",
     # fetch
     "fetch",
     "ModelFetcher",

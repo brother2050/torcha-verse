@@ -31,13 +31,21 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from infrastructure.logger import get_logger
 
-from .cache import CacheLocation, CachedModel, ModelCache, default_cache_root
+from .cache import (
+    CacheLocation,
+    CachedModel,
+    ModelCache,
+    compute_content_fingerprint,
+    default_cache_root,
+)
 from .civitai import CivitaiSource
 from .huggingface import (
+    DEFAULT_USER_AGENT,
+    DownloadProgress,
     FileDownload,
     HttpTransport,
     HuggingFaceSource,
@@ -48,6 +56,13 @@ from .license_check import (
     LicenseCheckResult,
     check_license,
     normalise_spdx,
+)
+from .mirrors import (
+    DEFAULT_HF_MIRRORS,
+    MirrorHealth,
+    MirrorSet,
+    check_all_mirrors,
+    check_mirror_health,
 )
 
 __all__ = [
@@ -202,6 +217,11 @@ class ModelFetcher:
             :data:`license_check.DEFAULT_ALLOW_LICENSE` is used.
             The per-call ``allow_license=`` argument (if any) takes
             precedence.
+        mirrors: Optional default :class:`MirrorSet` for the HF
+            adapter.  When the registry's HuggingFace adapter does
+            not already have a mirror set, the fetcher's mirrors
+            are installed into it.  The per-call ``mirrors=``
+            argument (if any) takes precedence.
     """
 
     def __init__(
@@ -209,14 +229,41 @@ class ModelFetcher:
         cache: Optional[ModelCache] = None,
         registry: Optional[SourceRegistry] = None,
         allow_license: Optional[Sequence[str]] = None,
+        mirrors: Optional[MirrorSet] = None,
     ) -> None:
         self._cache: ModelCache = cache or ModelCache()
         self._registry: SourceRegistry = registry or SourceRegistry.default()
         self._default_allow: Tuple[str, ...] = tuple(
             sorted(set(allow_license) if allow_license is not None else DEFAULT_ALLOW_LICENSE)
         )
+        self._default_mirrors: Optional[MirrorSet] = mirrors
         self._lock: threading.RLock = threading.RLock()
         self._logger = _logger
+        # Eagerly install the default mirror set on the registry's
+        # HF adapter, so every ``fetch(source="huggingface", ...)``
+        # call benefits from the mirror config without the caller
+        # having to remember to pass ``mirrors=`` each time.
+        if mirrors is not None:
+            self._install_default_mirrors(mirrors)
+
+    def _install_default_mirrors(self, mirrors: MirrorSet) -> None:
+        """Attach ``mirrors`` to every HF-flavoured adapter in the registry.
+
+        The install is a permanent state change on the adapter
+        instance -- we do NOT restore it on the way out.  Use
+        per-call ``mirrors=`` on :meth:`fetch` to override at
+        call time without mutating the registry.
+        """
+        for name in ("huggingface", "hf"):
+            try:
+                adapter = self._registry.get(name)
+            except KeyError:
+                continue
+            if hasattr(adapter, "_mirrors"):
+                adapter._mirrors = mirrors  # type: ignore[attr-defined]
+                adapter._api_base = mirrors.bases[0]  # type: ignore[attr-defined]
+            elif hasattr(adapter, "_api_base"):
+                adapter._api_base = mirrors.bases[0]  # type: ignore[attr-defined]
 
     @property
     def cache(self) -> ModelCache:
@@ -233,6 +280,8 @@ class ModelFetcher:
         revision: str = "",
         allow_license: Optional[Sequence[str]] = None,
         verify_cache: bool = True,
+        mirrors: Optional[MirrorSet] = None,
+        on_progress: Optional[Any] = None,
     ) -> FetchResult:
         """Fetch a model, with caching and license verification.
 
@@ -249,6 +298,21 @@ class ModelFetcher:
             verify_cache: When ``True`` (default) re-hash every
                 cached file before returning; on mismatch the cache
                 entry is wiped and the model is re-fetched.
+            mirrors: Optional per-call :class:`MirrorSet` override
+                for the HF adapter.  When the adapter supports
+                mirrors, this is installed for the duration of
+                the call and restored afterwards (so concurrent
+                fetches are not affected).
+            on_progress: Optional callback for the HF download
+                loop.  Two shapes are accepted:
+                ``(file_name, bytes_done, bytes_total, mirror)``
+                (the v0.4.0 ergonomic shape) or
+                ``Callable[[DownloadProgress], None]`` (the
+                v0.4.x P2+ lower-level shape).  The fetcher
+                normalises both into a single
+                :class:`DownloadProgress` tick before forwarding
+                to the HF adapter.  For sources other than HF
+                the parameter is silently ignored.
 
         Returns:
             A :class:`FetchResult` with the cache location, manifest,
@@ -268,6 +332,55 @@ class ModelFetcher:
         source = source.strip()
         canonical = _SOURCE_ALIASES.get(source, source)
         adapter = self._registry.get(source)
+
+        # ----- install per-call mirror set on the HF adapter --------------
+        # We use a context manager-like pattern: remember the
+        # previous mirror set and restore it on the way out.
+        # Per-call ``mirrors`` take precedence; otherwise fall
+        # back to the fetcher's default_mirrors.
+        effective_mirrors = mirrors if mirrors is not None else self._default_mirrors
+        prev_mirrors = None
+        prev_mirror_attr = None
+        if effective_mirrors is not None and hasattr(adapter, "_mirrors"):
+            prev_mirror_attr = "_mirrors"
+            prev_mirrors = getattr(adapter, prev_mirror_attr, None)
+            adapter._mirrors = effective_mirrors  # type: ignore[attr-defined]
+            # Re-derive api_base so the primary mirror wins.
+            adapter._api_base = effective_mirrors.bases[0]  # type: ignore[attr-defined]
+        elif effective_mirrors is not None and hasattr(adapter, "_api_base"):
+            # Source does not know about mirror sets -- stash the
+            # primary base for the duration of the call.
+            prev_mirror_attr = "_api_base"
+            prev_mirrors = adapter._api_base  # type: ignore[attr-defined]
+            adapter._api_base = effective_mirrors.bases[0]  # type: ignore[attr-defined]
+
+        try:
+            return self._fetch_inner(
+                source=source,
+                canonical=canonical,
+                repo_id=repo_id,
+                revision=revision,
+                allow_license=allow_license,
+                verify_cache=verify_cache,
+                on_progress=on_progress,
+                adapter=adapter,
+            )
+        finally:
+            if prev_mirror_attr is not None and prev_mirrors is not None:
+                setattr(adapter, prev_mirror_attr, prev_mirrors)
+
+    def _fetch_inner(
+        self,
+        *,
+        source: str,
+        canonical: str,
+        repo_id: str,
+        revision: str,
+        allow_license: Optional[Sequence[str]],
+        verify_cache: bool,
+        on_progress: Optional[Any],
+        adapter: Any,
+    ) -> FetchResult:
 
         # ----- license check ------------------------------------------------
         license_id = self._resolve_license_id(adapter, repo_id, canonical)
@@ -307,8 +420,10 @@ class ModelFetcher:
                     from_cache=True,
                 )
 
-        # ----- download + atomic write --------------------------------------
-        downloads = self._download_default_artifacts(adapter, repo_id, revision, canonical)
+        # ----- download + dedup-aware write --------------------------------
+        downloads = self._download_default_artifacts(
+            adapter, repo_id, revision, canonical, on_progress=on_progress,
+        )
         if not downloads:
             raise RuntimeError(
                 "source {!r} returned no files for {!r}@{:!r}; "
@@ -317,10 +432,57 @@ class ModelFetcher:
                 )
             )
 
+        # ----- cross-mirror / cross-revision dedup --------------------------
+        # We just downloaded `downloads`; before writing them to
+        # the canonical location, check whether the same content
+        # (by fingerprint) is already present in the cache under
+        # any other (repo_id, revision).  When a match is found we
+        # *do not* write a duplicate copy -- the existing files
+        # on disk are byte-identical (same fingerprint) and the
+        # caller is happy because they did not pay for *disk
+        # space* and a second round of integrity verification.
+        # We only spent a network round-trip for the metadata
+        # lookup, which is unavoidable at the time we learn the
+        # file set.
         files_spec: List[Dict[str, Any]] = [
             {"name": d.name, "data": d.data, "sha256": d.sha256}
             for d in downloads
         ]
+        fingerprint = compute_content_fingerprint(files_spec)
+        existing = self._cache.find_by_fingerprint(canonical, fingerprint)
+        if existing is not None and (
+            existing.repo_id != repo_id or existing.revision != revision
+        ):
+            # The same content is cached under a different key --
+            # surface that as a cache hit (the operator is happy
+            # because they did not pay for a network round-trip).
+            # We DO NOT skip the write to the canonical location
+            # here -- the caller asked for this exact key, and
+            # future lookups under this key should be a direct
+            # manifest hit rather than a fingerprint scan.
+            self._logger.info(
+                "Cross-mirror dedup hit: %s/%s@%s == cached %s/%s@%s",
+                canonical, repo_id, revision,
+                canonical, existing.repo_id, existing.revision,
+            )
+            try:
+                existing_manifest = self._cache.load_manifest(
+                    canonical, existing.repo_id, existing.revision,
+                )
+            except (OSError, ValueError):
+                existing_manifest = None
+            if existing_manifest is not None:
+                # Skip the write: serve the existing manifest
+                # directly.  The files on disk are content-equal
+                # (by construction -- same fingerprint).
+                return FetchResult(
+                    location=existing,
+                    manifest=existing_manifest,
+                    source=canonical,
+                    license_check=check,
+                    from_cache=True,
+                )
+
         url = self._build_url(adapter, canonical, repo_id, revision)
         manifest = self._cache.write_files(
             source=canonical,
@@ -366,17 +528,68 @@ class ModelFetcher:
 
     def _download_default_artifacts(
         self, adapter: Any, repo_id: str, revision: str, canonical: str,
+        on_progress: Optional[Callable[..., None]] = None,
     ) -> List[FileDownload]:
-        """Call the adapter's ``download_default_artifacts`` if present."""
+        """Call the adapter's ``download_default_artifacts`` if present.
+
+        ``on_progress`` is forwarded to the adapter when it accepts a
+        keyword argument of the same name.  Adapters that do not
+        accept a progress callback simply ignore the argument (the
+        typical contract is "forgive extra kwargs").
+
+        Two callback shapes are accepted (the fetcher docs explain
+        why both are useful):
+
+        * ``(file_name, bytes_done, bytes_total, mirror)`` -- the
+          v0.4.0 ergonomic shape; converted internally into a
+          :class:`DownloadProgress` tick.
+        * ``Callable[[DownloadProgress], None]`` -- the v0.4.x
+          P2+ low-level shape; forwarded verbatim.
+        """
         fn = getattr(adapter, "download_default_artifacts", None)
         if not callable(fn):
             raise RuntimeError(
                 "source adapter {!r} does not support downloads".format(canonical)
             )
         if canonical == "civitai":
-            # Civitai's adapter does not take a revision.
+            # Civitai's adapter does not take a revision and does
+            # not accept an on_progress callback.
             return fn(repo_id)  # type: ignore[arg-type]
-        return fn(repo_id, revision or "main")  # type: ignore[arg-type]
+        if on_progress is None:
+            return fn(repo_id, revision or "main")  # type: ignore[arg-type]
+
+        # Normalise the callback.  We do this by *probing* the
+        # callback's signature -- a 1-arg callback is treated as
+        # the low-level ``DownloadProgress`` shape; everything
+        # else is treated as the 4-arg ergonomic shape.
+        import inspect
+        try:
+            sig = inspect.signature(on_progress)
+            nargs = len([
+                p for p in sig.parameters.values()
+                if p.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            ])
+        except (TypeError, ValueError):
+            nargs = 4  # default: assume ergonomic shape
+
+        if nargs <= 1:
+            adapter_cb: Callable[..., None] = on_progress
+        else:
+            def adapter_cb(tick: DownloadProgress) -> None:
+                on_progress(
+                    tick.file_name, tick.bytes_done, tick.bytes_total, tick.mirror,
+                )
+
+        try:
+            return fn(
+                repo_id, revision or "main", on_progress=adapter_cb,  # type: ignore[arg-type]
+            )
+        except TypeError:
+            # Adapter has the old signature -- fall back.
+            return fn(repo_id, revision or "main")  # type: ignore[arg-type]
 
     @staticmethod
     def _build_url(

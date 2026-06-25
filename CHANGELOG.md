@@ -4,6 +4,93 @@
 
 ## [Unreleased] — 初期整理
 
+### P2+ 模型下载：HF 镜像 + 跨镜像去重 + 进度回调 (v0.4.x P2+ milestone)
+
+把 v0.4.0 P2 的模型下载功能**补全**:HF 镜像自动 fallback
+(`https://huggingface.co` → `https://hf-mirror.com`)、下载内容
+指纹 (`compute_content_fingerprint` + `find_by_fingerprint`)
+跨 repo/revision 去重避免重复写盘、下载进度回调
+(`DownloadProgress` dataclass)、镜像健康检查
+(`check_mirror_health` + `MirrorHealth`)。所有功能在零网络
+测试中验证 (`FakeTransport`),可立刻接入真镜像。
+
+**新文件**:
+- `models/source/mirrors.py` — `DEFAULT_HF_MIRRORS` 镜像列表 +
+  `MirrorSet` 配置 dataclass (env-var 读 `$TORCHA_VERSE_HF_MIRRORS`)
+  + `MirrorHealth` 健康结果 + `check_mirror_health` /
+  `check_all_mirrors` / `is_useful_mirror_error` 三个工具函数
+- `tests/test_model_source_mirror.py` — 31 个新测试
+  (8 MirrorSet + 5 健康检查 + 4 指纹/缓存查找 + 6 HF 镜像 fallback
+  + 5 fetcher 端到端 + 2 文件跳过/异常)
+- `examples/model_download.py` — 端到端 demo (零网络
+  FakeTransport):镜像列表构造 → 健康检查 → first fetch →
+  cache hit → 跨镜像 dedup
+
+**升级**:
+- `models/source/huggingface.py` — `HuggingFaceSource` 加
+  `mirrors=` 参数 + `_for_each_live_mirror` 循环 + 60s TTL 的
+  "dead-mirror memory" (`_dead_mirrors` 字典)。`resolve_license` /
+  `list_files` / `download_files` 全部 try-mirrors fallback。
+  新 `DownloadProgress` dataclass (file_name / bytes_done /
+  bytes_total / mirror / started_at / finished / error) +
+  `download_default_artifacts(revision, on_progress=)` 接收
+  per-file 进度回调,callback 抛异常自动 swallow 不影响下载。
+- `models/source/cache.py` — 新 `compute_content_fingerprint`
+  (sorted `(name, sha256)` 集合的 sha256,顺序无关) +
+  `ModelCache.find_by_fingerprint` (`rglob` 递归扫描 manifest,
+  支持 `repo_id` 含 `/` 的情况) + `CachedModel.content_fingerprint`
+  property
+- `models/source/fetch.py` — `ModelFetcher.fetch` 接
+  `mirrors=` + `on_progress=`,新 `_install_default_mirrors` 让
+  default mirrors 自动装到 registry 中所有 HF adapter。
+  `on_progress` callback 自动 wrap:4 参 `(name, done, total, mirror)`
+  (v0.4.0 ergonomic shape) → 1 参 `DownloadProgress` (v0.4.x P2+
+  low-level shape),通过 `inspect.signature` 推断。
+  新 `_fetch_inner` 流程:download → compute fingerprint →
+  `find_by_fingerprint` → 命中则**不写盘**直接 return
+  existing manifest (跨 repo/revision dedup),完全避免重复
+  占用磁盘与重复完整性验证。
+- `models/source/__init__.py` — 暴露 `MirrorSet` / `MirrorHealth`
+  / `DownloadProgress` / `compute_content_fingerprint` / 4 个
+  mirror/health/is_useful helpers
+- `docs/placeholder_registry.md` — 8 条新 entry (54-61) 覆盖
+  `models/source/cache.py:509,578,582` (原子写 + rmdir 兜底)
+  + `models/source/huggingface.py:164,170` (HttpTransport abstract
+  占位) + `models/source/huggingface.py:564,597,622`
+  (progress callback 兜底)
+
+**测试**:
+- 总测试数: 652 → **683** (净增 31, 全过, 49.90s)
+- `pytest -m model_source` 跑 84/84 (53 旧 + 31 新)
+- `pytest -m "not model_source"` 跑 599/599
+
+**Examples**:
+- `python examples/model_download.py` 零网络跑通:
+  1. 镜像列表构造 (`MirrorSet.from_env()`)
+  2. 健康检查 (FakeTransport 报 1 个可达 + 1 个不可达)
+  3. 第一次 fetch (`from_cache=False`, 写 v1)
+  4. 第二次 fetch (same key, `from_cache=True` 直接 cache hit)
+  5. 第三次 fetch (不同 revision v1.1, `from_cache=True`
+     走 cross-mirror dedup,**不写 v1.1 目录**, 仍能 serve
+     现有 v1 的 manifest)
+  6. 流量后健康检查 (upstream 仍 mark dead, mirror alive)
+
+**Scanner 双 0**:
+- Hardcoding scanner: 4452 total, critical 3857, info 595
+  (vs D1 阶段二 4157 total / 3235 critical, 新增 216 主要是
+  tests + mirrors 字符串路径)
+- Placeholder registry: 50/50 OK (新增 8 条)
+- 纯 torch,**无** `transformers` / `diffusers` / `safetensors` /
+  `tokenizers` 依赖
+
+**不做** (留到 v1.0):
+- 流式字节进度 (transport 协议目前一次性返完整 bytes,
+  progress 是 per-file granularity 而非 byte-level)
+- 异步并发 mirror race (目前 strict 顺序 fallback, race 留给
+  后续 v1.0 调度器)
+- 自动镜像 health check 周期 (目前 health check 是
+  on-demand ad-hoc)
+
 ### P0 多模态真模型接入 (v0.4.x P0 multi-modal milestone)
 
 把 `models/image/` / `models/audio/` / `models/video/` / `models/multimodal/`
