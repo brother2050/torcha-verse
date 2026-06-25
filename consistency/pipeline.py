@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from assets.model_asset import CharacterAsset, DepthAsset, OutfitAsset, SceneAsset
 from assets.store import AssetStore
+from infrastructure.defaults import DIFFUSION_STEPS, DIFFUSION_GUIDANCE_SCALE
 from infrastructure.logger import get_logger
 
 from .character import CharacterEngine
@@ -573,15 +574,9 @@ class ConsistencyPipeline:
                 ``[_DIM_MIN, _DIM_MAX]``。
         """
         from pipeline.composer import PipelineBuilder
-        from infrastructure.config_center import ConfigCenter
 
         self._validate_dimensions(width, height)
         builder = PipelineBuilder("consistency_generate")
-
-        # 从 ConfigCenter 读取 diffusion 默认参数（inference_config.yaml）。
-        cfg = ConfigCenter()
-        default_steps = cfg.get("diffusion.default_steps", 30)
-        default_guidance = cfg.get("diffusion.default_guidance_scale", 7.5)
 
         # 基础图像生成节点（当 character 未激活时创建）。
         # 当 character 激活时，character_apply 直接作为链的起点，
@@ -593,9 +588,9 @@ class ConsistencyPipeline:
         }
         base_inputs.update(kwargs)
         # 为必填输入提供默认值，确保 validate_inputs 校验通过。
-        # 优先使用 kwargs 传入值 > ConfigCenter 配置值 > 硬编码兜底值。
-        base_inputs.setdefault("steps", default_steps)
-        base_inputs.setdefault("guidance_scale", default_guidance)
+        # 优先使用 kwargs 传入值 > defaults 模块配置值 > 硬编码兜底值。
+        base_inputs.setdefault("steps", DIFFUSION_STEPS)
+        base_inputs.setdefault("guidance_scale", DIFFUSION_GUIDANCE_SCALE)
 
         character_active = (
             self._character is not None

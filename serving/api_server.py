@@ -33,6 +33,14 @@ from typing import Any, Dict, Iterator, List, Optional, Union
 
 from infrastructure.cache_store import CacheStore
 from infrastructure.config_manager import ConfigManager
+from infrastructure.defaults import (
+    DIFFUSION_STEPS,
+    DIFFUSION_GUIDANCE_SCALE,
+    SAMPLING_TEMPERATURE,
+    SAMPLING_TOP_K,
+    SAMPLING_TOP_P,
+    SAMPLING_REPETITION_PENALTY,
+)
 from infrastructure.device_manager import DeviceManager
 from infrastructure.error_handler import ErrorHandler
 from infrastructure.logger import get_logger
@@ -86,10 +94,10 @@ class TextCompletionRequest(BaseModel):
     model: str = "default"
     prompt: str
     max_tokens: int = Field(default=256, ge=1, le=8192)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    top_k: int = Field(default=50, ge=0)
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
-    repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
+    temperature: float = Field(default=SAMPLING_TEMPERATURE, ge=0.0, le=2.0)
+    top_k: int = Field(default=SAMPLING_TOP_K, ge=0)
+    top_p: float = Field(default=SAMPLING_TOP_P, ge=0.0, le=1.0)
+    repetition_penalty: float = Field(default=SAMPLING_REPETITION_PENALTY, ge=1.0, le=2.0)
     stream: bool = False
     stop: Optional[Union[str, List[str]]] = None
 
@@ -107,9 +115,9 @@ class ChatRequest(BaseModel):
     model: str = "default"
     messages: List[ChatMessage]
     max_tokens: int = Field(default=512, ge=1, le=8192)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    top_k: int = Field(default=50, ge=0)
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
+    temperature: float = Field(default=SAMPLING_TEMPERATURE, ge=0.0, le=2.0)
+    top_k: int = Field(default=SAMPLING_TOP_K, ge=0)
+    top_p: float = Field(default=SAMPLING_TOP_P, ge=0.0, le=1.0)
     stream: bool = False
 
 
@@ -121,8 +129,8 @@ class ImageRequest(BaseModel):
     negative_prompt: str = ""
     width: int = Field(default=512, ge=64, le=2048)
     height: int = Field(default=512, ge=64, le=2048)
-    steps: int = Field(default=30, ge=1, le=200)
-    guidance_scale: float = Field(default=7.5, ge=0.0, le=30.0)
+    steps: int = Field(default=DIFFUSION_STEPS, ge=1, le=200)
+    guidance_scale: float = Field(default=DIFFUSION_GUIDANCE_SCALE, ge=0.0, le=30.0)
     seed: Optional[int] = None
     response_format: str = "b64_json"
 
@@ -148,8 +156,8 @@ class VideoRequest(BaseModel):
     height: int = Field(default=512, ge=64, le=1024)
     num_frames: int = Field(default=16, ge=1, le=128)
     fps: int = Field(default=8, ge=1, le=60)
-    steps: int = Field(default=30, ge=1, le=200)
-    guidance_scale: float = Field(default=7.5, ge=0.0, le=30.0)
+    steps: int = Field(default=DIFFUSION_STEPS, ge=1, le=200)
+    guidance_scale: float = Field(default=DIFFUSION_GUIDANCE_SCALE, ge=0.0, le=30.0)
     seed: Optional[int] = None
     response_format: str = "b64_json"
 
@@ -434,7 +442,7 @@ class PipelineService:
         prompt: str,
         model: str = "default",
         max_tokens: int = 256,
-        temperature: float = 0.7,
+        temperature: float = SAMPLING_TEMPERATURE,
     ) -> Dict[str, Any]:
         """Run a raw prompt completion through the ``text_completion`` node."""
         return self._run(
@@ -450,7 +458,7 @@ class PipelineService:
         prompt: str,
         model: str = "default",
         max_tokens: int = 512,
-        temperature: float = 0.7,
+        temperature: float = SAMPLING_TEMPERATURE,
     ) -> Dict[str, Any]:
         """Run a chat-style generation through the ``text_chat`` node."""
         return self._run(
@@ -475,8 +483,8 @@ class PipelineService:
         negative_prompt: str = "",
         width: int = 512,
         height: int = 512,
-        steps: int = 30,
-        guidance_scale: float = 7.5,
+        steps: int = DIFFUSION_STEPS,
+        guidance_scale: float = DIFFUSION_GUIDANCE_SCALE,
         seed: Optional[int] = None,
         model: str = "default",
     ) -> Dict[str, Any]:
@@ -506,8 +514,8 @@ class PipelineService:
         strength: float = 0.75,
         width: int = 512,
         height: int = 512,
-        steps: int = 30,
-        guidance_scale: float = 7.5,
+        steps: int = DIFFUSION_STEPS,
+        guidance_scale: float = DIFFUSION_GUIDANCE_SCALE,
         seed: Optional[int] = None,
         model: str = "default",
     ) -> Dict[str, Any]:
@@ -589,8 +597,8 @@ class PipelineService:
         height: int = 512,
         num_frames: int = 16,
         fps: int = 8,
-        steps: int = 30,
-        guidance_scale: float = 7.5,
+        steps: int = DIFFUSION_STEPS,
+        guidance_scale: float = DIFFUSION_GUIDANCE_SCALE,
         seed: Optional[int] = None,
         model: str = "default",
     ) -> Dict[str, Any]:

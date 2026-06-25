@@ -14,6 +14,16 @@ from .cache_store import CacheStore
 from .checkpoint_manager import CheckpointManager
 from .config_center import ConfigCenter
 from .config_manager import ConfigManager, get_config
+from .defaults import (
+    DIFFUSION_ETA,
+    DIFFUSION_GUIDANCE_SCALE,
+    DIFFUSION_SCHEDULER,
+    DIFFUSION_STEPS,
+    SAMPLING_REPETITION_PENALTY,
+    SAMPLING_TEMPERATURE,
+    SAMPLING_TOP_K,
+    SAMPLING_TOP_P,
+)
 from .device_manager import DeviceManager, DTypePolicy, PipelineParallel, TensorParallel
 from .error_handler import ErrorHandler, with_error_handler
 from .logger import Logger, get_logger, set_log_level
@@ -41,6 +51,15 @@ __all__ = [
     "ConfigCenter",
     "ConfigManager",
     "get_config",
+    # inference defaults
+    "DIFFUSION_STEPS",
+    "DIFFUSION_GUIDANCE_SCALE",
+    "DIFFUSION_SCHEDULER",
+    "DIFFUSION_ETA",
+    "SAMPLING_TEMPERATURE",
+    "SAMPLING_TOP_K",
+    "SAMPLING_TOP_P",
+    "SAMPLING_REPETITION_PENALTY",
     # device / distributed
     "DeviceManager",
     "DTypePolicy",

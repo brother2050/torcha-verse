@@ -26,6 +26,13 @@ from typing import Any, Dict, List, Optional
 import click
 
 from infrastructure.config_manager import ConfigManager
+from infrastructure.defaults import (
+    DIFFUSION_STEPS,
+    DIFFUSION_GUIDANCE_SCALE,
+    SAMPLING_TEMPERATURE,
+    SAMPLING_TOP_K,
+    SAMPLING_TOP_P,
+)
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
@@ -197,9 +204,9 @@ def text() -> None:
 @click.option(
     "--max-tokens", default=256, type=int, help="Maximum tokens to generate."
 )
-@click.option("--temperature", default=0.7, type=float, help="Sampling temperature.")
-@click.option("--top-k", default=50, type=int, help="Top-k filtering.")
-@click.option("--top-p", default=0.9, type=float, help="Nucleus sampling threshold.")
+@click.option("--temperature", default=SAMPLING_TEMPERATURE, type=float, help="Sampling temperature.")
+@click.option("--top-k", default=SAMPLING_TOP_K, type=int, help="Top-k filtering.")
+@click.option("--top-p", default=SAMPLING_TOP_P, type=float, help="Nucleus sampling threshold.")
 @click.option("--stream", is_flag=True, help="Stream output token by token.")
 def generate(
     model: str,
@@ -345,8 +352,8 @@ def image() -> None:
 @click.option("--output", default="output.png", help="Output file path.")
 @click.option("--width", default=512, type=int, help="Image width.")
 @click.option("--height", default=512, type=int, help="Image height.")
-@click.option("--steps", default=30, type=int, help="Denoising steps.")
-@click.option("--guidance-scale", default=7.5, type=float, help="CFG guidance scale.")
+@click.option("--steps", default=DIFFUSION_STEPS, type=int, help="Denoising steps.")
+@click.option("--guidance-scale", default=DIFFUSION_GUIDANCE_SCALE, type=float, help="CFG guidance scale.")
 @click.option("--seed", default=None, type=int, help="Random seed.")
 def txt2img(
     model: str,
@@ -407,8 +414,8 @@ def txt2img(
 @click.option("--prompt", required=True, help="Transformation prompt.")
 @click.option("--output", default="output.png", help="Output file path.")
 @click.option("--strength", default=0.75, type=float, help="Transformation strength.")
-@click.option("--steps", default=30, type=int, help="Denoising steps.")
-@click.option("--guidance-scale", default=7.5, type=float, help="CFG guidance scale.")
+@click.option("--steps", default=DIFFUSION_STEPS, type=int, help="Denoising steps.")
+@click.option("--guidance-scale", default=DIFFUSION_GUIDANCE_SCALE, type=float, help="CFG guidance scale.")
 @click.option("--seed", default=None, type=int, help="Random seed.")
 def img2img(
     model: str,
@@ -530,8 +537,8 @@ def video() -> None:
 @click.option("--height", default=512, type=int, help="Video height.")
 @click.option("--num-frames", default=16, type=int, help="Number of frames.")
 @click.option("--fps", default=8, type=int, help="Output frame rate.")
-@click.option("--steps", default=30, type=int, help="Denoising steps.")
-@click.option("--guidance-scale", default=7.5, type=float, help="CFG guidance scale.")
+@click.option("--steps", default=DIFFUSION_STEPS, type=int, help="Denoising steps.")
+@click.option("--guidance-scale", default=DIFFUSION_GUIDANCE_SCALE, type=float, help="CFG guidance scale.")
 @click.option("--seed", default=None, type=int, help="Random seed.")
 def txt2vid(
     model: str,

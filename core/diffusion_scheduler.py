@@ -24,6 +24,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 
+from infrastructure.defaults import (
+    DIFFUSION_ETA,
+    DIFFUSION_GUIDANCE_SCALE,
+    DIFFUSION_SCHEDULER,
+    DIFFUSION_STEPS,
+)
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
@@ -343,7 +349,7 @@ class DDIMSampler(BaseSampler):
             deterministic (DDIM), ``1`` recovers DDPM.
     """
 
-    def __init__(self, schedule: NoiseSchedule, eta: float = 0.0) -> None:
+    def __init__(self, schedule: NoiseSchedule, eta: float = DIFFUSION_ETA) -> None:
         super().__init__(schedule)
         if not 0.0 <= eta <= 1.0:
             raise ValueError(f"eta must be in [0, 1], got {eta}.")
@@ -634,7 +640,7 @@ class GuidanceController:
 
     def __init__(
         self,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = DIFFUSION_GUIDANCE_SCALE,
         guidance_type: str = "cfg",
         classifier: Optional[Callable[..., torch.Tensor]] = None,
     ) -> None:
@@ -754,7 +760,7 @@ class StepController:
         self,
         min_steps: int = 5,
         max_steps: int = 100,
-        base_steps: int = 30,
+        base_steps: int = DIFFUSION_STEPS,
     ) -> None:
         if min_steps <= 0 or max_steps < min_steps:
             raise ValueError("Invalid step bounds.")
@@ -826,9 +832,9 @@ class DiffusionScheduler:
         self,
         num_timesteps: int = 1000,
         noise_strategy: str = "linear",
-        sampler_name: str = "dpm_solver",
-        guidance_scale: float = 7.5,
-        eta: float = 0.0,
+        sampler_name: str = DIFFUSION_SCHEDULER,
+        guidance_scale: float = DIFFUSION_GUIDANCE_SCALE,
+        eta: float = DIFFUSION_ETA,
         device: Optional[Union[str, torch.device]] = None,
     ) -> None:
         self._device_manager: DeviceManager = DeviceManager()
@@ -869,7 +875,7 @@ class DiffusionScheduler:
         self.step_controller: StepController = StepController()
 
         # Sampling state.
-        self.num_inference_steps: int = 30
+        self.num_inference_steps: int = DIFFUSION_STEPS
         self._logger.debug(
             "DiffusionScheduler initialised: strategy=%s, sampler=%s, "
             "guidance_scale=%.1f, device=%s",

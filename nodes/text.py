@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from infrastructure.defaults import SAMPLING_TEMPERATURE
+
 from .base import BaseNode, NodeContext, NodeSpec, register_node
 
 __all__ = ["TextNode", "TextCompletionNode"]
@@ -163,8 +165,8 @@ class TextNode(BaseNode):
         model = inputs.get("model") or ctx.config.get("default_text_model")
         _mt = inputs.get("max_tokens", 256)
         max_tokens = int(_mt) if _mt is not None else 256
-        _temp = inputs.get("temperature", 0.7)
-        temperature = float(_temp) if _temp is not None else 0.7
+        _temp = inputs.get("temperature", SAMPLING_TEMPERATURE)
+        temperature = float(_temp) if _temp is not None else SAMPLING_TEMPERATURE
 
         ctx.logger.debug(
             "text_chat run_id=%s model=%s max_tokens=%d temperature=%.2f",

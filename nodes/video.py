@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from infrastructure.defaults import DIFFUSION_STEPS
+
 from .base import BaseNode, NodeContext, NodeSpec, register_node
 from ._helpers import (
     _MEGAPIXEL_PIXELS,
@@ -71,9 +73,6 @@ _DEFAULT_FPS: int = 24
 _DEFAULT_WIDTH: int = 512
 #: 默认视频高度（像素），用于 execute() 中的回退值。
 _DEFAULT_HEIGHT: int = 512
-#: 默认推理步数，用于 execute() 中的回退值。
-#: 与 config/inference_config.yaml 中 diffusion.default_steps 保持一致。
-_DEFAULT_STEPS: int = 30
 #: 默认插帧目标帧率（fps），用于 execute() 中的回退值。
 _DEFAULT_TARGET_FPS: int = 60
 
@@ -250,7 +249,7 @@ class VideoTxt2VidNode(BaseNode):
         _h = _coerce_int(inputs.get("height"))
         height = _h if _h is not None else _DEFAULT_HEIGHT
         steps = inputs.get("steps")
-        steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
+        steps = steps if isinstance(steps, int) and steps > 0 else DIFFUSION_STEPS
         seed = inputs.get("seed")
         seed = seed if isinstance(seed, int) else 0
         model = ctx.config.get("default_video_model")

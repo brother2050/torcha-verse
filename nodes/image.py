@@ -31,6 +31,8 @@ from typing import Any, Dict, List, Optional
 
 from assets.base import AssetRef
 
+from infrastructure.defaults import DIFFUSION_STEPS
+
 from .base import BaseNode, NodeContext, NodeSpec, register_node
 from ._helpers import (
     _MEGAPIXEL_PIXELS,
@@ -66,9 +68,6 @@ _IMAGE_MODEL_VRAM_GB: float = 4.0
 _DEFAULT_WIDTH: int = 512
 #: 默认图像高度（像素），用于 execute() 中的回退值。
 _DEFAULT_HEIGHT: int = 512
-#: 默认推理步数，用于 execute() 中的回退值。
-#: 与 config/inference_config.yaml 中 diffusion.default_steps 保持一致。
-_DEFAULT_STEPS: int = 30
 #: 默认 img2img 重绘强度，用于 execute() 中的回退值。
 _DEFAULT_STRENGTH: float = 0.75
 #: 默认放大倍数，用于 execute() 中的回退值。
@@ -240,7 +239,7 @@ class ImageTxt2ImgNode(BaseNode):
         _h = _coerce_dim(inputs.get("height"))
         height = _h if _h is not None else _DEFAULT_HEIGHT
         steps = inputs.get("steps")
-        steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
+        steps = steps if isinstance(steps, int) and steps > 0 else DIFFUSION_STEPS
         seed = inputs.get("seed")
         seed = seed if isinstance(seed, int) else 0
         model = ctx.config.get("default_image_model")
@@ -437,7 +436,7 @@ class ImageImg2ImgNode(BaseNode):
         _h = _coerce_dim(inputs.get("height"))
         height = _h if _h is not None else _DEFAULT_HEIGHT
         steps = inputs.get("steps")
-        steps = steps if isinstance(steps, int) and steps > 0 else _DEFAULT_STEPS
+        steps = steps if isinstance(steps, int) and steps > 0 else DIFFUSION_STEPS
         strength = inputs.get("strength")
         strength = (
             float(strength) if isinstance(strength, (int, float)) else _DEFAULT_STRENGTH

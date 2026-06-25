@@ -39,6 +39,11 @@ from typing import Any, Callable, Dict, List, Optional, Type
 import torch
 
 from core.module_bus import ModuleBus
+from infrastructure.defaults import (
+    DIFFUSION_ETA,
+    DIFFUSION_GUIDANCE_SCALE,
+    DIFFUSION_STEPS,
+)
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
 
@@ -58,16 +63,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Module-level constants (no hard-coded magic numbers inside functions)
 # ---------------------------------------------------------------------------
-#: Default number of denoising steps when :attr:`SamplerConfig.steps` is unset.
-#: 与 config/inference_config.yaml 中 diffusion.default_steps 保持一致。
-_DEFAULT_STEPS: int = 30
-
-#: Default classifier-free guidance scale (``1.0`` = no guidance).
-_DEFAULT_GUIDANCE_SCALE: float = 7.5
-
-#: Default DDIM stochasticity parameter (``0`` = deterministic).
-_DEFAULT_ETA: float = 0.0
-
 #: Numerical-stability epsilon for division / variance clamping.
 _EPSILON: float = 1e-8
 
@@ -108,11 +103,11 @@ class SamplerConfig:
             DDPM-level stochasticity.
     """
 
-    steps: int = _DEFAULT_STEPS
-    guidance_scale: float = _DEFAULT_GUIDANCE_SCALE
+    steps: int = DIFFUSION_STEPS
+    guidance_scale: float = DIFFUSION_GUIDANCE_SCALE
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
-    eta: float = _DEFAULT_ETA
+    eta: float = DIFFUSION_ETA
 
     def __post_init__(self) -> None:
         """Validate configuration fields after dataclass init."""
