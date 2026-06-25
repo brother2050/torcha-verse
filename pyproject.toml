@@ -60,6 +60,7 @@ filterwarnings = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests that require a GPU (deselect with '-m \"not gpu\"')",
+    "eval: marks evaluation tests (FID / CLIP-score / PSNR / SSIM / LPIPS)",
 ]
 
 # ---------------------------------------------------------------------------

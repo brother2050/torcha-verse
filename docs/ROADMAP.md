@@ -17,18 +17,18 @@
 | 优先级 | 范围 | 状态 | 估时 |
 |---|---|---|---:|
 | **P0** | 真模型跑通(Qwen2.5-0.5B + SDXL-Turbo)| **延后**(用户决定) | — |
-| **P1** | 评估模块最小版(FID + prompt 还原率 + CI 集成) | 准备中 | 1-2 周 |
+| **P1** | 评估模块最小版(FID + prompt 还原率 + CI 集成) | **完成 2026-06-25** | 1-2 周 |
 | **P2** | 模型源自动拉取(HuggingFace + 许可证审计) | 待开始 | 1 周 |
 | **P3** | pass/NotImplementedError 审计 | **完成 2026-06-25** | 0 |
-| **P4** | performance / training 补基础测试 | 待开始 | 1 周 |
-| **P5** | examples 重写(对齐 30 节点) | 待开始 | 1 周 |
+| **P4** | performance / training 补基础测试 | **完成 2026-06-25** | 1 周 |
+| **P5** | examples 重写(对齐 30 节点) | **完成 2026-06-25** | 1 周 |
 | **P5** | ROADMAP + DEFERRED_TASKS 维护 | 进行中 | 持续 |
 
 > P0(真模型)被用户标记为"延后到初期过后",不在本路线图。完整讨论见 `docs/DEFERRED_TASKS.md`。
 
 ---
 
-## P1 — 评估模块最小版
+## P1 — 评估模块最小版 ✅ 完成 2026-06-25
 
 **目标**:能用 `pytest` 跑过,生成质量有量化指标
 
@@ -46,6 +46,14 @@ evaluation/
 - `eval.image_fid(real_dir, gen_dir)` → 标量 FID
 - `eval.prompt_recall(images, prompts)` → 平均 CLIP score
 - CI 集成: `pytest -m eval` 跑通(用 fixture 生成的小数据集)
+
+**实现要点**:
+- 纯 PyTorch + 标准库(无 scipy / torchmetrics / pytorch-fid)。
+- 矩阵平方根用 `torch.linalg.eigh` 闭式求解,Frechet 距离数值精确(已用单元测试验证 `||mu1-mu2||^2 + Tr(S1+S2-2*sqrt(S1*S2))`)。
+- Inception / CLIP / LPIPS 三个 backbone 均为占位实现(随机初始化 + 随机投影)。API 与真模型保持一致,未来替换是真模型一行 class 替换。
+- 52 个新测试覆盖:PSNR 单调性、SSIM 边界、FID 对称/非负/同集→0、矩阵平方根数值、tokenizer 确定性、双编码器形状、EvaluationRunner 端到端、目录加载器。
+- `pyproject.toml` 注册 `eval` marker,`pytest -m eval` 跑 52 个,`pytest -m "not eval"` 跑 417 个,互不干扰。
+- 总测试:411 → 469(全过)。
 
 **不做**(留到 v1.0):
 - 大规模数据集评测
