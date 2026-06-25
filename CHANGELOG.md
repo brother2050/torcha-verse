@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+## [v0.5.2] - 2026-06-25
+
+### D-补丁: 1 个 fp16 matmul 测试在 CPU 缺 kernel 时自动 skip (纯测试工程,不动产品代码)
+
+v0.5.1 release 后, `tests/test_performance_quantization.py`
+里的 `test_fp16_changes_dtype` 在沙盒 CPU 环境下 fail
+(`addmm_impl_cpu_` not implemented for 'Half') — 这是
+PyTorch 公开 CPU wheel 的**故意设计**: fp16 matmul kernel 在
+CPU 上缺,只有 CUDA 上的 `addmm_impl_cuda` for Half 一直有。
+
+CPU 仅供本地开发, 生产目标是 GPU / CUDA, 修法:
+
+- 决定: 生产目标是 GPU, CPU 只是开发环境
+- 改动: 加 `_has_fp16_matmul()` 探针 + `@requires_fp16_matmul`
+  skipif 装饰器, 把 fp16 测试在缺 kernel 时自动 skip (reason
+  明确指出"生产目标 GPU")
+- 不改: `performance/quantization.py` 任何一行, 产品的 fp16
+  路径在 GPU 上完整可用, 沙盒里只是测不到
+- 顺带: `bf16_changes_dtype` 测试**不**装饰, 因为 CPU mkl+oneDNN
+  wheel 跑 bf16 matmul 是通的, 不需要 skip
+
 ## [v0.5.1] - 2026-06-25
 
 ### D-补丁: 撤掉 prometheus_client swap-in (回退到 v0.4.3 之前的纯 stdlib 路径)

@@ -3,6 +3,20 @@
 The 1549-line package had zero test coverage.  These tests focus on the
 public API contract: method dispatch, output dtype / shape preservation,
 and memory-saving estimation.  They do not depend on ``bitsandbytes``.
+
+Hardware note
+-------------
+
+These tests are calibrated for **GPU / CUDA** deployments -- the
+production target of the framework.  fp16 matmul is the canonical
+case (CUDA ships ``addmm_impl_cuda`` for Half), and bf16 matmul
+also runs on CUDA.  Some tests *also* work on CPU builds that
+include mkl + oneDNN, but the fp16 path explicitly skips when the
+local wheel cannot execute an fp16 matmul (``addmm_impl_cpu_`` is
+absent from the public PyTorch CPU build by design; see
+https://pytorch.org/docs/stable/notes/cpu.html).  This keeps the
+smoke tests usable in both the production GPU environment and the
+local CPU dev environment.
 """
 from __future__ import annotations
 
@@ -15,6 +29,42 @@ from performance.quantization import (
     QuantizationConfig,
     QuantizedModel,
     Quantizer,
+)
+
+
+# ---------------------------------------------------------------------------
+# Hardware probes
+# ---------------------------------------------------------------------------
+def _has_fp16_matmul() -> bool:
+    """Return True if the current torch build can run a fp16 matmul.
+
+    The production target is GPU / CUDA where ``addmm_impl_cuda``
+    is always present for Half.  CPU builds (mkl + oneDNN) ship
+    bf16 matmul but **not** fp16 matmul -- the public PyTorch CPU
+    wheel intentionally omits the Half kernel.
+
+    We probe by trying a small matmul in a try/except; that's
+    robust against every torch build variant and any future
+    back-end that may or may not add CPU fp16 matmul.
+    """
+    try:
+        m = nn.Linear(4, 4).half()
+        m(torch.randn(2, 4, dtype=torch.float16))
+    except (RuntimeError, NotImplementedError):
+        return False
+    return True
+
+
+# Pytest skip markers tied to the probe.  ``fp16_matmul`` skips a
+# test when the local wheel cannot run fp16 matmul; on the
+# production GPU this is a no-op.
+requires_fp16_matmul = pytest.mark.skipif(
+    not _has_fp16_matmul(),
+    reason=(
+        "fp16 matmul unavailable on this torch build "
+        "(production target is GPU / CUDA which always ships "
+        "`addmm_impl_cuda` for Half)"
+    ),
 )
 
 
@@ -40,6 +90,7 @@ class TestQuantizationConfig:
 # Quantizer
 # ---------------------------------------------------------------------------
 class TestQuantizer:
+    @requires_fp16_matmul
     def test_fp16_changes_dtype(self) -> None:
         model = nn.Linear(4, 4).half()  # caller must pre-cast the input
         q = Quantizer()
