@@ -27,3 +27,4 @@
 ### 文档
 - 重写 `README.md`,对齐新结构与新流水线示例。
 - `docs/architecture.md` / `docs/operations.md` 同步精简,移除历史叙事。
+- 新增 `docs/DEFERRED_TASKS.md`,登记开发初期延后处理的任务(当前条目:hardcoding 规约化)。
