@@ -3,14 +3,14 @@
 # =============================================================================
 # Used by `scripts/check_hardcoding.py --whitelist config/hardcoded_whitelist.yaml`.
 #
-# Each entry under `exemptions` suppresses matching violations. A violation
-# is exempt when ALL of its specified fields match; omitted fields match
-# anything.
+# Each entry under `exemptions` suppresses (or downgrades) matching
+# violations. A violation matches when ALL of its specified fields match;
+# omitted fields match anything.
 #
-# Fields:
+# Fields (D1 v0.4.x extension):
 #   file:             glob pattern matched against the violation's relative
 #                     path. Examples: "core/model_registry.py", "core/*.py".
-#   type:             violation type to exempt. One of:
+#   type:             violation type. One of:
 #                       - string_literal
 #                       - numeric_literal
 #                       - path_literal
@@ -19,14 +19,522 @@
 #   line:             (optional) exact line number to exempt.
 #   content_contains: (optional) substring that must appear in the
 #                     violation content (matched case-sensitively).
+#   severity:         (optional) downgrade matching violation to this level
+#                     ("info" / "warn" / "critical"). The violation is still
+#                     reported at the new level.
+#   protocol_format:  (optional, boolean) mark as protocol/format identifier
+#                     (see docs/hardcoding_convention.md section 1.3). Sets
+#                     severity to "info" implicitly.
+#   reason:           (optional) human-readable rationale. Strongly
+#                     recommended for all terminal exemptions.
 #
-# Example (uncomment to use):
+# Reference: docs/hardcoding_convention.md (D1).
 #
-# exemptions:
-#   - file: "core/model_registry.py"
-#     type: "string_literal"
-#   - file: "scripts/check_hardcoding.py"
-#     type: "all"
+# A non-terminal exemption (with `severity` or `protocol_format: true`) only
+# downgrades the severity; a terminal exemption removes the violation
+# entirely.  Use non-terminal exemptions whenever possible -- they keep
+# the violation visible for future audits.
 # =============================================================================
 
-exemptions: []
+exemptions:
+  # ----------------------------------------------------------------
+  # Group 1: 训练超参 (training hyperparams) — structural / info
+  # ----------------------------------------------------------------
+  # SFT trainer 默认值 (lr / epochs / batch / seed)。这些是作者层维护
+  # 的训练默认值,用户应当通过 config/inference_config.yaml 覆盖,而
+  # 不是改源码。把它们降级为 info,允许在源码中保留(作为参考值)。
+  - file: "training/sft_trainer.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "SFT 训练超参 (lr/epochs/batch/seed), 默认值"
+
+  - file: "training/rlhf_trainer.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "RLHF 训练超参 (kl_coef/clip_range/gamma/lam), 默认值"
+
+  - file: "training/synthetic_data.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "Synthetic data 生成超参 (num_samples/temperature), 默认值"
+
+  - file: "training/dataset.py"
+    type: "numeric_literal"
+    severity: "info"
+    reason: "Dataset 默认 max_length (512/256), 默认值"
+
+  # ----------------------------------------------------------------
+  # Group 2: 协议/格式标识 (protocol/format identifiers) — protocol_format
+  # ----------------------------------------------------------------
+  # SFT trainer 中引用 PEFT/HuggingFace 约定的参数名 (LayerNorm.weight /
+  # norm.weight / embed_tokens / final_layer_norm / transformer.ln_f),
+  # 这些是协议绑定,改了就坏。
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "LayerNorm.weight"
+    reason: "PEFT/transformers 约定的 LayerNorm 参数名, 协议绑定"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "norm.weight"
+    reason: "PEFT/transformers 约定的 norm 参数名前缀, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "final_layer_norm"
+    reason: "transformers 约定的 final layer norm 参数名"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "embed_tokens"
+    reason: "transformers 约定的 embedding 参数名"
+
+  # ----------------------------------------------------------------
+  # Group 3: Agent 内部 state 标识 — protocol_format
+  # ----------------------------------------------------------------
+  # Base agent / React agent / reAct 协议约定的 state 名称
+  # (observation / ShortTermMemory / LongTermMemory 等), 改了
+  # 就破坏 reAct 协议。
+  - file: "agents/base_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "observation"
+    reason: "reAct 协议约定的 observation 状态名"
+
+  - file: "agents/base_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "ShortTermMemory"
+    reason: "agent 内部 state slot 名, 协议绑定"
+
+  - file: "agents/base_agent.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "LongTermMemory"
+    reason: "agent 内部 state slot 名, 协议绑定"
+
+  # ----------------------------------------------------------------
+  # Group 4: Training metric / loss 键名 — protocol_format
+  # ----------------------------------------------------------------
+  # 训练 metrics 字典的 key (policy_loss / kl_divergence / global_steps /
+  # chosen_input_ids / etc.) — 这些是约定给外部监控 / checkpoint loader
+  # 用的, 改了不工作。
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "policy_loss"
+    reason: "RLHF 训练 metric key, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "kl_divergence"
+    reason: "RLHF 训练 metric key, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "global_steps"
+    reason: "训练进度 metric key, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "chosen_input_ids"
+    reason: "RLHF 训练 batch field 名, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "rejected_input_ids"
+    reason: "RLHF 训练 batch field 名, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "attention_mask"
+    reason: "transformers 约定的 attention mask field 名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "attention_mask"
+    reason: "transformers 约定的 attention mask field 名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "target_modules"
+    reason: "PEFT/LoRA 约定的 target_modules field 名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "weight_decay"
+    reason: "transformers Trainer 约定的 weight_decay 字段名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "learning_rate"
+    reason: "transformers Trainer 约定的 learning_rate 字段名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "max_grad_norm"
+    reason: "transformers Trainer 约定的 max_grad_norm 字段名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "warmup_steps"
+    reason: "transformers Trainer 约定的 warmup_steps 字段名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "logging.log_steps"
+    reason: "transformers Trainer 约定的 logging.log_steps 配置键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "save_total_limit"
+    reason: "transformers Trainer 约定的 save_total_limit 配置键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "lr_scheduler"
+    reason: "transformers Trainer 约定的 lr_scheduler 配置键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "lr_scheduler_type"
+    reason: "transformers Trainer 约定的 lr_scheduler_type 配置键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "mixed_precision"
+    reason: "transformers Trainer 约定的 mixed_precision 配置键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "cosine_with_restarts"
+    reason: "transformers Trainer 约定的 lr_scheduler_type 枚举值"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "num_workers"
+    reason: "transformers Trainer 约定的 DataLoader num_workers 字段名"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "global_step"
+    reason: "transformers Trainer 约定的 global_step 状态键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "best_eval_loss"
+    reason: "transformers Trainer 约定的 best_eval_loss 状态键"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "eval_accuracy"
+    reason: "transformers Trainer 约定的 eval metric key"
+
+  - file: "training/sft_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "gradient_accumulation_steps"
+    reason: "transformers Trainer 约定的 gradient_accumulation_steps 字段名"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "gradient_accumulation_steps"
+    reason: "transformers Trainer 约定的 gradient_accumulation_steps 字段名"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "chosen_attention_mask"
+    reason: "RLHF 训练 batch field 名, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "rejected_attention_mask"
+    reason: "RLHF 训练 batch field 名, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "preference_accuracy"
+    reason: "RLHF 训练 metric key, 协议绑定"
+
+  - file: "training/rlhf_trainer.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "hidden_size"
+    reason: "transformers 约定 model config field 名"
+
+  # ----------------------------------------------------------------
+  # Group 5: Synthetic data prompt 模板 — protocol_format
+  # ----------------------------------------------------------------
+  # synthetic_data.py 中的 instruction 模板是 LLM prompt 的固定部分,
+  # 改了 model 行为就变了,但**不是**协议(属于模板,可改但需 review)。
+  # 暂作 info, 后续若用户报"prompt template 漂移"问题再升级 critical。
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "You are a helpful assistant"
+    reason: "synthetic data prompt template, 协议性文案"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "You are an expert assistant"
+    reason: "synthetic data prompt template, 协议性文案"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "[ASSISTANT]"
+    reason: "synthetic data 多轮对话分隔符"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Generate a natural opening question"
+    reason: "synthetic data prompt 指令, 协议性文案"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Can you tell me about"
+    reason: "synthetic data prompt 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Can you elaborate on that"
+    reason: "synthetic data follow-up 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Answer briefly"
+    reason: "synthetic data prompt 指令"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Given this conversation so far"
+    reason: "synthetic data 多轮对话 prompt 指令"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Generate a natural follow-up"
+    reason: "synthetic data 多轮对话 prompt 指令"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Explain the key concepts"
+    reason: "synthetic data instruction 模板 (8 templates)"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "What are the main applications"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Describe a common challenge"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Compare and contrast"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Provide a step-by-step"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "best practices"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "current state of research"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "in a real-world scenario"
+    reason: "synthetic data instruction 模板"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "^(?:\\\\d"
+    reason: "synthetic data instruction regex 解析器"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "[^a-z0-9"
+    reason: "synthetic data text cleaning regex"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "JSONL file not found"
+    reason: "synthetic data 错误消息, 协议性文案"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "instruction"
+    reason: "synthetic data dict key, 协议绑定"
+
+  - file: "training/synthetic_data.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "quality_diff"
+    reason: "synthetic data output key, 协议绑定"
+
+  - file: "training/synthetic_data.py"
+    type: "list_literal"
+    protocol_format: true
+    reason: "synthetic data instruction 模板列表, 协议性结构"
+
+  # ----------------------------------------------------------------
+  # Group 6: Dataset field 名 / 错误消息 — protocol_format
+  # ----------------------------------------------------------------
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "pad_token_id"
+    reason: "tokenizer 协议字段名"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "bos_token_id"
+    reason: "tokenizer 协议字段名"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "eos_token_id"
+    reason: "tokenizer 协议字段名"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "attention_mask"
+    reason: "transformers 约定的 attention mask field 名"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Subclasses must implement"
+    reason: "BaseDataset.__getitem__/_load 协议性错误消息"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "Data file not found"
+    reason: "Dataset 错误消息, 协议性文案"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "conversations"
+    reason: "ChatDataset 协议字段名 (ShareGPT 格式)"
+
+  - file: "training/dataset.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "[ASSISTANT]"
+    reason: "ChatDataset 多轮对话分隔符"
+
+  # ----------------------------------------------------------------
+  # Group 7: torcha-verse 顶层 __init__.py — structural
+  # ----------------------------------------------------------------
+  # 顶层 __init__.py 中的 import-name 字符串 (ConfigCenter / DeviceManager /
+  # AuditLogger / ResourceBudget / BudgetTracker / CharacterAsset /
+  # register_module) 是 re-export 字符串, 改了 __init__ 的 public API 就坏。
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "ConfigCenter"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "DeviceManager"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "AuditLogger"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "ResourceBudget"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "BudgetTracker"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "CharacterAsset"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "register_module"
+    reason: "顶层 re-export 名, 协议绑定"
+
+  - file: "torcha-verse/__init__.py"
+    type: "string_literal"
+    protocol_format: true
+    content_contains: "has no attribute"
+    reason: "Python import error message, 协议性文案"

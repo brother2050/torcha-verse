@@ -7,22 +7,38 @@
 
 ## D1 — Hardcoding 规约化与扫描器校准
 
-**现状**
-- `scripts/check_hardcoding.py` 扫出 **3209** 条违规(2693 string + 398 numeric + 64 path + 54 list)。
-- 分布在 `models/`、`core/`、`infrastructure/`、`training/`、`nodes/` 等多个子包。
+**状态**:✅ **阶段一完成 2026-06-25**。规约文档 + scanner severity 分级 + 首批
+~90 条 exemption 已落地;剩余 D1 阶段二(把 critical 3352 进一步人工分批
+落 exemption + 写 `docs/config_access.md`)待启动。
 
-**为什么延后**
-- 误报率高:模型结构超参(`d_model=768`、`num_layers=12`、LoRA `r=16` 等)不是"用户可调配置",不应被规约。
-- 收益低:单纯把 `r=16` 提成 `cfg.lora.r` 不带来功能价值,反而扩大配置面。
-- 需要先有边界:没有"什么算配置、什么算结构超参"的统一规约,扫描器无法稳定运行。
+**已完成的阶段一(2026-06-25)**
+- `docs/hardcoding_convention.md` 落地,定义 3 类常量边界 (RUNTIME_CONFIG /
+  MODEL_STRUCTURAL / PROTOCOL_FORMAT) + 3 档 severity (critical / warn / info)。
+- `scripts/check_hardcoding.py` 重写,加 `Violation.severity` /
+  `Exemption.severity` / `Exemption.protocol_format` 字段;新增
+  `--severity` 与 `--export` CLI 选项;新增 `is_structural_init` 与
+  `_is_runtime_attr` 启发式自动降级。
+- `config/hardcoded_whitelist.yaml` 填实 ~90 条 exemption
+  (training 训练超参 / 协议字段名 / 顶层 re-export 字符串), 示范规约
+  实际可用。
+- `config/hardcoding_critical_inventory.yaml` 生成 3420 unique critical
+  entries 基线 (供 PR review 参考, 不直接喂给 --whitelist)。
+- 33 个新测试, 总测试数 581 → 614 (全过, 46.53s)。
+- Scanner 升级后分级: 3740 total → critical 3352, info 438
+  (98 条被 whitelist 进一步降级)。
+
+**D1 阶段二待做的事** (重启条件)
+1. 把 critical 3352 中明显是协议/格式的 (例如 JSON 协议字段、SQL 关键字、
+   编译器字面量) 继续人工分批落 exemption。每周一次 PR 节奏, 每次 ≤ 200 条。
+2. scanner 增 "log message" 启发式: `logger.info("...")` 的 format string
+   应当 info (而不是 critical)。
+3. 写 `docs/config_access.md` 用户文档 (ConfigCenter / defaults API), 让
+   "规约里引用的 API" 真的可查。
 
 **再次启动条件(任一)**
-1. L4 节点层稳定至少 1 个 release(无破坏性接口变更)。
-2. `infrastructure/config_center.py` 与 `infrastructure/defaults.py` 文档化,用户可见。
-3. 准备好投入 ≥ 2 个工作日做"分类 → 校准 → 灰度"。
-
-**重启时要做的事**
-1. 写规约文档 `docs/hardcoding_convention.md`,明确定义:
+1. weekly PR 节奏稳定(每周一次 D1-exempt PR)。
+2. `infrastructure/config_center.py` 与 `infrastructure/defaults.py` 文档化。
+3. 用户报"CI 误判"案例 ≥ 1 个 → 修启发式或加 exemption。
    - 哪些常量属于"运行时配置"(提进 YAML / ConfigCenter)
    - 哪些属于"模型结构超参"(保留在源码)
    - 哪些属于"协议/格式标识"(白名单)

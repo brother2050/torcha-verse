@@ -18,6 +18,40 @@
   视觉特征;未安装时回退到项目内的轻量占位特征提取器(随机投影,固定维度)。
 - 评分指标与 `ConsistencyScore` 数据结构保持不变,接口兼容现有调用方。
 
+### Hardcoding 规约化（D1）
+- 新建 `docs/hardcoding_convention.md` — v0.4.x D1 根规约,3 类常量边界:
+  * 运行时配置 (RUNTIME_CONFIG, `critical`) — 业务可调,必须走 ConfigCenter
+  * 模型结构超参 (MODEL_STRUCTURAL, `info`) — 改了就坏,保留源码
+  * 协议/格式标识 (PROTOCOL_FORMAT, `info`) — 与外部协议绑定,改了就坏
+- 增强 `scripts/check_hardcoding.py`:
+  * `Violation` 加 `severity` 字段 (默认 `critical`)
+  * `Exemption` 加 `severity` 字段 + `protocol_format: true` 字段 (非 terminal 降级)
+  * `--severity` CLI 选项: `critical` / `warn` / `info` 三档过滤
+  * `--export <path>` 选项: 导出 critical 名单 (whitelist-schema 兼容 YAML)
+  * `is_structural_init` 启发式: `models/` 路径下 `__init__` 中值在 [2, 10000]
+    的整数自动降为 `info`
+  * `_is_runtime_attr` 启发式: `os.environ[...]` / `Path(...)` / `sys.argv[...]`
+    表达式中的字面量自动降为 `info`
+  * `filter_by_severity()` 函数: 阈值过滤
+  * `export_critical()` 函数: 去重导出 (按 file/line/type 唯一化)
+- 新建 `config/hardcoding_critical_inventory.yaml` — 全项目 critical 3420
+  unique entries 基线 (供 PR review 参考, **不**直接喂给 --whitelist)
+- 填实 `config/hardcoded_whitelist.yaml` — 首批 ~90 条 exemption 示范:
+  * 7 个 training 训练超参 group (SFT/RLHF/Synthetic/Dataset numeric) → `info`
+  * 协议/格式 (LayerNorm.weight / attention_mask / observation /
+    ShortTermMemory / synthetic prompt 模板) → `protocol_format: true`
+  * torcha-verse 顶层 re-export 字符串 (ConfigCenter / DeviceManager / ...) → 协议绑定
+- 33 个新测试覆盖: Violation 默认值 / Exemption.matches/apply/is_terminal /
+  filter_by_severity 阈值 / scanner 启发式 (`is_structural_init` /
+  `_is_runtime_attr` 各 2-3 个分支) / whitelist YAML 加载 / 非法 severity 拒收 /
+  export_critical 去重与 critical 过滤 / **端到端** (真实 whitelist 真的降级
+  命中)。
+- `pyproject.toml` 注册 `hardcoding_severity` marker。
+- 总测试数: 581 → 614 (全过, 46.53s)。
+- Scanner 升级后分级效果: 3740 total → critical 3352, info 438。
+- 顺手修正: `placeholder_registry.md` 中 `scripts/check_hardcoding.py`
+  位置 (行号 338 → 526 因 scanner 重写), 仍 47 entries 全部注册。
+
 ### Placeholder Registry（D3 工作流集中化阶段）
 - 新建 `docs/placeholder_registry.md` 作为**占位单一来源**（single source of truth）:
   47 处 `pass` / `NotImplementedError` 全部按 5 类（`protocol` / `tp_pp` /

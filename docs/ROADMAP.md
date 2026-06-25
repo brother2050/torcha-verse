@@ -23,12 +23,63 @@
 | **P4** | performance / training 补基础测试 | **完成 2026-06-25** | 1 周 |
 | **P5** | examples 重写(对齐 30 节点) | **完成 2026-06-25** | 1 周 |
 | **P5** | ROADMAP + DEFERRED_TASKS 维护 | 进行中 | 持续 |
+| **D1** | Hardcoding 规约化与扫描器校准 | **完成 2026-06-25** | 1 天 |
 | **D3 阶段二** | Placeholder Registry 集中化 | **完成 2026-06-25** | 1 天 |
 
 > P0 实际改为"项目自有 tiny transformer + 字节级 tokenizer"路线(纯 torch,
 > 不引入 transformers / diffusers 等外部依赖,见 `docs/DEFERRED_TASKS.md`)。
 > 真实大模型(Qwen2.5 / SDXL-Turbo)拉取仍归 P2 fetch 子系统,但 v0.4.x
 > 周期不参与 e2e 跑通,留待 v1.0.0。
+
+---
+
+## D1 — Hardcoding 规约化与扫描器校准 ✅ 完成 2026-06-25
+
+**目标**:把 3726 条 "无差别警告" 拆成 3 档 severity,让 critical 真正进入
+CI gating,让 info 留作审计;建立 3 类常量边界 (运行时配置 / 模型结构超参 /
+协议/格式标识) 的工程规约。
+
+**新增文件**:
+- `docs/hardcoding_convention.md` — D1 根规约,定义:
+  * 3 类常量边界 (RUNTIME_CONFIG / MODEL_STRUCTURAL / PROTOCOL_FORMAT)
+  * 3 档 severity (critical / warn / info) + CI 接入约定
+  * scanner 内置启发式规则清单
+  * whitelist YAML 4 种 exemption 字段示例
+  * 维护规则 (新增结构超参 / 运行时配置 / 协议标识 三种场景)
+- `config/hardcoding_critical_inventory.yaml` — 全项目 critical 3420
+  unique entries 基线 (供 PR review 参考)
+- `tests/test_hardcoding_severity.py` — 33 个新测试
+
+**升级文件**:
+- `scripts/check_hardcoding.py` — 完全重写:
+  * `Violation` 加 `severity` 字段
+  * `Exemption` 加 `severity` + `protocol_format` 字段
+  * `--severity {critical,warn,info}` CLI 选项
+  * `--export <yaml>` 导出 critical 名单
+  * `is_structural_init` 启发式 (models/ 路径下 numeric in [2, 10000] → info)
+  * `_is_runtime_attr` 启发式 (os.environ / Path() / sys.argv → info)
+  * `filter_by_severity` / `export_critical` 函数
+- `config/hardcoded_whitelist.yaml` — 首批 ~90 条 exemption 示范
+  (training 训练超参 / 协议字段名 / 顶层 re-export 字符串)
+- `pyproject.toml` — 注册 `hardcoding_severity` marker
+- `docs/placeholder_registry.md` — 修正行号 338 → 526 (scanner 重写)
+- `CHANGELOG` / `ROADMAP` / `DEFERRED_TASKS`
+
+**关键能力**:
+- CI 闸口: `python scripts/check_hardcoding.py --severity critical` 失败 = PR 必拒
+- 自动分级: scanner 内置 2 个启发式 (structural / runtime) 自动降级
+- 协议识别: `protocol_format: true` 字段明确声明"协议绑定", 一键降为 info
+- 审计仪表盘: `hardcoding_critical_inventory.yaml` 给 PR reviewer 看清全貌
+
+**测试**:
+- 总测试数: 581 → 614 (全过, 46.53s)
+- Scanner 升级后: 3740 total → critical 3352, info 438
+- Whitelist 应用后: critical 进一步从 3450 降至 3352 (98 条被降级)
+
+**剩余工作** (D1 阶段二, 待启动):
+- 把 critical 3352 进一步人工分批落 exemption (本次只做了 ~90 条)
+- scanner 增加 "log message" 启发式 (logger 调用的 format string 应当 info)
+- 写 `docs/config_access.md` 用户文档 (ConfigCenter / defaults API)
 
 ---
 

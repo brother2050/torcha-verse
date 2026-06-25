@@ -64,6 +64,7 @@ markers = [
     "model_source: marks model-source tests (license check, cache, fetch)",
     "model_provider: marks local-torch model provider tests (tiny Transformer, training, L4 wiring)",
     "placeholder_registry: marks placeholder-registry scanner / parser tests",
+    "hardcoding_severity: marks hardcoding-scanner severity tests (D1)",
 ]
 
 # ---------------------------------------------------------------------------

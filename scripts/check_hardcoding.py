@@ -27,23 +27,52 @@ Detected patterns
         List literals with more than three elements that appear inside a
         function body.
 
+Severity classification (D1, v0.4.x)
+-----------------------------------
+Every violation is tagged with a ``severity`` of one of:
+
+* ``critical`` -- runtime config that should come from ConfigCenter /
+  defaults.  Default for everything until heuristics apply.  CI
+  ``--severity critical`` will fail on these.
+* ``warn`` -- borderline cases (currently unused; reserved for future
+  rules).
+* ``info`` -- model structural hyperparams, protocol/format identifiers
+  and other legitimate constants.  Reported but not CI-failing.
+
+The mapping is driven by the v0.4.x D1 convention document:
+``docs/hardcoding_convention.md``.
+
+Heuristics that *downgrade* a hit from ``critical`` to ``info``:
+
+* ``is_structural_init`` -- a numeric literal inside ``__init__`` whose
+  value is in [2, 10000] *and* whose file lives under ``models/``.
+  Model layers / attention dims are structural, not user-tunable.
+* ``is_logging_call`` -- already an exclusion from rule #1.
+* ``is_attribute_access`` -- the literal appears inside an
+  ``os.environ[...]`` / ``Path(...).expanduser()`` / ``sys.argv[...]``
+  expression (i.e. it is read at runtime, not hardcoded in the
+  program's logic).
+* Whitelist entries with ``protocol_format: true`` or an explicit
+  ``severity: "info"`` field further downgrade.
+
 Usage
 -----
 ::
 
     python scripts/check_hardcoding.py --path . --format text
     python scripts/check_hardcoding.py --whitelist config/hardcoded_whitelist.yaml
+    python scripts/check_hardcoding.py --severity critical --export config/hardcoding_critical.yaml
+    python scripts/check_hardcoding.py --severity info
 
 Exit codes
----------
-* ``0`` -- no violations found.
-* ``1`` -- one or more violations found.
+----------
+* ``0`` -- no violations at the requested severity (or above).
+* ``1`` -- violations found.
 * ``2`` -- usage / configuration error.
 
 The scanner always emits a report (even when violations are present) so
 it can be wired into CI without masking the underlying issues.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -61,6 +90,10 @@ __all__ = [
     "Exemption",
     "scan_file",
     "scan_directory",
+    "load_whitelist",
+    "format_text",
+    "format_json",
+    "export_critical",
     "main",
 ]
 
@@ -81,6 +114,12 @@ NUMERIC_LITERAL: str = "numeric_literal"
 PATH_LITERAL: str = "path_literal"
 LIST_LITERAL: str = "list_literal"
 
+#: Severity levels.
+SEVERITY_CRITICAL: str = "critical"
+SEVERITY_WARN: str = "warn"
+SEVERITY_INFO: str = "info"
+SEVERITY_ORDER: tuple[str, ...] = (SEVERITY_CRITICAL, SEVERITY_WARN, SEVERITY_INFO)
+
 #: Wildcard tokens accepted in the whitelist ``type`` field.
 _WILDCARD_TYPES: frozenset[str] = frozenset({"*", "all"})
 
@@ -95,6 +134,30 @@ _IMPORT_CALLS: frozenset[str] = frozenset({"import_module", "__import__"})
 
 #: Numeric literals exempt from rule #2 (0, 1, -1 and their float forms).
 _EXEMPT_NUMBERS: frozenset[Any] = frozenset({0, 1, -1, 0.0, 1.0, -1.0})
+
+#: Module-level functions whose call result is "reading from runtime config".
+_RUNTIME_FUNCS: frozenset[str] = frozenset({
+    "getenv", "environ", "expanduser", "expandvars", "getenv",
+    "getattr", "argv",
+})
+
+#: Path-like attribute accessors that signal "this string is just a path
+#: prefix, not a hardcoded value".
+_PATH_ATTRS: frozenset[str] = frozenset({
+    "expanduser", "expandvars", "resolve", "absolute", "parent", "joinpath",
+})
+
+#: Top-level package prefixes that the ``is_structural_init`` heuristic
+#: considers to be "model definitions" -- numeric literals in their
+#: ``__init__`` methods are tagged as ``info`` (structural) instead of
+#: ``critical`` (runtime config).
+_STRUCTURAL_PACKAGES: tuple[str, ...] = ("models/",)
+
+#: Numeric range for the ``is_structural_init`` heuristic.  Values
+#: outside this range are *not* considered structural (e.g. ``1e6`` is
+#: almost always a config knob like ``max_seq_len``).
+_STRUCTURAL_MIN: int = 2
+_STRUCTURAL_MAX: int = 10000
 
 #: Directory names that are never scanned.
 _EXCLUDE_DIRS: frozenset[str] = frozenset({
@@ -133,6 +196,8 @@ class Violation:
         type: Violation type identifier (one of the ``*_LITERAL``
             constants).
         content: A short textual representation of the offending value.
+        severity: ``critical`` / ``warn`` / ``info`` -- the v0.4.x D1
+            extension; see :doc:`/docs/hardcoding_convention`.
     """
 
     file: str
@@ -140,6 +205,7 @@ class Violation:
     col: int
     type: str
     content: str
+    severity: str = SEVERITY_CRITICAL
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable representation."""
@@ -149,6 +215,7 @@ class Violation:
             "column": self.col,
             "type": self.type,
             "content": self.content,
+            "severity": self.severity,
         }
 
 
@@ -166,15 +233,32 @@ class Exemption:
         line: Exact line number to exempt, or ``None`` for any line.
         content_contains: Substring that must appear in the violation
             content, or ``None`` to ignore content.
+        severity: When the exemption matches, downgrade the violation's
+            severity to this level.  ``None`` keeps the original.
+        protocol_format: When ``True``, mark the violation as
+            ``severity=info`` (protocol-bound literal, see D1
+            convention section 1.3).
+        reason: Optional human-readable rationale, persisted in
+            exports.
     """
 
     file: str
     type: str = "*"
     line: Optional[int] = None
     content_contains: Optional[str] = None
+    severity: Optional[str] = None
+    protocol_format: bool = False
+    reason: Optional[str] = None
 
     def matches(self, violation: Violation) -> bool:
-        """Return ``True`` if this exemption covers ``violation``."""
+        """Return ``True`` if this exemption covers ``violation``.
+
+        When ``protocol_format`` is set, the matching violation's
+        ``severity`` is *downgraded* to ``info`` but the violation is
+        still returned (for audit).  When ``severity`` is set on the
+        exemption, the matching violation's severity is set to that
+        level.
+        """
         if not fnmatch.fnmatch(violation.file, self.file):
             return False
         if self.type not in _WILDCARD_TYPES and violation.type != self.type:
@@ -184,6 +268,32 @@ class Exemption:
         if self.content_contains is not None and self.content_contains not in violation.content:
             return False
         return True
+
+    def apply(self, violation: Violation) -> bool:
+        """Try to apply this exemption to ``violation``.
+
+        Returns ``True`` if the exemption matched (whether or not it
+        actually changed the violation -- ``protocol_format: true``
+        exemptions still let the violation through, just with
+        ``severity=info``).  Returns ``False`` if the exemption does
+        not match.
+        """
+        if not self.matches(violation):
+            return False
+        if self.protocol_format:
+            violation.severity = SEVERITY_INFO
+        if self.severity is not None:
+            violation.severity = self.severity
+        return True
+
+    def is_terminal(self) -> bool:
+        """``True`` when the exemption fully *removes* the violation.
+
+        A non-terminal exemption only downgrades severity.  Terminal
+        exemptions are those that match but do not specify
+        ``protocol_format`` and do not specify ``severity``.
+        """
+        return not (self.protocol_format or self.severity is not None)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +348,73 @@ def _is_import_call(node: ast.Call) -> bool:
     return isinstance(func, ast.Attribute) and func.attr in _IMPORT_CALLS
 
 
+def _is_runtime_attr(node: ast.AST) -> bool:
+    """Return ``True`` if ``node`` reads from a runtime config source.
+
+    Heuristic: the literal appears as an argument to
+    ``os.environ.get`` / ``os.environ[...]`` / ``Path(...).expanduser()`` /
+    ``sys.argv[...]`` and friends.  We treat any such literal as
+    ``info`` -- it's already parameterised by the environment.
+    """
+    parent = getattr(node, "parent", None)
+    if parent is None:
+        return False
+    # os.environ["KEY"] / os.environ.get("KEY")
+    if isinstance(parent, ast.Subscript):
+        value = parent.value
+        if isinstance(value, ast.Attribute) and value.attr == "environ":
+            return True
+    if isinstance(parent, ast.Call):
+        func = parent.func
+        # os.environ.get("KEY", default)
+        if isinstance(func, ast.Attribute) and func.attr in {"get", "getenv"}:
+            if isinstance(func.value, ast.Attribute) and func.value.attr == "environ":
+                return True
+        # Path("x").expanduser() / Path("x").resolve()
+        if isinstance(func, ast.Attribute) and func.attr in _PATH_ATTRS:
+            return True
+        # Path("x") / os.path.join("a", "b") -- the literal is an
+        # argument of a path-constructor call.  We treat the literal
+        # itself as "info" because the surrounding call parameterises
+        # it (e.g. ``Path("~/.cache").expanduser()``).
+        if isinstance(func, (ast.Name, ast.Attribute)):
+            fname = func.id if isinstance(func, ast.Name) else func.attr
+            if fname in {
+                "Path", "PurePath", "fsencode", "fsdecode",
+                "join", "normpath", "abspath", "dirname", "basename",
+            }:
+                return True
+        # sys.argv[idx]
+        if isinstance(func, ast.Subscript):
+            base = func.value
+            if isinstance(base, ast.Attribute) and base.attr == "argv":
+                return True
+    return False
+
+
+def _is_structural_init(relpath: str, value: Any) -> bool:
+    """Return ``True`` if ``value`` looks like a model structural hyperparam.
+
+    The current heuristic is *file-path + value range*:
+
+    * The file lives under one of :data:`_STRUCTURAL_PACKAGES`.
+    * The value is an integer (not bool) in
+      ``[_STRUCTURAL_MIN, _STRUCTURAL_MAX]``.
+
+    This deliberately errs on the side of *under*-tagging: a numeric
+    literal in a model ``__init__`` outside this range (e.g. ``1e6``
+    max-seq-len) keeps its default ``critical`` severity and is
+    surfaced for the developer's attention.
+    """
+    if not any(relpath.startswith(prefix) for prefix in _STRUCTURAL_PACKAGES):
+        return False
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, int):
+        return False
+    return _STRUCTURAL_MIN <= value <= _STRUCTURAL_MAX
+
+
 def _collect_exclusions(tree: ast.AST) -> tuple[set[int], set[int]]:
     """Pre-compute the ids of string constants exempt from rule #1.
 
@@ -281,6 +458,17 @@ def _collect_exclusions(tree: ast.AST) -> tuple[set[int], set[int]]:
                 _collect_str_ids(kw.value, excluded_str_ids)
 
     return docstring_ids, excluded_str_ids
+
+
+def _attach_parents(tree: ast.AST) -> None:
+    """Walk ``tree`` in-place adding ``.parent`` attributes to each node.
+
+    Used by :func:`_is_runtime_attr` so that a string/number constant
+    can ask "am I the argument of an ``os.environ.get`` call?".
+    """
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child.parent = parent  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -357,18 +545,32 @@ class _HardcodingVisitor(ast.NodeVisitor):
             and len(value) > STRING_MIN_LENGTH
             and not is_exempt
         ):
-            self._add(node, STRING_LITERAL, _truncate(repr(value)))
+            severity = SEVERITY_INFO if _is_runtime_attr(node) else SEVERITY_CRITICAL
+            self._add(node, STRING_LITERAL, _truncate(repr(value)), severity=severity)
         # Rule #3: path-like string literal (checked everywhere).
         if not is_exempt and _looks_like_path(value):
-            self._add(node, PATH_LITERAL, _truncate(repr(value)))
+            severity = SEVERITY_INFO if _is_runtime_attr(node) else SEVERITY_CRITICAL
+            self._add(node, PATH_LITERAL, _truncate(repr(value)), severity=severity)
 
     def _check_numeric(self, node: ast.Constant, value: Any) -> None:
         # Rule #2: numeric literal inside __init__ (0, 1, -1 excluded).
         if self.in_init and value not in _EXEMPT_NUMBERS:
-            self._add(node, NUMERIC_LITERAL, repr(value))
+            if _is_structural_init(self.relpath, value):
+                severity = SEVERITY_INFO
+            elif _is_runtime_attr(node):
+                severity = SEVERITY_INFO
+            else:
+                severity = SEVERITY_CRITICAL
+            self._add(node, NUMERIC_LITERAL, repr(value), severity=severity)
 
     # -- bookkeeping -----------------------------------------------------
-    def _add(self, node: ast.AST, vtype: str, content: str) -> None:
+    def _add(
+        self,
+        node: ast.AST,
+        vtype: str,
+        content: str,
+        severity: str = SEVERITY_CRITICAL,
+    ) -> None:
         self.violations.append(
             Violation(
                 file=self.relpath,
@@ -376,6 +578,7 @@ class _HardcodingVisitor(ast.NodeVisitor):
                 col=getattr(node, "col_offset", 0),
                 type=vtype,
                 content=content,
+                severity=severity,
             )
         )
 
@@ -384,11 +587,23 @@ class _HardcodingVisitor(ast.NodeVisitor):
 # File / directory scanning
 # ---------------------------------------------------------------------------
 def _relative_path(path: Path, root: Path) -> str:
-    """Return ``path`` relative to ``root`` as a POSIX-style string."""
+    """Return ``path`` relative to ``root`` as a POSIX-style string.
+
+    When ``path`` is *directly* the scan root (e.g. ``./infrastructure/
+    __init__.py`` is scanned with ``--path .`` and a parent of the file
+    is the same name as the file), the result includes at least one
+    parent directory to disambiguate siblings named ``__init__.py``.
+    """
     try:
-        return path.relative_to(root).as_posix()
+        rel = path.relative_to(root).as_posix()
     except ValueError:
         return path.as_posix()
+    # Disambiguate: if the rel path is just a filename (no slashes),
+    # prefix with the parent's name so two ``__init__.py`` files do
+    # not collide.
+    if "/" not in rel:
+        rel = "{}/{}".format(path.parent.name, rel)
+    return rel
 
 
 def _is_excluded(rel_parts: tuple[str, ...]) -> bool:
@@ -419,6 +634,7 @@ def scan_file(path: Path, root: Path) -> list[Violation]:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError:
         return []
+    _attach_parents(tree)
     relpath = _relative_path(path, root)
     docstring_ids, excluded_str_ids = _collect_exclusions(tree)
     visitor = _HardcodingVisitor(relpath, docstring_ids, excluded_str_ids)
@@ -441,13 +657,18 @@ def scan_directory(
 ) -> list[Violation]:
     """Scan every non-excluded ``.py`` file under ``root``.
 
+    Exemptions are applied in two passes: a *terminal* exemption (one
+    that has no ``protocol_format`` and no ``severity`` field) drops the
+    violation entirely; a *non-terminal* exemption downgrades the
+    severity but keeps the violation visible.
+
     Args:
         root: Directory (or single file) to scan.
-        exemptions: Optional list of :class:`Exemption` objects; matching
-            violations are dropped from the result.
+        exemptions: Optional list of :class:`Exemption` objects.
 
     Returns:
-        A sorted list of :class:`Violation` objects.
+        A sorted list of :class:`Violation` objects (terminal exemptions
+        removed, non-terminal exemptions applied).
     """
     exemptions = exemptions or []
     violations: list[Violation] = []
@@ -459,11 +680,42 @@ def scan_directory(
 
     for path in files:
         for violation in scan_file(path, root if root.is_dir() else root.parent):
-            if not any(exemption.matches(violation) for exemption in exemptions):
+            # Apply every matching exemption; the last one wins.
+            kept = True
+            for exemption in exemptions:
+                if exemption.matches(violation):
+                    if exemption.is_terminal():
+                        kept = False
+                        break
+                    exemption.apply(violation)
+            if kept:
                 violations.append(violation)
 
     violations.sort(key=lambda v: (v.file, v.line, v.col, v.type))
     return violations
+
+
+def filter_by_severity(
+    violations: list[Violation],
+    min_severity: str,
+) -> list[Violation]:
+    """Return violations at ``min_severity`` or *more severe*.
+
+    The severity order is ``critical`` > ``warn`` > ``info``.
+    ``min_severity="critical"`` returns only criticals;
+    ``min_severity="info"`` returns everything.
+    """
+    if min_severity not in SEVERITY_ORDER:
+        raise ValueError(
+            "unknown severity {!r}; expected one of {}".format(
+                min_severity, SEVERITY_ORDER,
+            )
+        )
+    threshold = SEVERITY_ORDER.index(min_severity)
+    return [
+        v for v in violations
+        if SEVERITY_ORDER.index(v.severity) <= threshold
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +731,9 @@ def load_whitelist(path: Path) -> list[Exemption]:
             type: "string_literal"   # or "*" / "all"
             line: 42                  # optional
             content_contains: "..."   # optional
+            severity: "info"          # optional, downgrade to this level
+            protocol_format: true     # optional, mark as protocol/format
+            reason: "..."             # optional, human rationale
 
     Args:
         path: Path to the YAML whitelist file.
@@ -522,12 +777,23 @@ def load_whitelist(path: Path) -> list[Exemption]:
             raise SystemExit(
                 "Exemption #{} in {} is missing required 'file'.".format(index, path)
             )
+        severity = entry.get("severity")
+        if severity is not None and severity not in SEVERITY_ORDER:
+            raise SystemExit(
+                "Exemption #{} in {}: invalid severity {!r} "
+                "(expected one of {})".format(
+                    index, path, severity, SEVERITY_ORDER,
+                )
+            )
         exemptions.append(
             Exemption(
                 file=str(file),
                 type=str(entry.get("type", "*")),
                 line=entry.get("line"),
                 content_contains=entry.get("content_contains"),
+                severity=severity,
+                protocol_format=bool(entry.get("protocol_format", False)),
+                reason=entry.get("reason"),
             )
         )
     return exemptions
@@ -536,10 +802,11 @@ def load_whitelist(path: Path) -> list[Exemption]:
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
-def _count_by_type(violations: list[Violation]) -> dict[str, int]:
+def _count_by(violations: list[Violation], key: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for violation in violations:
-        counts[violation.type] = counts.get(violation.type, 0) + 1
+        value = getattr(violation, key)
+        counts[value] = counts.get(value, 0) + 1
     return counts
 
 
@@ -551,10 +818,11 @@ def format_text(violations: list[Violation]) -> str:
         lines.append("-" * 60)
         for violation in violations:
             lines.append(
-                "{file}:{line}:{col}: {type}: {content}".format(
+                "{file}:{line}:{col}: [{sev}] {type}: {content}".format(
                     file=violation.file,
                     line=violation.line,
                     col=violation.col,
+                    sev=violation.severity,
                     type=violation.type,
                     content=violation.content,
                 )
@@ -562,14 +830,20 @@ def format_text(violations: list[Violation]) -> str:
     else:
         lines.append("No hardcoding violations found.")
     lines.append("-" * 60)
+    by_type = _count_by(violations, "type")
+    by_sev = _count_by(violations, "severity")
     summary = ", ".join(
         "{}={}".format(kind, count)
-        for kind, count in sorted(_count_by_type(violations).items())
+        for kind, count in sorted(by_type.items())
     )
-    lines.append("Summary: {} violation(s){}".format(
-        len(violations),
-        " ({})".format(summary) if summary else "",
-    ))
+    sev_summary = ", ".join(
+        "{}={}".format(s, by_sev.get(s, 0))
+        for s in SEVERITY_ORDER
+    )
+    lines.append("Summary: {} violation(s)".format(len(violations)))
+    if summary:
+        lines.append("  by type:     {}".format(summary))
+    lines.append("  by severity: {}".format(sev_summary))
     return "\n".join(lines)
 
 
@@ -577,10 +851,72 @@ def format_json(violations: list[Violation]) -> str:
     """Render violations as a JSON document."""
     payload = {
         "count": len(violations),
-        "summary": _count_by_type(violations),
+        "summary_by_type": _count_by(violations, "type"),
+        "summary_by_severity": _count_by(violations, "severity"),
         "violations": [violation.as_dict() for violation in violations],
     }
     return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def export_critical(
+    violations: list[Violation],
+    path: Path,
+) -> int:
+    """Write the list of critical violations to a YAML file.
+
+    The exported file follows the whitelist schema (``exemptions: [...]``)
+    so the user can either *add to* it directly or copy entries into
+    ``config/hardcoded_whitelist.yaml``.
+
+    Duplicates (same ``file / line / type / content_contains``) are
+    collapsed to a single entry so the output stays small even for
+    large scans.
+
+    Returns the number of unique entries written.
+    """
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise SystemExit(
+            "PyYAML is required for --export ({}).".format(exc)
+        ) from exc
+    seen: set[tuple[str, int, str, str]] = set()
+    entries: list[dict[str, Any]] = []
+    for v in violations:
+        if v.severity != SEVERITY_CRITICAL:
+            continue
+        # Strip Python repr quoting to expose the literal payload.
+        raw = v.content.strip("'\"")
+        # Use a 30-char "fingerprint" of the literal as the
+        # de-dup anchor.  This collapses long literals (full
+        # sentences) into a stable, short key that is still easy to
+        # grep for in a code review.
+        fingerprint = raw[:30] + ("…" if len(raw) > 30 else "")
+        key = (v.file, v.line, v.type, fingerprint)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: dict[str, Any] = {
+            "file": v.file,
+            "line": v.line,
+            "type": v.type,
+            "severity": "info",
+            "reason": "auto-exported from --severity critical scan",
+        }
+        # ``content_contains`` is a comment for human reviewers; the
+        # actual matcher is ``(file, line, type)``.  We only attach
+        # it when it adds information (e.g. when a file has many
+        # distinct violations on the same line).
+        if fingerprint:
+            entry["content_contains"] = fingerprint
+        entries.append(entry)
+    payload = {"exemptions": entries}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return len(entries)
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +925,10 @@ def format_json(violations: list[Violation]) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="check_hardcoding",
-        description="Scan Python sources for hard-coded values.",
+        description=(
+            "Scan Python sources for hard-coded values.  "
+            "See docs/hardcoding_convention.md for the D1 rules."
+        ),
     )
     parser.add_argument(
         "--path",
@@ -607,6 +946,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default="text",
         help="Output format. Defaults to 'text'.",
     )
+    parser.add_argument(
+        "--severity",
+        choices=SEVERITY_ORDER,
+        default=SEVERITY_INFO,
+        help=(
+            "Minimum severity to report.  'critical' returns only "
+            "runtime-config violations; 'info' returns everything.  "
+            "Default: 'info'."
+        ),
+    )
+    parser.add_argument(
+        "--export",
+        default=None,
+        help=(
+            "If set, write the list of critical violations to this "
+            "YAML file (whitelist-schema compatible)."
+        ),
+    )
     return parser
 
 
@@ -617,8 +974,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         argv: Optional command-line arguments (defaults to ``sys.argv``).
 
     Returns:
-        ``0`` if no violations, ``1`` if violations found, ``2`` on
-        usage error.
+        ``0`` if no violations at the requested severity threshold,
+        ``1`` if violations found, ``2`` on usage error.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -632,19 +989,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.whitelist:
         whitelist_path = Path(args.whitelist).expanduser().resolve()
         if not whitelist_path.exists():
-            sys.stderr.write("Error: whitelist not found: {}\n".format(whitelist_path))
+            sys.stderr.write(
+                "Error: whitelist not found: {}\n".format(whitelist_path)
+            )
             return 2
         exemptions = load_whitelist(whitelist_path)
 
     violations = scan_directory(root, exemptions)
+    filtered = filter_by_severity(violations, args.severity)
+
+    if args.export:
+        export_path = Path(args.export).expanduser().resolve()
+        n = export_critical(violations, export_path)
+        sys.stderr.write(
+            "Wrote {} critical entries to {}\n".format(n, export_path)
+        )
 
     if args.format == "json":
-        sys.stdout.write(format_json(violations) + "\n")
+        sys.stdout.write(format_json(filtered) + "\n")
     else:
-        sys.stdout.write(format_text(violations) + "\n")
+        sys.stdout.write(format_text(filtered) + "\n")
 
-    return 1 if violations else 0
+    return 1 if filtered else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
