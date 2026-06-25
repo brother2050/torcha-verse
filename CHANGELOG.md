@@ -18,6 +18,31 @@
   视觉特征;未安装时回退到项目内的轻量占位特征提取器(随机投影,固定维度)。
 - 评分指标与 `ConsistencyScore` 数据结构保持不变,接口兼容现有调用方。
 
+### 真模型跑通（v0.4.0 路线图 P0）
+- 新建 `models/providers/` 子包，纯 torch 实现项目自有 tiny Transformer LM，
+  不引入 `transformers` / `diffusers` / `safetensors` 等外部依赖：
+  * `tiny_transformer.py` — `TinyTransformerConfig`（`tiny` ~0.3M / `small` ~10M 两个预设）
+    + `ByteTokenizer` 字节级 tokenizer（3 special + 256 bytes + 1 mask = 260 vocab）
+    + `build_tiny_transformer` / `save_tiny_transformer` / `load_tiny_transformer`
+      单文件 `.pt` 持久化，原子写入（tempfile + fsync + os.replace）
+  * `local_text.py` — `LocalTorchTextProvider`（实现 `LLMProvider` 协议），
+    `generate` / `chat` / `complete` 三个推理入口，线程安全
+  * `factory.py` — `fetch_and_load_text` 一行拿到 provider（checkpoint → 随机初始化 fallback），
+    `publish_tiny_transformer` 维护端发布，`get_default_provider` 进程级单例
+  * `pretrain_tiny.py` — `train_tiny_transformer` + CLI
+    (`python -m models.providers.pretrain_tiny --preset small --steps 600`)，
+    AdamW + cosine LR + warmup
+- 新增 `examples/real_text_chat.py`：端到端 demo
+  pretrain → save → load → register_default_text_backend →
+  L4 `text_chat` 节点输出真模型生成文本
+- 37 个新测试覆盖：tokenizer 边界 + round-trip、config presets + dict 序列化、
+  save/load 原子性 + 版本检查 + 严格性、provider 协议契约、
+  factory 分支（resolve / fetch 随机 / fetch checkpoint / 缺文件报错）、
+  pretrain 端到端、L4 集成（`call_text_backend` + 1 节点 Pipeline）。
+- `pyproject.toml` 注册 `model_provider` marker，
+  `pytest -m model_provider` 跑 37 个，`pytest -m "not model_provider"` 跑 522 个，互不干扰。
+- 总测试数：522 → 559（全过，45.86s）。
+
 ### 评估模块（v0.4.0 路线图 P1）
 - 新建 `evaluation/` 目录,提供纯 PyTorch 实现的指标层:
   * `metrics.psnr` / `metrics.ssim` / `metrics.lpips`（LPIPS 为占位接口）。

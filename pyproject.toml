@@ -62,6 +62,7 @@ markers = [
     "gpu: marks tests that require a GPU (deselect with '-m \"not gpu\"')",
     "eval: marks evaluation tests (FID / CLIP-score / PSNR / SSIM / LPIPS)",
     "model_source: marks model-source tests (license check, cache, fetch)",
+    "model_provider: marks local-torch model provider tests (tiny Transformer, training, L4 wiring)",
 ]
 
 # ---------------------------------------------------------------------------

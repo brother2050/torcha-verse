@@ -16,7 +16,7 @@
 
 | 优先级 | 范围 | 状态 | 估时 |
 |---|---|---|---:|
-| **P0** | 真模型跑通(Qwen2.5-0.5B + SDXL-Turbo)| **延后**(用户决定) | — |
+| **P0** | 真模型跑通(项目自有 tiny transformer + 字节级 tokenizer) | **完成 2026-06-25** | 1-2 周 |
 | **P1** | 评估模块最小版(FID + prompt 还原率 + CI 集成) | **完成 2026-06-25** | 1-2 周 |
 | **P2** | 模型源自动拉取(HuggingFace + 许可证审计) | **完成 2026-06-25** | 1 周 |
 | **P3** | pass/NotImplementedError 审计 | **完成 2026-06-25** | 0 |
@@ -24,7 +24,65 @@
 | **P5** | examples 重写(对齐 30 节点) | **完成 2026-06-25** | 1 周 |
 | **P5** | ROADMAP + DEFERRED_TASKS 维护 | 进行中 | 持续 |
 
-> P0(真模型)被用户标记为"延后到初期过后",不在本路线图。完整讨论见 `docs/DEFERRED_TASKS.md`。
+> P0 实际改为"项目自有 tiny transformer + 字节级 tokenizer"路线(纯 torch,
+> 不引入 transformers / diffusers 等外部依赖,见 `docs/DEFERRED_TASKS.md`)。
+> 真实大模型(Qwen2.5 / SDXL-Turbo)拉取仍归 P2 fetch 子系统,但 v0.4.x
+> 周期不参与 e2e 跑通,留待 v1.0.0。
+
+---
+
+## P0 — 真模型跑通 ✅ 完成 2026-06-25
+
+**目标**:让 30 节点的 L4 `text_chat` 节点**真的**调通一个本项目自有模型,无外部依赖。
+
+**目录**:`models/providers/`(从无到新建)
+```
+models/providers/
+├── __init__.py              # 公共 API 重导出
+├── tiny_transformer.py      # TinyTransformerConfig + ByteTokenizer + build/save/load
+├── local_text.py            # LocalTorchTextProvider (LLMProvider 协议实现)
+├── factory.py               # fetch_and_load_text / publish_tiny_transformer
+└── pretrain_tiny.py         # 训 + CLI: python -m models.providers.pretrain_tiny
+```
+
+**最小可用特性**:
+- `fetch_and_load_text("torcha-verse/tiny-transformer-tiny")` 一行拿到 provider
+- 两个预设:`tiny` (~0.3M, 1.3 MB, CI 用) / `small` (~10M, ~40 MB, P0 demo)
+- 字节级 tokenizer:3 special + 256 bytes + 1 mask = 260 vocab,完全无依赖
+- 单文件 `.pt` 持久化:`format_version` + `config` + `tokenizer` + `state_dict`,
+  原子写入 (tempfile + fsync + os.replace)
+- `LocalTorchTextProvider` 实现项目自身的 `LLMProvider` 协议
+  (`generate` / `chat` / `complete`),并被 L4 节点的
+  `register_default_text_backend` 注册
+- `examples/real_text_chat.py` 端到端跑通:pretrain → save → load → register
+  → 1 节点 `text_chat` 流水线输出真模型生成结果
+
+**实现要点**:
+- 严格保持**纯 torch**:`TransformerDecoder` 复用项目自身
+  `models/text/transformer.py`,KV-cache / GQA / RoPE / SwiGLU / RMSNorm 全部已有。
+  `ByteTokenizer` 走 UTF-8 字节级编码,不引入 `transformers` / `tokenizers` /
+  `safetensors` 等外部库,完全契合用户"减少其他依赖"的约束。
+- Pretrain:AdamW,bias / norm 不做 weight decay,warmup + cosine LR,
+  30~600 步即可在默认语料上让 loss 收敛。
+- Random-init fallback:无 checkpoint 时也能 `from_random(cfg)` 跑通流水线,
+  CI 不依赖任何外部资源。
+- 37 个新测试覆盖:tokenizer 边界 + 状态字典 + 字节 round-trip;
+  config presets + dict round-trip;save/load 原子性 + 版本检查 + 严格性;
+  provider 协议契约(generate / chat / complete / num_parameters);
+  factory 分支(resolve / fetch 随机 / fetch checkpoint / 缺文件报错);
+  pretrain 端到端(loss 下降 / .pt 文件存在 / 加载后能 generate);
+  L4 集成(`call_text_backend` + 1 节点 Pipeline)。
+- `pyproject.toml` 注册 `model_provider` marker,`pytest -m model_provider`
+  跑 37 个,`pytest -m "not model_provider"` 跑 522 个,互不干扰。
+- 总测试:522 → 559(全过,45.86s)。
+- 端到端 demo: `python examples/real_text_chat.py --preset tiny --steps 30`
+  输出真模型生成文本,中英文 prompt 都通过 L4 `text_chat` 节点
+  (含 echo prompt 续写),证明 30 节点 P0 端到端真跑通。
+
+**不做**(留到 v1.0):
+- 真实大模型适配(Qwen2.5 / SDXL-Turbo 等)
+- 多模态 / vision-language / speech
+- 量化 / LoRA / 分布式训练
 
 ---
 
