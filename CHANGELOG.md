@@ -4,6 +4,52 @@
 
 ## [Unreleased]
 
+## [v0.4.2] - 2026-06-25
+
+### C 档: v1.0.0 6/8 子任务骨架 (6 个模块 + 4 个测试文件 + 78 个新测试)
+
+C 档原本完全未启动 (估时 8-12 周), 本批在 v0.4.2 上交付 6 个可运行的
+骨架, 把"重活"切到 v1.0.0:
+
+- **C1 (M0) `BudgetTracker.allocate_or_wait`** (`infrastructure/resource_budget.py`)
+  - 新 API: `allocate_or_wait(name, vram_gb, ram_gb, disk_gb, *, model_slot, request_slot, timeout, poll_interval) -> AllocationHandle`
+  - 实现: `threading.Condition` 唤醒 + FIFO 重检 + 静态 vs 动态超限分离
+  - 修复 2 处 v0.4.x bug: `AllocationHandle.__init__` positional-only kwarg 误用; `BudgetTracker` 引用 `self._budget.model_slots` 应为 `self._budget.max_concurrent_models`
+  - slot-only 请求被立即拒绝 (无事件源, 排队无意义), 其它等待 timeout=0 等价于 `allocate`
+  - 9 个测试 (含 FIFO / 阻塞 / 超时 / 拒绝 / 拒绝 slot-only / 拒绝负 timeout / 钳制 poll_interval)
+
+- **C2 (M1) `RuntimeScheduler` 抽象** (`infrastructure/scheduler.py`)
+  - `RuntimeScheduler` ABC + `InlineScheduler` (测试用) + `ThreadPoolScheduler` (max_workers 校验 + lazy executor + submitted/completed 计数)
+  - 9 个测试 (含 shutdown 可重入 / 并行 / 异常传播)
+  - ProcessPool/GPU 留 v1.0.0 真做
+
+- **C4 (M2b) Prometheus `/metrics` endpoint** (`infrastructure/metrics.py` + `serving/metrics.py`)
+  - stdlib fallback: `Counter` / `Gauge` / `Histogram` + Prometheus 0.0.4 text exposition format
+  - `serving/metrics.py` 的 `record_request` / `record_engine_load` 自动镜像到全局 `METRICS`
+  - 17 个测试 (含整数/Inf/NaN 浮点格式 + 标签转义 + 桶渲染 + 全局单例)
+  - Grafana 面板留 v1.0.0
+
+- **C5 (M2c) Docker 化** (`Dockerfile` + `docker-compose.yml` + `docs/docker.md`)
+  - 多阶段 `Dockerfile`: `base` (python:3.10-slim + curl/ffmpeg/libsndfile) / `runtime` (项目 install) / `cpu` / `gpu` (CUDA 12.1 + PyTorch 2.1.0+cu121 钉版) / `serving` (暴露 8000 + healthcheck)
+  - `docker-compose.yml` 3 profiles: `torcha-verse` (CPU) / `gpu` (NVIDIA runtime + 资源预留) / `dev` (bind-mount + reload)
+  - `docs/docker.md` 含 troubleshooting + production checklist
+
+- **C6 (M3a) 多租户隔离** (`infrastructure/tenant.py`)
+  - `Tenant` (id / display_name / budget / budget_tracker / metrics / tags) + `TenantRegistry` (CRUD / list_ids / __contains__ / __iter__ / __len__)
+  - `with_tenant(tenant_id)` / `current_tenant_id()` 基于 `contextvars`
+  - `TenantNotFoundError` 替代裸 `KeyError`
+  - 15 个测试 (含 per-tenant `BudgetTracker` / `MetricsRegistry` 隔离 / tag 长度校验)
+  - 鉴权 / 命名空间目录隔离留 v1.1
+
+- **C7 (M3b) 评估 leaderboard** (`evaluation/leaderboard.py`)
+  - `LeaderboardEntry` (model_id / config_hash / prompt_set / n_prompts / metrics / throughput / runtime / git_commit / created_at) + `Leaderboard` (add / extend / ranked / to_dict / to_json / from_json / to_markdown)
+  - `from_report(EvaluationReport, ...)` 一键从 `EvaluationRunner` 报告构造 entry
+  - 6 个 `PRIMARY_METRICS` (fid / prompt_recall / psnr / ssim / lpips / throughput) + 高/低优自动判向
+  - 12 个测试 (含 JSON round-trip / 磁盘持久化 / Markdown 表格)
+  - Grafana 对接 + 多人提交流程留 v1.0.0
+
+### 之前的历史记录
+
 ## [v0.4.1] - 2026-06-25
 
 ### B 档: silent degrade 全清 (B1, 38 → 0)

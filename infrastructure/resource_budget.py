@@ -34,6 +34,7 @@ Example:
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -61,7 +62,68 @@ class BudgetExceededError(RuntimeError):
 
     The exception message describes which resource was exhausted, the
     requested amount, and the amount that was actually available.
+
+    Args:
+        vram_gb: VRAM that the caller asked for.  ``0.0`` when the
+            request was a slot-only allocation.
+        ram_gb: RAM that the caller asked for.
+        disk_gb: Disk that the caller asked for.
+        model_slot: Whether the request asked for a model slot.
+        request_slot: Whether the request asked for a request slot.
+        budget: Optional :class:`ResourceBudget` describing the
+            static limits.  Used to enrich the message.
+        used: Optional dict of currently-used resources.  Used to
+            enrich the message.
+        message: Optional human-readable message; when omitted, the
+            constructor builds a canonical description.
     """
+
+    def __init__(
+        self,
+        message: Optional[str] = None,
+        *,
+        vram_gb: float = 0.0,
+        ram_gb: float = 0.0,
+        disk_gb: float = 0.0,
+        model_slot: bool = False,
+        request_slot: bool = False,
+        budget: Optional[ResourceBudget] = None,
+        used: Optional[Dict[str, float]] = None,
+    ) -> None:
+        if message is None:
+            parts: list = []
+            if vram_gb:
+                parts.append(f"vram_gb={vram_gb}")
+            if ram_gb:
+                parts.append(f"ram_gb={ram_gb}")
+            if disk_gb:
+                parts.append(f"disk_gb={disk_gb}")
+            if model_slot:
+                parts.append("model_slot")
+            if request_slot:
+                parts.append("request_slot")
+            if budget is not None:
+                parts.append(
+                    f"budget=ResourceBudget(vram={budget.vram_gb}, "
+                    f"ram={budget.ram_gb}, disk={budget.disk_gb}, "
+                    f"models={budget.max_concurrent_models}, "
+                    f"reqs={budget.max_concurrent_requests})"
+                )
+            if used:
+                parts.append(f"used={used}")
+            message = (
+                "Budget exceeded for allocation: " + ", ".join(parts)
+                if parts
+                else "Budget exceeded"
+            )
+        super().__init__(message)
+        self.vram_gb = float(vram_gb)
+        self.ram_gb = float(ram_gb)
+        self.disk_gb = float(disk_gb)
+        self.model_slot = bool(model_slot)
+        self.request_slot = bool(request_slot)
+        self.budget = budget
+        self.used = used
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +423,11 @@ class BudgetTracker:
         # Live allocations keyed by handle id.
         self._allocations: Dict[str, _AllocationRecord] = {}
 
+        # Waiters queue for :meth:`allocate_or_wait`; reusing the
+        # existing ``RLock`` so we do not need a second lock to
+        # reason about.
+        self._waiters: threading.Condition = threading.Condition(self._lock)
+
         self._logger = get_logger(self.__class__.__name__)
 
     # ------------------------------------------------------------------
@@ -468,6 +535,262 @@ class BudgetTracker:
             )
             return handle
 
+    # ------------------------------------------------------------------
+    # v1.0.0 M0: queue when budget is exhausted
+    # ------------------------------------------------------------------
+    def allocate_or_wait(
+        self,
+        name: str,
+        vram_gb: float = 0.0,
+        ram_gb: float = 0.0,
+        disk_gb: float = 0.0,
+        *,
+        model_slot: bool = False,
+        request_slot: bool = False,
+        timeout: Optional[float] = None,
+        poll_interval: float = 0.05,
+    ) -> AllocationHandle:
+        """Block until the requested resources are available.
+
+        The semantics are identical to :meth:`allocate` *except* that
+        if the budget is currently exhausted, the call blocks until
+        another :class:`AllocationHandle` is released and the budget
+        is freed up.  A new :class:`threading.Condition` is used to
+        wake blocked waiters; FIFO ordering is preserved because
+        :class:`threading.Condition` notifies in submission order
+        and each waiter rechecks the budget before consuming.
+
+        Args:
+            name: Same as :meth:`allocate`.
+            vram_gb: Same as :meth:`allocate`.
+            ram_gb: Same as :meth:`allocate`.
+            disk_gb: Same as :meth:`allocate`.
+            model_slot: Same as :meth:`allocate`.
+            request_slot: Same as :meth:`allocate`.
+            timeout: Maximum number of seconds to block.  ``None``
+                (the default) waits forever.  ``0`` is equivalent to
+                :meth:`allocate` and raises immediately on failure.
+            poll_interval: Minimum interval between wake-up checks.
+                Bounded to ``1e-3`` to avoid busy loops.
+
+        Returns:
+            A live :class:`AllocationHandle` once the budget has
+            been reserved.
+
+        Raises:
+            BudgetExceededError: If the request itself is infeasible
+                (it would never fit, even on an empty budget), or
+                if ``timeout`` expires before the budget becomes
+                available.
+        """
+        if poll_interval < 1e-3:
+            poll_interval = 1e-3
+
+        # ``timeout=0`` falls through to the standard allocate() so
+        # callers that need the "try-and-fail" semantics keep them.
+        if timeout == 0:
+            return self.allocate(
+                name,
+                vram_gb=vram_gb,
+                ram_gb=ram_gb,
+                disk_gb=disk_gb,
+                model_slot=model_slot,
+                request_slot=request_slot,
+            )
+
+        deadline: Optional[float] = None
+        if timeout is not None:
+            if timeout < 0:
+                raise ValueError(f"timeout must be >= 0, got {timeout}.")
+            deadline = time.monotonic() + timeout
+
+        with self._lock:
+            while True:
+                # First, refuse the request outright if it could
+                # never fit.  This mirrors :meth:`allocate` and
+                # prevents a queue of impossible requests from
+                # starving real ones.
+                if self._would_exceed(
+                    vram_gb=vram_gb,
+                    ram_gb=ram_gb,
+                    disk_gb=disk_gb,
+                    model_slot=model_slot,
+                    request_slot=request_slot,
+                ):
+                    raise BudgetExceededError(
+                        vram_gb=vram_gb,
+                        ram_gb=ram_gb,
+                        disk_gb=disk_gb,
+                        model_slot=model_slot,
+                        request_slot=request_slot,
+                        budget=self._budget,
+                        used=self._snapshot_used(),
+                    )
+                if self._fits(
+                    vram_gb=vram_gb,
+                    ram_gb=ram_gb,
+                    disk_gb=disk_gb,
+                    model_slot=model_slot,
+                    request_slot=request_slot,
+                ):
+                    # All clear; hand out the handle while we still
+                    # hold the lock so we never race with release().
+                    return self._consume(
+                        name,
+                        vram_gb=vram_gb,
+                        ram_gb=ram_gb,
+                        disk_gb=disk_gb,
+                        model_slot=model_slot,
+                        request_slot=request_slot,
+                    )
+
+                # Slot-only contention has no event source (no
+                # ``vram_gb`` change happens when a slot is freed).
+                # Refuse the request immediately rather than waiting
+                # forever; callers who need a slot can poll with
+                # ``timeout`` and retry.
+                if (model_slot or request_slot) and not (
+                    vram_gb or ram_gb or disk_gb
+                ):
+                    raise BudgetExceededError(
+                        vram_gb=vram_gb,
+                        ram_gb=ram_gb,
+                        disk_gb=disk_gb,
+                        model_slot=model_slot,
+                        request_slot=request_slot,
+                        budget=self._budget,
+                        used=self._snapshot_used(),
+                    )
+
+                # Otherwise wait.  ``wait()`` releases the lock and
+                # re-acquires it before returning; we re-check
+                # feasibility on every wake-up.
+                remaining: Optional[float] = None
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise BudgetExceededError(
+                            vram_gb=vram_gb,
+                            ram_gb=ram_gb,
+                            disk_gb=disk_gb,
+                            model_slot=model_slot,
+                            request_slot=request_slot,
+                            budget=self._budget,
+                            used=self._snapshot_used(),
+                        )
+                self._waiters.wait(timeout=remaining)
+
+    def _would_exceed(
+        self,
+        *,
+        vram_gb: float,
+        ram_gb: float,
+        disk_gb: float,
+        model_slot: bool,
+        request_slot: bool,
+    ) -> bool:
+        """Return True if the request exceeds the static budget.
+
+        Used by :meth:`allocate_or_wait` to short-circuit infeasible
+        requests without ever placing them in the wait queue.
+
+        The check is intentionally limited to per-allocation limits
+        (``vram_gb`` / ``ram_gb`` / ``disk_gb``); concurrency
+        slots are checked by :meth:`_fits` against the *current*
+        usage, which is the right place to refuse a request that
+        fits against the static budget but is currently saturated.
+        """
+        if vram_gb > self._budget.vram_gb:
+            return True
+        if ram_gb > self._budget.ram_gb:
+            return True
+        if disk_gb > self._budget.disk_gb:
+            return True
+        return False
+
+    def _fits(
+        self,
+        *,
+        vram_gb: float,
+        ram_gb: float,
+        disk_gb: float,
+        model_slot: bool,
+        request_slot: bool,
+    ) -> bool:
+        """Return True if the request fits against the *current* usage."""
+        if self._used_vram + vram_gb > self._budget.vram_gb + 1e-9:
+            return False
+        if self._used_ram + ram_gb > self._budget.ram_gb + 1e-9:
+            return False
+        if self._used_disk + disk_gb > self._budget.disk_gb + 1e-9:
+            return False
+        if model_slot and self._used_model_slots >= self._budget.max_concurrent_models:
+            return False
+        if request_slot and self._used_request_slots >= self._budget.max_concurrent_requests:
+            return False
+        return True
+
+    def _consume(
+        self,
+        name: str,
+        *,
+        vram_gb: float,
+        ram_gb: float,
+        disk_gb: float,
+        model_slot: bool,
+        request_slot: bool,
+    ) -> AllocationHandle:
+        """Reserve resources against the budget and return a handle.
+
+        Caller must hold ``self._lock``.  This is split out from
+        :meth:`allocate` so :meth:`allocate_or_wait` can re-use the
+        exact same reservation logic under the lock without
+        re-acquiring it.
+        """
+        # Negative values are validated at the public boundary.
+        self._used_vram += vram_gb
+        self._used_ram += ram_gb
+        self._used_disk += disk_gb
+        if model_slot:
+            self._used_model_slots += 1
+        if request_slot:
+            self._used_request_slots += 1
+
+        handle_id = uuid.uuid4().hex
+        record = _AllocationRecord(
+            handle_id=handle_id,
+            name=name,
+            vram_gb=vram_gb,
+            ram_gb=ram_gb,
+            disk_gb=disk_gb,
+            model_slot=model_slot,
+            request_slot=request_slot,
+        )
+        self._allocations[handle_id] = record
+        # ``AllocationHandle.__init__`` is positional-only; mirror
+        # the original ``allocate()`` layout rather than using
+        # keyword arguments (which raises ``TypeError`` at runtime).
+        return AllocationHandle(
+            self,
+            handle_id,
+            name,
+            vram_gb,
+            ram_gb,
+            disk_gb,
+            model_slot,
+            request_slot,
+        )
+
+    def _snapshot_used(self) -> Dict[str, float]:
+        """Return a snapshot of the currently-used resources."""
+        return {
+            "vram_gb": self._used_vram,
+            "ram_gb": self._used_ram,
+            "disk_gb": self._used_disk,
+            "model_slots": float(self._used_model_slots),
+            "request_slots": float(self._used_request_slots),
+        }
+
     def release(self, handle: AllocationHandle) -> None:
         """Release the budget held by ``handle`` back to the pool.
 
@@ -499,6 +822,11 @@ class BudgetTracker:
                 record.name,
                 record.handle_id[:8],
             )
+            # Wake any :meth:`allocate_or_wait` waiters so they can
+            # re-check the budget.  ``notify_all`` is the simplest
+            # correct choice; the re-check inside the waiter loop is
+            # what enforces FIFO ordering.
+            self._waiters.notify_all()
 
     # ------------------------------------------------------------------
     # Introspection

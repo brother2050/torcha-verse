@@ -60,6 +60,13 @@ from .prompt_recall import (
     score,
 )
 from .runner import EvaluationReport, EvaluationRunner, load_image_dir
+from .leaderboard import (
+    LEADERBOARD_FORMAT_VERSION,
+    Leaderboard,
+    LeaderboardEntry,
+    load_leaderboard,
+    save_leaderboard,
+)
 
 __all__ = [
     # metrics
@@ -83,6 +90,12 @@ __all__ = [
     "EvaluationRunner",
     "EvaluationReport",
     "load_image_dir",
+    # leaderboard (v0.4.2, ships the v1.0.0 M3b skeleton)
+    "Leaderboard",
+    "LeaderboardEntry",
+    "LEADERBOARD_FORMAT_VERSION",
+    "load_leaderboard",
+    "save_leaderboard",
 ]
 
 

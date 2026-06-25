@@ -116,6 +116,25 @@ _LAZY_IMPORTS: dict[str, str] = {
     "AllocationHandle": "resource_budget",
     "BudgetExceededError": "resource_budget",
     "FeasibilityEstimate": "resource_budget",
+    # metrics (v1.0.0 M2b, stdlib fallback shipped in v0.4.2)
+    "MetricsRegistry": "metrics",
+    "Counter": "metrics",
+    "Gauge": "metrics",
+    "Histogram": "metrics",
+    "METRICS": "metrics",
+    "render_prometheus": "metrics",
+    # tenant (v1.0.0 M3a skeleton, shipped in v0.4.2)
+    "Tenant": "tenant",
+    "TenantRegistry": "tenant",
+    "TenantNotFoundError": "tenant",
+    "with_tenant": "tenant",
+    "current_tenant_id": "tenant",
+    "default_registry": "tenant",
+    # scheduler (v1.0.0 M1 skeleton, shipped in v0.4.2)
+    "RuntimeScheduler": "scheduler",
+    "InlineScheduler": "scheduler",
+    "ThreadPoolScheduler": "scheduler",
+    "default_scheduler": "scheduler",
 }
 
 

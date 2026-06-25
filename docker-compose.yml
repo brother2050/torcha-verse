@@ -1,0 +1,79 @@
+# docker-compose for v0.4.x development & local CI.
+#
+# Use one of:
+#   docker compose up torcha-verse         # CPU API server on :8000
+#   docker compose --profile gpu up gpu    # CUDA API server (needs nvidia-docker)
+#   docker compose --profile dev  up dev   # dev: bind-mount source, restart on save
+#
+# The compose file intentionally keeps things minimal so users can
+# copy it as a starting point; production deployments should pin
+# image digests and add their own reverse proxy / TLS.
+
+services:
+  torcha-verse:
+    build:
+      context: .
+      target: serving
+    image: torcha-verse:0.4.1-serving
+    container_name: torcha-verse
+    ports:
+      - "8000:8000"
+    environment:
+      LOG_LEVEL: INFO
+      # Mount the on-disk config tree read-only so the in-container
+      # ConfigCenter sees the same defaults as the host CLI.
+      TV_CONFIG_DIR: /etc/torcha-verse/config
+    volumes:
+      - ./config:/etc/torcha-verse/config:ro
+      # Cache mounts survive container restarts.
+      - torcha-torch-cache:/var/cache/torch
+      - torcha-hf-cache:/var/cache/huggingface
+    restart: unless-stopped
+
+  # Optional: GPU target.  Enable with ``--profile gpu``.
+  gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      target: serving-gpu
+    image: torcha-verse:0.4.1-gpu
+    container_name: torcha-verse-gpu
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      LOG_LEVEL: INFO
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config:/etc/torcha-verse/config:ro
+      - torcha-torch-cache:/var/cache/torch
+      - torcha-hf-cache:/var/cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Optional: dev mode with bind-mount source for live reload.
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      target: cpu
+    image: torcha-verse:0.4.1-cpu
+    container_name: torcha-verse-dev
+    command: ["python", "-m", "serving.app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "8000:8000"
+    environment:
+      LOG_LEVEL: DEBUG
+    volumes:
+      - .:/app
+      - torcha-torch-cache:/var/cache/torch
+      - torcha-hf-cache:/var/cache/huggingface
+
+volumes:
+  torcha-torch-cache:
+  torcha-hf-cache:
