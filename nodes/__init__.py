@@ -64,7 +64,9 @@ from . import audio as audio  # noqa: F401
 from . import consistency as consistency  # noqa: F401
 from . import digital_human as digital_human  # noqa: F401
 from . import export as export  # noqa: F401
+from . import agent as agent  # noqa: F401
 from . import image as image  # noqa: F401
+from . import rag as rag  # noqa: F401
 from . import subtitle as subtitle  # noqa: F401
 from . import text as text  # noqa: F401
 from . import video as video  # noqa: F401
@@ -93,6 +95,15 @@ from .image import (
     ImageTxt2ImgNode,
     ImageUpscaleNode,
 )
+from .rag import (
+    RAGDeleteNode,
+    RAGGetIndexNode,
+    RAGIngestNode,
+    RAGListIndexesNode,
+    RAGQueryNode,
+    RAGSearchTextNode,
+)
+from .agent import AgentListToolsNode, AgentRunNode
 from .subtitle import (
     SubtitleBurnNode,
     SubtitleExportNode,
@@ -118,6 +129,16 @@ __all__ = [
     "ImageImg2ImgNode",
     "ImageUpscaleNode",
     "ImageInpaintNode",
+    # RAG nodes
+    "RAGIngestNode",
+    "RAGQueryNode",
+    "RAGDeleteNode",
+    "RAGListIndexesNode",
+    "RAGGetIndexNode",
+    "RAGSearchTextNode",
+    # Agent nodes
+    "AgentRunNode",
+    "AgentListToolsNode",
     # Video nodes
     "VideoTxt2VidNode",
     "VideoInterpolateNode",

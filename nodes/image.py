@@ -766,3 +766,57 @@ def _num_loras(loras: Any) -> int:
     if isinstance(loras, list):
         return len(loras)
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Image understand node (added in v0.4.4)
+# ---------------------------------------------------------------------------
+@register_node("image_understand")
+class ImageUnderstandNode(BaseNode):
+    """Multimodal image-understanding node (``image_understand``).
+
+    Takes an image (PIL / tensor / path) and an optional text
+    question, and returns the multimodal model's textual
+    response describing the image.  Internally uses the
+    :class:`infrastructure`-backed
+    :class:`models.providers.LocalTorchMultimodalProvider` via
+    the :func:`call_multimodal_backend` helper so the same code
+    path works for local CPU/GPU and remote backends alike.
+
+    Inputs:
+        image: The input image (PIL / tensor / path / bytes).
+        question: Optional text question; defaults to
+            ``"Describe the image in detail."``.
+        max_new_tokens: Cap on the answer length (default 128).
+
+    Outputs:
+        text: The model's response.
+    """
+
+    spec: NodeSpec = NodeSpec(
+        type="image_understand",
+        name="Image Understand",
+        description="Use a multimodal model to describe or answer questions about an image.",
+        inputs={
+            "image": "IMAGE",
+            "question": "Optional[TEXT]",
+            "max_new_tokens": "Optional[INT]",
+        },
+        outputs={"text": "TEXT", "raw": "JSON"},
+        tags=["image", "understanding", "multimodal"],
+    )
+
+    def execute(self, ctx: NodeContext, **inputs: Any) -> Dict[str, Any]:
+        from ._helpers import call_multimodal_backend
+
+        image = inputs.get("image")
+        if image is None:
+            raise ValueError("image_understand requires an `image` input.")
+        question = str(inputs.get("question", "Describe the image in detail."))
+        max_new_tokens = int(inputs.get("max_new_tokens", 128) or 128)
+        payload: Dict[str, Any] = {"text": question, "image": image}
+        result = call_multimodal_backend(
+            ctx.bus, None, input=payload, max_new_tokens=max_new_tokens
+        )
+        text = str(result.get("text", "")).strip()
+        return {"text": text, "raw": result}

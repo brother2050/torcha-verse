@@ -40,7 +40,15 @@ __all__ = [
     "call_image_backend",
     "call_video_backend",
     "call_audio_backend",
+    "call_multimodal_backend",
     "reset_default_backends",
+    # RAG node helpers
+    "_RAG_INDEX_NAME_PATTERN",
+    "_RAG_DEFAULT_TOP_K",
+    "_RAG_DEFAULT_CHUNK_SIZE",
+    "_RAG_DEFAULT_CHUNK_OVERLAP",
+    "_RAG_DEFAULT_BACKEND",
+    "_normalise_rag_documents",
 ]
 
 #: Number of pixels in one megapixel (used to normalise spatial estimates).
@@ -123,6 +131,7 @@ _DEFAULT_TEXT_BACKEND: Optional[Callable[[], Any]] = None
 _DEFAULT_IMAGE_BACKEND: Optional[Callable[[], Any]] = None
 _DEFAULT_VIDEO_BACKEND: Optional[Callable[[], Any]] = None
 _DEFAULT_AUDIO_BACKEND: Optional[Callable[[], Any]] = None
+_DEFAULT_MULTIMODAL_BACKEND: Optional[Callable[[], Any]] = None
 
 
 def _text_echo_factory() -> Any:
@@ -234,6 +243,7 @@ def _set_default(kind: str, factory: Optional[Callable[[], Any]]) -> None:
     """Assign one of the four module-level backend factories."""
     global _DEFAULT_TEXT_BACKEND, _DEFAULT_IMAGE_BACKEND
     global _DEFAULT_VIDEO_BACKEND, _DEFAULT_AUDIO_BACKEND
+    global _DEFAULT_MULTIMODAL_BACKEND
     if kind == "text":
         _DEFAULT_TEXT_BACKEND = factory
     elif kind == "image":
@@ -242,6 +252,8 @@ def _set_default(kind: str, factory: Optional[Callable[[], Any]]) -> None:
         _DEFAULT_VIDEO_BACKEND = factory
     elif kind == "audio":
         _DEFAULT_AUDIO_BACKEND = factory
+    elif kind == "multimodal":
+        _DEFAULT_MULTIMODAL_BACKEND = factory
     else:  # pragma: no cover - defensive guard
         raise ValueError(f"Unknown backend kind: {kind!r}")
 
@@ -292,6 +304,21 @@ def _local_audio_factory() -> Any:
     return LocalTorchAudioProvider.from_random()
 
 
+def _local_multimodal_factory() -> Any:
+    """Factory returning a fresh :class:`LocalTorchMultimodalProvider`."""
+    try:
+        from models.providers import LocalTorchMultimodalProvider
+    except Exception:  # noqa: BLE001
+        return _multimodal_echo_factory()
+    return LocalTorchMultimodalProvider.from_random()
+
+
+def _multimodal_echo_factory() -> Any:
+    """Return a deterministic echo multimodal provider (test fixture)."""
+    from models.interfaces.media_providers import EchoMultimodalProvider
+    return EchoMultimodalProvider()
+
+
 def _local_text_factory() -> Any:
     """Factory returning a fresh :class:`LocalTorchTextProvider`."""
     try:
@@ -336,6 +363,15 @@ def register_default_audio_backend(
     _set_default("audio", factory)
 
 
+def register_default_multimodal_backend(
+    factory: Optional[Callable[[], Any]] = None,
+) -> None:
+    """Register the fallback multimodal backend factory used by ``call_multimodal_backend``."""
+    if factory is None:
+        factory = _local_multimodal_factory
+    _set_default("multimodal", factory)
+
+
 def register_default_text_backend(
     factory: Optional[Callable[[], Any]] = None,
 ) -> None:
@@ -358,6 +394,8 @@ def _get_default(kind: str) -> Optional[Callable[[], Any]]:
         return _DEFAULT_VIDEO_BACKEND
     if kind == "audio":
         return _DEFAULT_AUDIO_BACKEND
+    if kind == "multimodal":
+        return _DEFAULT_MULTIMODAL_BACKEND
     raise ValueError(f"Unknown backend kind: {kind!r}")
 
 
@@ -367,6 +405,7 @@ def reset_default_backends() -> None:
     _set_default("image", None)
     _set_default("video", None)
     _set_default("audio", None)
+    _set_default("multimodal", None)
 
 
 def _resolve_via_bus_or_default(
@@ -403,6 +442,8 @@ def _resolve_via_bus_or_default(
             factory = _video_echo_factory  # type: ignore[assignment]
         elif default_kind == "audio":
             factory = _audio_echo_factory  # type: ignore[assignment]
+        elif default_kind == "multimodal":
+            factory = _multimodal_echo_factory  # type: ignore[assignment]
         _set_default(default_kind, factory)
     return factory()
 
@@ -550,3 +591,120 @@ def call_audio_backend(
     result.setdefault("sample_rate", int(sample_rate))
     result.setdefault("duration_s", float(duration_s))
     return result
+
+
+def call_multimodal_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    input: Any,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Invoke the resolved multimodal backend and normalise the response.
+
+    ``input`` may be a plain string (text-only), a
+    :class:`dict` with ``"text"`` / ``"image"`` / ``"audio"``
+    keys, or a list of mixed-modality items -- the
+    :class:`MultimodalProvider` protocol handles all three.
+    """
+    backend = _resolve_via_bus_or_default(bus, "model.multimodal", name, "multimodal")
+    try:
+        result = backend.generate(input, **extra)
+    except TypeError:
+        # Some echo providers take just positional text; fall back.
+        if isinstance(input, dict) and "text" in input:
+            result = backend.generate(input["text"])
+        else:
+            result = backend.generate(str(input))
+    if not isinstance(result, dict):
+        result = {"text": str(result)}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# RAG node helpers
+# ---------------------------------------------------------------------------
+import re
+from typing import Iterable, List as _List, Mapping as _Mapping
+
+#: Allowed pattern for an RAG index name -- alphanumeric, dash, underscore
+#: and forward-slash (so tenant-style names like ``tenant.alpha/docs``
+#: are accepted).  Length is capped at 128 characters to keep index names
+#: friendly in logs, file systems and the serving layer's URL paths.
+_RAG_INDEX_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_\-/]{1,128}$")
+
+#: Default top-k for RAG queries when the node input does not provide one.
+_RAG_DEFAULT_TOP_K: int = 5
+#: Default character-window size for the :class:`TextChunker` used by
+#: :class:`RAGIngestor` -- small enough to keep the byte tokenizer
+#: within its O(n) sweet spot, large enough to give meaningful context.
+_RAG_DEFAULT_CHUNK_SIZE: int = 512
+#: Default overlap between consecutive RAG chunks.
+_RAG_DEFAULT_CHUNK_OVERLAP: int = 64
+#: Default vector-store backend.  ``"auto"`` selects FAISS when it is
+#: importable and the in-memory NumPy backend otherwise.
+_RAG_DEFAULT_BACKEND: str = "auto"
+
+
+def _normalise_rag_documents(value: Any) -> _List:
+    """Convert a free-form ``documents`` payload into a list of
+    :class:`infrastructure.rag.RAGDocument` instances.
+
+    Accepted shapes:
+
+    * ``list[RAGDocument]`` -- returned unchanged.
+    * ``list[dict]`` with ``"doc_id"`` / ``"text"`` /
+      ``"metadata"`` keys.
+    * ``dict[doc_id -> text]`` -- turned into one
+      :class:`RAGDocument` per entry.
+    * ``None`` / empty -- returns ``[]``.
+
+    Raises:
+        TypeError: when an entry has the wrong shape.
+        ValueError: when an entry is missing ``text`` or has a
+            non-string ``text``.
+    """
+    from infrastructure.rag import RAGDocument  # local import: keep _helpers dependency-light
+
+    if value is None:
+        return []
+    if isinstance(value, RAGDocument):
+        return [value]
+    if isinstance(value, _Mapping):
+        return [
+            RAGDocument(doc_id=str(k), text=str(v) if v is not None else "")
+            for k, v in value.items()
+        ]
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(
+            f"documents must be a list, tuple, dict or None; got {type(value).__name__}."
+        )
+    documents: _List = []
+    for i, entry in enumerate(value):
+        if isinstance(entry, RAGDocument):
+            documents.append(entry)
+            continue
+        if not isinstance(entry, _Mapping):
+            raise TypeError(
+                f"documents[{i}] must be a dict or RAGDocument; "
+                f"got {type(entry).__name__}."
+            )
+        text = entry.get("text")
+        if not isinstance(text, str):
+            raise ValueError(
+                f"documents[{i}].text must be a string; got {type(text).__name__}."
+            )
+        doc_id = str(entry.get("doc_id") or "")
+        meta = entry.get("metadata") or {}
+        if not isinstance(meta, _Mapping):
+            raise ValueError(
+                f"documents[{i}].metadata must be a dict; got {type(meta).__name__}."
+            )
+        documents.append(
+            RAGDocument(
+                doc_id=doc_id,
+                text=text,
+                metadata=dict(meta),
+            )
+        )
+    return documents

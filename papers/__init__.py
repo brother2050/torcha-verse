@@ -28,7 +28,12 @@ catalogue::
 from __future__ import annotations
 
 from . import cli
-from .adapter import AdapterNotFoundError, AdapterRegistry, PaperAdapter
+from .adapter import (
+    AdapterNotFoundError,
+    AdapterRegistry,
+    PaperAdapter,
+    default_registry,
+)
 from .registry import PaperNotFoundError, PaperRegistry
 from .spec import ModelRef, PaperSpec
 
@@ -59,6 +64,37 @@ __all__ = [
     "PaperAdapter",
     "AdapterRegistry",
     "AdapterNotFoundError",
+    # Concrete paper adapters
+    "StableDiffusion3Adapter",
+    "HunyuanDiTAdapter",
     # CLI
     "cli",
 ]
+
+
+def _register_default_adapters() -> None:
+    """Register the v0.5.x bundled paper adapters with the default registry.
+
+    Failures are swallowed (and logged) so a missing optional
+    dependency can never break the import of :mod:`papers`.
+    """
+    import logging
+
+    log = logging.getLogger("papers")
+    try:
+        from .adapters import HunyuanDiTAdapter, StableDiffusion3Adapter
+
+        default_registry.register("stable-diffusion-3", StableDiffusion3Adapter)
+        default_registry.register("sd3", StableDiffusion3Adapter)
+        default_registry.register("hunyuan-dit", HunyuanDiTAdapter)
+        default_registry.register("hunyuan_dit", HunyuanDiTAdapter)
+    except Exception:  # noqa: BLE001 - import must never fail
+        log.warning(
+            "Failed to register bundled paper adapters; "
+            "AdapterRegistry will be empty until the adapters "
+            "are imported explicitly.",
+            exc_info=True,
+        )
+
+
+_register_default_adapters()

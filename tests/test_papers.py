@@ -349,11 +349,13 @@ class TestPaperYamlLoad:
     def test_load_from_dir_returns_count(self, registry):
         """load_from_dir returns the number of papers loaded."""
         n = registry.load_from_dir(PAPERS_DIR)
-        assert n == 5
-        assert registry.count() == 5
+        # v0.5.x adds stable-diffusion-3 and hunyuan-dit on top
+        # of the five v0.4.x bundled papers.
+        assert n == 7
+        assert registry.count() == 7
 
     def test_load_from_dir_loads_all_five(self, loaded_registry):
-        """All five bundled papers are registered."""
+        """All bundled papers are registered (v0.5.x: 7 papers)."""
         names = {s.name for s in loaded_registry.list()}
         assert names == {
             "musetalk",
@@ -361,6 +363,8 @@ class TestPaperYamlLoad:
             "sadtalker",
             "attention_is_all_you_need",
             "rag",
+            "stable-diffusion-3",
+            "hunyuan-dit",
         }
 
     def test_liveportrait_maps_to_portrait_animate(self, loaded_registry):
@@ -493,10 +497,10 @@ class TestPaperCli:
     """papers.cli command surface."""
 
     def test_paper_cli_commands(self, loaded_registry):
-        """All five CLI commands work against the loaded registry."""
+        """All CLI commands work against the loaded registry (v0.5.x: 7 papers)."""
         # paper_list returns the bundled specs.
         papers = paper_list()
-        assert len(papers) == 5
+        assert len(papers) == 7
         assert all(isinstance(p, PaperSpec) for p in papers)
 
         # paper_info returns detailed fields.

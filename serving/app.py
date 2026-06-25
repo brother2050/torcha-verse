@@ -43,6 +43,8 @@ from serving.models import (
 )
 from serving.service import (
     PipelineService,
+    _decode_b64_audio,
+    _decode_b64_image,
     _error_response,
     _estimate_tokens,
     _generate_id,
@@ -676,9 +678,19 @@ def create_app() -> FastAPI:
     async def multimodal_understand(request: MultimodalRequest) -> Any:
         """Understand multi-modal input and optionally answer a question.
 
-        Multimodal understanding is not yet backed by a node; a
-        ``not_implemented`` error is returned while the REST contract is
-        preserved.
+        Backed by two L4 nodes selected on the request shape:
+
+        * ``image_understand`` when the request carries a base64 image
+          (an optional audio attachment is forwarded alongside it as
+          an "audio" modality key).
+        * ``text_chat`` for the text-only path (the framework
+          :class:`LocalTorchTextProvider` handles the byte-level
+          language model).
+
+        The selected node is executed through
+        :meth:`PipelineService._run` so the request flows through
+        the same security gates (input sanitisation, prompt-injection
+        detection, output filter) as the other generation endpoints.
         """
         # Rate limiting: reject early when the token bucket is empty.
         if not service._rate_limiter.try_acquire():
@@ -700,7 +712,78 @@ def create_app() -> FastAPI:
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
-            result = service.multimodal_understand()
+            # Security Gate 1b: detect prompt-injection attempts on
+            # the textual payload.
+            text_for_injection_check = (request.text or "") + " " + (request.question or "")
+            text_for_injection_check = text_for_injection_check.strip()
+            if text_for_injection_check:
+                injection_result = service._sanitizer.detect_prompt_injection(
+                    text_for_injection_check
+                )
+                if injection_result.is_injected:
+                    return _error_response(
+                        "Prompt injection detected", error_type="injection", code=400
+                    )
+
+            has_image = bool(request.image)
+            has_audio = bool(request.audio)
+            question = (request.question or request.text or "").strip()
+            if not question:
+                question = "Describe the input in detail."
+
+            if has_image or has_audio:
+                # Multimodal path: image (and optional audio) +
+                # question are forwarded to the image_understand L4
+                # node, which dispatches to the multimodal provider.
+                try:
+                    if has_image:
+                        image_obj = _decode_b64_image(request.image)
+                    else:
+                        image_obj = None
+                    if has_audio:
+                        try:
+                            audio_obj = _decode_b64_audio(request.audio)
+                        except Exception:  # noqa: BLE001
+                            # Fall back to raw bytes if the audio is
+                            # not a WAV -- the multimodal provider
+                            # handles str inputs transparently.
+                            audio_obj = request.audio
+                except ValueError as exc:
+                    return _error_response(
+                        "Input rejected: " + str(exc), code=400
+                    )
+
+                node_inputs: Dict[str, Any] = {
+                    "image": image_obj,
+                    "question": question,
+                    "max_new_tokens": int(request.max_tokens or 128),
+                }
+                if has_audio:
+                    # image_understand only consumes `image`; we
+                    # forward the audio as metadata so the multimodal
+                    # provider can decide whether to consume it.
+                    node_inputs["_audio"] = audio_obj
+                result = service._run(
+                    "multimodal_understand",
+                    "image_understand",
+                    "img",
+                    node_inputs,
+                    config={"default_multimodal_model": request.model},
+                )
+            else:
+                # Text-only path: forward to the text_chat L4 node.
+                result = service._run(
+                    "multimodal_understand",
+                    "text_chat",
+                    "chat",
+                    {
+                        "prompt": question,
+                        "model": request.model,
+                        "max_tokens": int(request.max_tokens or 256),
+                    },
+                    config={"default_text_model": request.model},
+                )
+
             if "error" in result:
                 raise RuntimeError(
                     f"{result['error']} [{result.get('error_type', 'engine_error')}]"
@@ -747,8 +830,18 @@ def create_app() -> FastAPI:
     async def rag_query(request: RAGRequest) -> Any:
         """Answer a question using retrieval-augmented generation.
 
-        RAG query is not yet backed by a node; a ``not_implemented``
-        error is returned while the REST contract is preserved.
+        Backed by two L4 nodes:
+
+        * ``rag_query`` performs the embedding + top-k retrieval from
+          the named index and returns the hits + assembled context
+          block.
+        * ``text_chat`` synthesises the final answer (when
+          ``request.synthesize`` is True -- the default) by feeding
+          the context to the LLM provider.
+
+        The two nodes are executed through
+        :meth:`PipelineService._run` so the request flows through
+        the same security gates as the other generation endpoints.
         """
         # Rate limiting: reject early when the token bucket is empty.
         if not service._rate_limiter.try_acquire():
@@ -761,16 +854,84 @@ def create_app() -> FastAPI:
             # Security Gate 1: sanitise user-supplied text input.
             try:
                 request.question = service._sanitizer.sanitize_text(request.question)
+                request.index_name = service._sanitizer.sanitize_text(
+                    request.index_name
+                )
             except ValueError as exc:
                 return _error_response("Input rejected: " + str(exc), code=400)
 
-            result = service.rag_query()
-            if "error" in result:
-                raise RuntimeError(
-                    f"{result['error']} [{result.get('error_type', 'engine_error')}]"
+            # Security Gate 1b: detect prompt-injection attempts on
+            # the question.
+            injection_result = service._sanitizer.detect_prompt_injection(
+                request.question
+            )
+            if injection_result.is_injected:
+                return _error_response(
+                    "Prompt injection detected", error_type="injection", code=400
                 )
 
-            text = str(result.get("text", ""))
+            # Step 1: run the rag_query L4 node to retrieve top-k
+            # chunks from the named index.
+            retrieval = service._run(
+                "rag_query_retrieve",
+                "rag_query",
+                "retrieval",
+                {
+                    "index_name": request.index_name,
+                    "query": request.question,
+                    "top_k": int(request.top_k),
+                },
+            )
+            if "error" in retrieval:
+                raise RuntimeError(
+                    f"{retrieval['error']} [{retrieval.get('error_type', 'engine_error')}]"
+                )
+
+            hits = retrieval.get("hits", [])
+            context = retrieval.get("context", "")
+
+            if not request.synthesize:
+                # Caller asked for raw retrieval output only.
+                response = _make_response(
+                    model="rag",
+                    text=context or "(no context retrieved)",
+                    object_type="rag.retrieval",
+                    prompt_tokens=_estimate_tokens(request.question),
+                )
+                # Surface the raw hits list alongside the response so
+                # downstream consumers don't need a second roundtrip.
+                response["hits"] = hits
+                response["index_name"] = request.index_name
+                service.metrics.record_request(endpoint, time.time() - start)
+                return response
+
+            # Step 2: synthesise the final answer via the LLM.
+            if context:
+                user_prompt = (
+                    "Use the following context to answer the question.\n\n"
+                    f"Context:\n{context}\n\n"
+                    f"Question: {request.question}\n\nAnswer:"
+                )
+            else:
+                user_prompt = (
+                    f"Question: {request.question}\n\nAnswer:"
+                )
+            answer_result = service._run(
+                "rag_query_synthesise",
+                "text_chat",
+                "answer",
+                {
+                    "prompt": user_prompt,
+                    "model": "default",
+                    "max_tokens": int(request.max_tokens or 256),
+                },
+            )
+            if "error" in answer_result:
+                raise RuntimeError(
+                    f"{answer_result['error']} [{answer_result.get('error_type', 'engine_error')}]"
+                )
+
+            text = str(answer_result.get("text", ""))
 
             # Security Gate 3: filter the text response.
             try:
@@ -792,6 +953,9 @@ def create_app() -> FastAPI:
                 object_type="rag.answer",
                 prompt_tokens=_estimate_tokens(request.question),
             )
+            response["hits"] = hits
+            response["index_name"] = request.index_name
+            response["context"] = context
             service.metrics.record_request(endpoint, time.time() - start)
             return response
 
@@ -809,9 +973,13 @@ def create_app() -> FastAPI:
     async def agent_run(request: AgentRequest) -> Any:
         """Execute an agent on a task.
 
-        Agent execution is not yet backed by a node; a
-        ``not_implemented`` error is returned while the REST contract is
-        preserved.
+        Backed by the ``agent_run`` L4 node -- a thin wrapper over the
+        default :class:`infrastructure.agent.AgentBus` (ReAct loop with
+        tool-calling).  The node returns the final answer, the per-step
+        transcript (``thought / action / observation``) and the number
+        of iterations; the response envelope mirrors that shape so
+        callers can introspect the agent's reasoning without a second
+        roundtrip.
         """
         # Rate limiting: reject early when the token bucket is empty.
         if not service._rate_limiter.try_acquire():
@@ -845,13 +1013,25 @@ def create_app() -> FastAPI:
                     media_type="text/event-stream",
                 )
 
-            result = service.agent_run()
+            result = service._run(
+                "agent_run",
+                "agent_run",
+                "agent",
+                {
+                    "query": request.task,
+                    "max_steps": int(request.max_steps),
+                    "temperature": float(request.temperature),
+                },
+            )
             if "error" in result:
                 raise RuntimeError(
                     f"{result['error']} [{result.get('error_type', 'engine_error')}]"
                 )
 
-            output_text = str(result.get("output", ""))
+            output_text = str(result.get("final_answer", ""))
+            ok = bool(result.get("ok", False))
+            steps = result.get("steps", [])
+            iterations = int(result.get("iterations", 0))
 
             # Security Gate 3: filter the final text response.
             try:
@@ -880,8 +1060,13 @@ def create_app() -> FastAPI:
                     "completion_tokens": 0,
                     "total_tokens": _estimate_tokens(request.task),
                 },
-                "steps": [],
-                "metadata": {},
+                "steps": steps,
+                "iterations": iterations,
+                "ok": ok,
+                "metadata": {
+                    "agent_type": request.agent_type,
+                    "max_steps": int(request.max_steps),
+                },
             }
             service.metrics.record_request(endpoint, time.time() - start)
             return response_dict
@@ -898,13 +1083,29 @@ def create_app() -> FastAPI:
         request: AgentRequest,
         endpoint: str,
     ) -> Iterator[str]:
-        """Yield SSE frames for streaming agent execution."""
+        """Yield SSE frames for streaming agent execution.
+
+        The agent is a one-shot tool-calling loop (the LLM emits
+        ``final_answer`` once it has decided), so the streamed output
+        is the final answer wrapped in an ``agent.step`` frame,
+        followed by the terminal ``[DONE]`` marker -- preserving the
+        SSE contract.
+        """
         start = time.time()
         try:
-            result = svc.agent_run()
+            result = svc._run(
+                "agent_run",
+                "agent_run",
+                "agent",
+                {
+                    "query": request.task,
+                    "max_steps": int(request.max_steps),
+                    "temperature": float(request.temperature),
+                },
+            )
             if "error" in result:
                 raise RuntimeError(result["error"])
-            output_text = str(result.get("output", ""))
+            output_text = str(result.get("final_answer", ""))
 
             # Security Gate 3: filter the streamed text before yielding.
             try:
@@ -920,7 +1121,11 @@ def create_app() -> FastAPI:
                 "object": "agent.step",
                 "created": int(time.time()),
                 "model": "agent",
-                "step": {"output": output_text},
+                "step": {
+                    "output": output_text,
+                    "iterations": int(result.get("iterations", 0)),
+                    "ok": bool(result.get("ok", False)),
+                },
             }
             yield f"data: {json.dumps(data)}\n\n"
             yield "data: [DONE]\n\n"

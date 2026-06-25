@@ -45,6 +45,15 @@ _logger = get_logger("assets.store")
 from .base import Asset, AssetRef, AssetRev
 from .types import AssetStatus, AssetType
 
+#: Errors from the cold tier are mapped to this module's public
+#: exception so :class:`AssetStore` callers can branch on a single
+#: type without importing :mod:`assets.cold_storage` directly.
+try:
+    from .cold_storage import ColdStorageError as _ColdStorageError
+except Exception:  # pragma: no cover - defensive guard
+    class _ColdStorageError(RuntimeError):  # type: ignore[no-redef]
+        """Fallback when :mod:`assets.cold_storage` is unavailable."""
+
 __all__ = ["AssetStore", "ColdStorageProtocol"]
 
 
@@ -126,7 +135,14 @@ class AssetStore:
         warm_db_path: Optional explicit path for the SQLite database file.
             When ``None`` it defaults to ``<base_dir>/metadata.db``.
         cold_storage: Optional cold-tier backend conforming to
-            :class:`ColdStorageProtocol`.  Reserved for future use.
+            :class:`ColdStorageProtocol`.  When provided, every
+            successful :meth:`put` is mirrored to the cold tier and
+            :meth:`get` will transparently fall back to the cold
+            tier (and re-promote the blob) when the warm content
+            file is missing.
+        mirror_to_cold: When ``True`` (default) writes are mirrored
+            to the cold tier; set to ``False`` for warm-only
+            deployments.
 
     Example:
         >>> store = AssetStore(base_dir="/tmp/tv_assets")
@@ -141,6 +157,7 @@ class AssetStore:
         hot_size: int = 256,
         warm_db_path: Optional[Union[str, Path]] = None,
         cold_storage: Optional[ColdStorageProtocol] = None,
+        mirror_to_cold: bool = True,
     ) -> None:
         if hot_size <= 0:
             raise ValueError(f"hot_size must be > 0, got {hot_size}.")
@@ -162,6 +179,7 @@ class AssetStore:
         self._hot: "OrderedDict[str, Asset]" = OrderedDict()
         self._lock: threading.RLock = threading.RLock()
         self._cold_storage: Optional[ColdStorageProtocol] = cold_storage
+        self._mirror_to_cold: bool = bool(mirror_to_cold)
         self._logger = get_logger(self.__class__.__name__)
         # S2-7: 关闭标志，close() 后所有公共方法拒绝操作。
         self._closed: bool = False
@@ -196,6 +214,108 @@ class AssetStore:
     def cold_storage(self) -> Optional[ColdStorageProtocol]:
         """The configured cold-tier backend (may be ``None``)."""
         return self._cold_storage
+
+    @property
+    def mirror_to_cold(self) -> bool:
+        """Whether :meth:`put` mirrors content to the cold tier."""
+        return self._mirror_to_cold
+
+    def set_mirror_to_cold(self, enabled: bool) -> None:
+        """Enable or disable cold-tier mirroring at runtime."""
+        with self._lock:
+            self._mirror_to_cold = bool(enabled)
+
+    # ------------------------------------------------------------------
+    # Cold-tier helpers
+    # ------------------------------------------------------------------
+    def _push_to_cold(self, content_hash: str, content_path: Path) -> None:
+        """Mirror ``content_path`` to the cold tier (best-effort).
+
+        Cold-tier errors are logged but never raised: a transient
+        S3 / MinIO outage should not cause a successful warm
+        write to fail.  The blob stays in the warm tier and the
+        next :meth:`get` can attempt to re-mirror on demand via
+        :meth:`promote_from_cold`.
+        """
+        if self._cold_storage is None or not self._mirror_to_cold:
+            return
+        try:
+            self._cold_storage.store(content_hash, content_path)
+        except _ColdStorageError as exc:  # noqa: PERF203
+            self._logger.warning(
+                "Cold-tier store failed for hash=%s: %s",
+                content_hash[:12], exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Cold-tier store raised %s for hash=%s: %s",
+                type(exc).__name__, content_hash[:12], exc,
+            )
+
+    def promote_from_cold(self, content_hash: str) -> Optional[Path]:
+        """Download a blob from the cold tier and stage it in the warm tier.
+
+        On success returns the warm-tier path; on failure (cold tier
+        unconfigured, blob missing, network error) returns
+        ``None`` and logs a warning.
+        """
+        if self._cold_storage is None:
+            return None
+        try:
+            staging_dir = self._objects_dir / ".staging"
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            staging_path = staging_dir / f".promote-{uuid4().hex}.tmp"
+            self._cold_storage.fetch(content_hash, staging_path)
+            # Re-verify the hash so a corrupted fetch never lands
+            # in the warm tier.
+            actual = self._hash_file(staging_path)
+            if actual != content_hash:
+                staging_path.unlink(missing_ok=True)
+                self._logger.error(
+                    "Cold fetch hash mismatch for %s: got %s, expected %s",
+                    content_hash[:12], actual[:12], content_hash[:12],
+                )
+                return None
+            final_path = self._content_path(content_hash)
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staging_path, final_path)
+            return final_path
+        except _ColdStorageError as exc:
+            self._logger.warning(
+                "Cold-tier fetch failed for hash=%s: %s",
+                content_hash[:12], exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Cold-tier promote raised %s for hash=%s: %s",
+                type(exc).__name__, content_hash[:12], exc,
+            )
+            return None
+
+    def evict_to_cold(self, content_hash: str) -> bool:
+        """Remove a blob from the warm tier; the cold tier keeps a copy.
+
+        Useful to free disk space in the warm tier once the cold
+        tier is configured.  The blob is **not** removed from
+        the cold tier -- :meth:`get` can later re-fetch it via
+        :meth:`promote_from_cold`.
+
+        Returns:
+            ``True`` if a warm blob was removed, ``False`` if no
+            such blob was present.
+        """
+        path = self._content_path(content_hash)
+        with self._lock:
+            if not path.exists():
+                return False
+            path.unlink()
+            try:
+                if path.parent.exists() and not any(path.parent.iterdir()):
+                    path.parent.rmdir()
+            except OSError:
+                pass
+            return True
 
     # ------------------------------------------------------------------
     # Database lifecycle
@@ -377,6 +497,11 @@ class AssetStore:
 
                 self._hot_put(asset)
 
+                # Push to cold tier (best-effort) -- happens
+                # after the warm write has succeeded so a cold
+                # outage never blocks a put.
+                self._push_to_cold(rev.content_hash, final_path)
+
                 self._logger.debug(
                     "Put asset %s rev %s (hash=%s, %d bytes).",
                     asset.id, rev.revision, content_hash[:12], size_bytes,
@@ -417,9 +542,16 @@ class AssetStore:
                 )
             content_path = self._content_path(rev.content_hash)
             if not content_path.exists():
-                raise FileNotFoundError(
-                    f"Content blob missing for {ref}: {content_path}"
-                )
+                # Warm tier is missing the blob; try the cold
+                # tier as a fallback.  This handles the
+                # ``evict_to_cold`` workflow and S3-only
+                # deployments.
+                promoted = self.promote_from_cold(rev.content_hash)
+                if promoted is None:
+                    raise FileNotFoundError(
+                        f"Content blob missing for {ref}: {content_path}"
+                    )
+                content_path = promoted
             return asset, content_path
 
     def exists(self, ref: AssetRef) -> bool:

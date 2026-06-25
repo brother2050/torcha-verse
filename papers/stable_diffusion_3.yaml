@@ -1,0 +1,65 @@
+paper:
+  name: stable-diffusion-3
+  title: "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis"
+  authors: ["Esser", "Kulikov"] # full list lives in the paper PDF
+  arxiv_id: "2403.03206"
+  github: "https://github.com/Stability-AI/sd3-ref"
+  license: stability-ai-community
+  published: "2024-03-05"
+
+integration:
+  type: node
+  node_type: image_txt2img
+  method: mm-dit
+  category: text-to-image
+
+models:
+  - name: sd3-medium
+    source: stability-ai
+    repo: stabilityai/stable-diffusion-3-medium
+    size_gb: 4.7
+    vram_gb: 12.0
+    dependencies: ["torch>=2.0", "transformers>=4.30"]
+  - name: sd3.5-large
+    source: stability-ai
+    repo: stabilityai/stable-diffusion-3.5-large
+    size_gb: 9.5
+    vram_gb: 24.0
+    dependencies: ["torch>=2.0", "transformers>=4.30"]
+  - name: sd3-internal
+    source: internal
+    repo: torcha-verse/internal-sd3
+    size_gb: 0.05
+    vram_gb: 1.0
+    dependencies: []
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    num_steps: 28
+    cfg_scale: 7.0
+    width: 64
+    height: 64
+    hardware: "single H100"
+  description: >-
+    Reproduction uses 28 rectified-flow steps with cfg_scale=7.0 and
+    a single H100.  The 28-step preset matches the official
+    Stability AI public recipe.  The v0.5.x line ships a
+    project-internal, dependency-free re-implementation of the
+    diffusion transformer denoiser that mirrors the public SD3
+    architecture (MM-DiT blocks, RoPE, qk-norm, adaln-zero
+    conditioning, 16-channel latent space).  This is NOT a
+    re-implementation of the official SD3 weights -- it is a
+    faithful architectural clone that can be trained / fine-tuned
+    against any public SD3 dataset.  Plugging the official
+    Stability AI weights is a v0.6.x follow-up.
+
+reference_impl:
+  sd3_ref: "https://github.com/Stability-AI/sd3-ref"
+  diffusers: "https://github.com/huggingface/diffusers"
+
+compatibility:
+  min_torcha_verse: "0.5.0"
+  gpu_required: false
+  min_vram_gb: 1

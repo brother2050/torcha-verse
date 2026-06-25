@@ -215,6 +215,79 @@ class LocalTorchTextProvider(LLMProvider):
     # ------------------------------------------------------------------
     # LLMProvider interface
     # ------------------------------------------------------------------
+    def embed(self, text: str) -> List[float]:
+        """Project ``text`` to a dense vector (mean-pooled last hidden state).
+
+        Used by the RAG stack to project natural-language queries
+        and documents into the vector-store space.  The result is
+        an L2-normalised float list with length
+        ``config.d_model`` (typically 64 / 128 / 256 depending on
+        the configured tiny model).
+
+        Implementation: encode ``text`` with the underlying
+        :class:`TransformerDecoder`, mean-pool across the time
+        axis (ignoring the leading SOS / final EOS if any), and
+        L2-normalise so cosine similarity == inner product.
+        """
+        if not isinstance(text, str):
+            raise TypeError(f"text must be str, got {type(text).__name__}")
+        return self.embed_batch([text])[0]
+
+    def embed_batch(self, texts: Sequence[str]) -> List[List[float]]:
+        """Project a batch of texts to a matrix of L2-normalised vectors.
+
+        Returns one float list per input string.  Empty input
+        returns an empty list.  The implementation pads the
+        batch internally to the longest sequence length and runs
+        a single forward pass.
+        """
+        texts = list(texts)
+        if not texts:
+            return []
+        for i, t in enumerate(texts):
+            if not isinstance(t, str):
+                raise TypeError(
+                    f"texts[{i}] must be str, got {type(t).__name__}"
+                )
+        with self._lock:
+            with torch.no_grad():
+                encoded = [self._tokenizer.encode(t) for t in texts]
+                max_len = max(len(ids) for ids in encoded)
+                # Pad with the tokenizer's pad id (0 if not set).
+                pad_id = getattr(self._tokenizer, "pad_id", 0) or 0
+                batch = torch.full(
+                    (len(encoded), max_len), pad_id, dtype=torch.long
+                )
+                for i, ids in enumerate(encoded):
+                    batch[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+                batch = batch.to(self._device)
+                # ``TransformerDecoder`` accepts (B, T) int64 token
+                # ids; if a different signature is used the
+                # fallback path below kicks in.
+                try:
+                    hidden = self._model(batch)  # type: ignore[arg-type]
+                except TypeError:
+                    # Some decoders take ``inputs`` / ``tokens`` kwargs.
+                    hidden = self._model(inputs=batch)  # type: ignore[call-arg]
+                # ``hidden`` may be a tensor (B, T, D) or an object
+                # exposing ``last_hidden_state``.
+                if hasattr(hidden, "last_hidden_state"):
+                    hidden = hidden.last_hidden_state
+                if not torch.is_tensor(hidden):
+                    raise RuntimeError(
+                        "LocalTorchTextProvider.embed_batch: model output is not a "
+                        "tensor; cannot mean-pool."
+                    )
+                # Build a mask (1 for real tokens, 0 for padding).
+                mask = (batch != pad_id).unsqueeze(-1).to(hidden.dtype)
+                summed = (hidden * mask).sum(dim=1)
+                counts = mask.sum(dim=1).clamp_min(1.0)
+                pooled = summed / counts
+                # L2-normalise.
+                norms = pooled.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+                pooled = pooled / norms
+                return pooled.detach().cpu().tolist()
+
     def generate(
         self,
         prompt: Union[str, Sequence[int]],

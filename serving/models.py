@@ -146,8 +146,18 @@ class RAGRequest(BaseModel):
     """Request body for ``POST /v1/rag/query``."""
 
     question: str
+    index_name: str = Field(default="default", min_length=1, max_length=128)
     top_k: int = Field(default=5, ge=1, le=50)
     rerank: bool = False
+    synthesize: bool = Field(
+        default=True,
+        description=(
+            "When True (default) the retrieved context is sent to the LLM "
+            "for a final answer; when False the raw hits + context block "
+            "are returned without synthesis."
+        ),
+    )
+    max_tokens: int = Field(default=256, ge=1, le=8192)
 
 
 class AgentRequest(BaseModel):
@@ -157,6 +167,7 @@ class AgentRequest(BaseModel):
     agent_type: str = "react"
     flow: Optional[str] = None
     max_steps: int = Field(default=10, ge=1, le=50)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     stream: bool = False
 
 

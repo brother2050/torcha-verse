@@ -62,6 +62,8 @@ from .huggingface import (
     FileDownload,
     HttpTransport,
     HuggingFaceSource,
+    OllamaTransport,
+    OpenAICompatTransport,
     UrllibTransport,
 )
 from .license_check import (
@@ -110,6 +112,8 @@ __all__ = [
     "FileDownload",
     "HttpTransport",
     "HuggingFaceSource",
+    "OllamaTransport",
+    "OpenAICompatTransport",
     "UrllibTransport",
     "DownloadProgress",
     "DEFAULT_API_BASE",

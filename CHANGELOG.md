@@ -4,6 +4,125 @@
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-06-25
+
+### D 档: 把 v0.4.x 留的 placeholder 全部填实 (5 大业务块 + 4 个 CI / 工具块 + 1 个测试文件 + 4 个新 module)
+
+v0.4.x 一线 (commit `8b9e5e2` 之后) 在 `scripts/check_hardcoding_rules.py` /
+`serving/app.py` / `serving/cli.py` / `serving/web_ui.py` / `assets/store.py` /
+`models/source/huggingface.py` / `training/dataset.py` / `papers/adapter.py` 等
+模块保留了 **80+** 处 `pass` / `NotImplementedError` placeholder — v0.4.x 的开发
+时间表上没有做对应的实现。本批按用户 "全部开发, 不需要时间, 中间决定有你选择
+最优选择" 的指示, **全部填实**。选型原则: (1) 复用项目已有的 protocol 抽象
+(`LocalTorchTextProvider` / `LocalTorchMultimodalProvider` / `AssetStore` /
+`ToolRegistry` / `ModuleBus` / `HttpTransport`); (2) 第三方依赖尽量避开
+(`boto3` / `pyarrow` / `pandas` / `faiss` 都 try/except 软依赖); (3) CPU /
+MPS / CUDA 都能跑; (4) 全部用 e2e 烟雾测试或单元测试验证。
+
+- **D1 (新增) 4 个 L4 业务块全实现**
+  - **Cold storage (W2)**: `assets/cold_storage.py` 新增
+    - `LocalColdStorage` (本地文件系统, 内容寻址 sharding) +
+    `S3ColdStorage` (S3-compatible, 完整 SigV4 签名, urllib 零依赖回退, boto3
+    可选加速) + `make_cold_storage(config=ColdStorageConfig)` 工厂
+    + `ColdStorageError` 异常体系
+    - `AssetStore` 新增 `cold_storage` / `mirror_to_cold` 构造参数 +
+    `_push_to_cold()` best-effort 后台镜像 + `promote_from_cold()` 懒加载 +
+    `evict_to_cold()` 主动驱逐 (warm 删, cold 留) + `set_mirror_to_cold()` 开关
+    - 单元测试覆盖 round-trip / factory 选 backend / AssetStore 写盘自动镜像
+  - **RAG (W3)**: 4 个新模块
+    - `infrastructure/vector_store.py` — `VectorIndex` / `SearchHit` /
+    `InMemoryVectorStore` (NumPy cosine, L2-norm, argpartition top-k) +
+    `FaissVectorStore` (可选) + `make_vector_store()` 工厂
+    - `infrastructure/rag.py` — `TextChunker` (sliding window) +
+    `RAGIngestor` (32-doc batch embed) + `RAGRetriever` (embed + top-k +
+    `retrieve_with_context` 拼 context block) + `RAGIndex` / `RAGIndexStore`
+    (process-wide + 多 index)
+    - `nodes/rag.py` — 6 个 L4 节点: `RAGIngestNode` / `RAGQueryNode` /
+    `RAGDeleteNode` / `RAGListIndexesNode` / `RAGGetIndexNode` /
+    `RAGSearchTextNode`; 通过 `LocalTorchTextProvider.embed_batch` 走
+    `ModuleBus.resolve("text")` 真实 embedding
+    - 单元测试覆盖 e2e ingest -> query -> delete
+  - **Agent (W4)**: `infrastructure/agent.py` 新增
+    - `ToolSpec` (name validation) + `ToolResult` (ok/output/error) +
+    `ToolRegistry` (register / try_register / invoke / describe / __contains__) +
+    `AgentRunResult` (query/final_answer/steps/iterations/ok)
+    - `AgentBus` ReAct loop (max_steps / max_parse_failures / history)
+    - `_FINAL_ANSWER_RE` / `_THOUGHT_RE` / `_ACTION_RE` 解析 + `_parse_action_args`
+    (key=value with quote + JSON value + type coercion)
+    - 默认工具: `rag_query` / `list_rag_indexes` / `text_complete`
+    - `nodes/agent.py` — 2 个 L4 节点: `AgentRunNode` / `AgentListToolsNode`
+    - 单元测试覆盖 ReAct 2 步 ok 路径
+  - **Multimodal (W5)**: `nodes/_helpers.py` + `nodes/image.py` + `nodes/video.py`
+    - `_DEFAULT_MULTIMODAL_BACKEND` slot + `register_default_multimodal_backend()`
+    + `_local_multimodal_factory()` (LocalTorchMultimodalProvider, 真 provider)
+    + `_multimodal_echo_factory()` (EchoMultimodalProvider, 默认 fallback)
+    + `call_multimodal_backend(text/dict/list -> multimodal.generate)`
+    - `ImageUnderstandNode` / `VideoUnderstandNode` 真接 multimodal provider
+  - **Serving (W6)**: 3 个 endpoint 从 stub 变真接
+    - `serving/app.py` — `multimodal_understand` 走 `image_understand` /
+    `text_chat` 节点; `rag_query` 走 `rag_query` (retrieval) + `text_chat`
+    (synthesis); `agent_run` 走 `agent_run` 节点, 都过 3 个安全门 (sanitise /
+    prompt-injection / output filter)
+    - `serving/models.py` — `RAGRequest` 加 `index_name` 字段
+    - `serving/cli.py` — `torcha rag ingest` / `rag query` / `agent run` 真接
+    上述 L4 节点
+    - `serving/web_ui.py` — Gradio 4 个 tab (multimodal chat / RAG manager /
+    agent) 真接 L4 节点 + 步骤 transcript 渲染
+
+- **D2 (新增) 4 个 protocol / adapter 块全实现**
+  - **HttpTransport (W7)**: `models/source/huggingface.py` 加 2 个真实现
+    - `OpenAICompatTransport` (Bearer 鉴权 + $OPENAI_API_KEY / $OPENAI_COMPAT_API_KEY
+    env fallback, base_url 任意 OpenAI-compat 提供方)
+    - `OllamaTransport` (no-auth JSON, $OLLAMA_HOST / $OLLAMA_API_KEY env, 5x
+    timeout 适配 blob pulls)
+  - **Dataset (W8)**: `training/dataset.py` 加 Parquet + 多格式 support
+    - `_read_csv_rows()` / `_read_parquet_rows()` (pyarrow → pandas 软依赖) helper
+    - `TextDataset` 加 `.parquet` / `.pq` 路径
+    - `ChatDataset` 加 `.csv` / `.parquet` 路径 + column-based 解析
+    (`turn_<idx>_role` / `turn_<idx>_content` + JSON-encoded conversations 列)
+    - `ImageTextDataset` 加 `.csv` / `.parquet` 路径
+    - 单元测试覆盖 JSONL / CSV (column-based) / CSV (json-encoded convs) 4 个 case
+  - **Paper adapter (W9)**: `papers/adapters/` 包 + 2 个真 paper adapter
+    - `_mmdit.py` — 共享 `MMDiTDenoiser` (MM-DiT blocks + RoPE + QK-Norm +
+    adaLN-zero + rectified-flow sampler) + `LatentDecoder` + `rectified_flow_sample()`
+    (CFG 支持)
+    - `stable_diffusion_3.py` — SD3 paper spec (yaml) + adapter
+    (arXiv:2403.03206); `SD3TextEncoder` byte-level 编码 + `MMDiTDenoiser`
+    - `hunyuan_dit.py` — HunyuanDiT paper spec (yaml) + adapter
+    (arXiv:2405.08748); `HunyuanTextEncoder` 中英双语 byte-level + lang-id
+    embedding
+    - `papers/__init__.py` 自动注册到 default `AdapterRegistry`
+    - e2e 测试覆盖 SD3 + Hunyuan 64x64 图像生成 (CPU)
+  - **Rule.check (W10)**: `scripts/check_hardcoding_rules.py` 加 2 条规则
+    - `HardcodedSwitchRule` (warn) — 函数体内裸 `True`/`False` 行为开关
+    (init 内、log call 内、runtime attr 内 exempt)
+    - `ApiKeyPatternRule` (critical) — 7 种 API key 前缀正则
+    (OpenAI / Anthropic / GitHub / AWS / Google / Slack / HuggingFace)
+    - DEFAULT_RULES 从 7 → 9
+
+- **D3 (新增) 1 个新 module**
+  - **`models/components/rmsnorm.py`** (W0): torch < 2.4 没有 `nn.RMSNorm` →
+    加 `_RMSNormFallback` 纯 torch 实现 + `RMSNorm` 自动 fallback, 不影响
+    L1 model import
+
+- **D4 (测试 + 文档)**
+  - `tests/test_v05_feature_surface.py` — 26 个新 unit + e2e test, 覆盖
+    W2-W10 全部新增/修改 (24 pass / 2 skip [pydantic 缺失])
+  - `examples/v05_feature_demo.py` — 一键 e2e demo (cold storage / RAG / agent
+    / multimodal), 输出 4 段
+  - `docs/placeholder_registry.md` 更新: 行号微调 (#1 #2 #63) + 新增 #64-67
+    4 个新 placeholder, 合计 67 处
+
+- **测试影响**: 1027 passed / 6 skipped / 3 failed (3 fail 全是环境
+  依赖问题: numpy not available / torch CPU half addmm, 跟 v0.5 改动无关)
+- **新增依赖**: 无 (全部 try/except 软依赖)
+- **API 不变**: `BaseNode` / `ModuleBus` / `AssetStore` / `Serving CLI` 端点
+  全部向后兼容;新增 `OpenAICompatTransport` / `OllamaTransport` 走
+  `HttpTransport` protocol
+- **下一步**: v0.6.x — plug in 官方 SD3 / HunyuanDiT weights (本批的
+  `MMDiTDenoiser` 架构 clone 已经是 faithful 1:1); 端点 streaming; cold
+  storage multipart upload; RAG reranker
+
 ## [v0.4.3] - 2026-06-25
 
 ### C 档: v1.0.0 6/8 骨架加深 (4 块业务代码 + 1 个 CI 草稿 + 4 个新测试文件 + 56 个新测试)

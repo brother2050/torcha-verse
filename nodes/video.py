@@ -414,6 +414,58 @@ class VideoInterpolateNode(BaseNode):
 
 
 # ---------------------------------------------------------------------------
+# Video understand node (added in v0.4.4)
+# ---------------------------------------------------------------------------
+@register_node("video_understand")
+class VideoUnderstandNode(BaseNode):
+    """Multimodal video-understanding node (``video_understand``).
+
+    Takes a list of video frames (tensors / PIL images / paths)
+    and an optional text question, and returns the multimodal
+    model's textual response describing the video.  Internally
+    uses the :class:`LocalTorchMultimodalProvider` via
+    :func:`call_multimodal_backend`.
+
+    Inputs:
+        frames: A list of frame tensors / PIL images (required).
+        question: Optional text question; defaults to
+            ``"Describe the video in detail."``.
+        max_new_tokens: Cap on the answer length (default 128).
+
+    Outputs:
+        text: The model's response.
+    """
+
+    spec: NodeSpec = NodeSpec(
+        type="video_understand",
+        name="Video Understand",
+        description="Use a multimodal model to describe or answer questions about a video frame sequence.",
+        inputs={
+            "frames": "JSON",
+            "question": "Optional[TEXT]",
+            "max_new_tokens": "Optional[INT]",
+        },
+        outputs={"text": "TEXT", "raw": "JSON"},
+        tags=["video", "understanding", "multimodal"],
+    )
+
+    def execute(self, ctx: NodeContext, **inputs: Any) -> Dict[str, Any]:
+        from ._helpers import call_multimodal_backend
+
+        frames = inputs.get("frames")
+        if not frames:
+            raise ValueError("video_understand requires a non-empty `frames` list.")
+        question = str(inputs.get("question", "Describe the video in detail."))
+        max_new_tokens = int(inputs.get("max_new_tokens", 128) or 128)
+        payload: Dict[str, Any] = {"text": question, "frames": list(frames)}
+        result = call_multimodal_backend(
+            ctx.bus, None, input=payload, max_new_tokens=max_new_tokens
+        )
+        text = str(result.get("text", "")).strip()
+        return {"text": text, "raw": result}
+
+
+# ---------------------------------------------------------------------------
 # VideoStitchNode
 # ---------------------------------------------------------------------------
 @register_node("video_stitch")

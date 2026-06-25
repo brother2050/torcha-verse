@@ -351,6 +351,8 @@ class TextDataset(BaseDataset):
             self._load_jsonl()
         elif suffix == ".csv":
             self._load_csv()
+        elif suffix in (".parquet", ".pq"):
+            self._load_parquet()
         else:
             self._load_text()
 
@@ -398,6 +400,30 @@ class TextDataset(BaseDataset):
                 text = line.strip()
                 if text:
                     self._examples.append(text)
+
+    def _load_parquet(self) -> None:
+        """Load a Parquet file with a text column.
+
+        Parquet support is opt-in: the module imports ``pyarrow`` /
+        ``pandas`` lazily and falls back to a clear error when
+        neither is installed.  Operators that need a zero-dependency
+        build can drop the optional dependencies from
+        ``requirements.txt`` without breaking the rest of the
+        dataset stack.
+        """
+        rows = _read_parquet_rows(self.file_path)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            text = row.get(self.text_field)
+            if text is None and row:
+                # Fall back to the first column when the configured
+                # field is missing -- mirrors the CSV branch.
+                first_key = next(iter(row.keys()), None)
+                if first_key is not None:
+                    text = row.get(first_key)
+            if text:
+                self._examples.append(text)
 
     def _build_blocks(self) -> None:
         """Concatenate all text and split into fixed-size token blocks."""
@@ -492,22 +518,45 @@ class ChatDataset(BaseDataset):
 
     # ------------------------------------------------------------------
     def _load(self) -> None:
-        """Load conversations from the JSONL file."""
+        """Load conversations from the configured file.
+
+        Recognised extensions:
+
+        * ``.jsonl`` -- one JSON object per line.
+        * ``.csv`` / ``.parquet`` -- each row is a record with either
+          a ``"conversations"`` / ``"messages"`` column (JSON-encoded
+          string) or with the column names suffixed by ``_role`` /
+          ``_content`` for the role/content pairs.
+        """
         if not self.file_path.exists():
             raise FileNotFoundError(f"Data file not found: {self.file_path}")
 
-        with open(self.file_path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                messages = self._extract_messages(obj)
-                if messages:
-                    self._examples.append(messages)
+        suffix = self.file_path.suffix.lower()
+        if suffix == ".jsonl":
+            raw_objects: List[Dict[str, Any]] = []
+            with open(self.file_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        raw_objects.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        elif suffix == ".csv":
+            raw_objects = _read_csv_rows(self.file_path)
+        elif suffix in (".parquet", ".pq"):
+            raw_objects = _read_parquet_rows(self.file_path)
+        else:
+            raise ValueError(
+                f"ChatDataset does not support .{suffix} files; "
+                "use .jsonl, .csv or .parquet."
+            )
+
+        for obj in raw_objects:
+            messages = self._extract_messages(obj)
+            if messages:
+                self._examples.append(messages)
 
         self._logger.info(
             "Loaded %d conversations from %s.", len(self._examples), self.file_path
@@ -521,12 +570,35 @@ class ChatDataset(BaseDataset):
 
         Returns:
             A list of ``{"role": ..., "content": ...}`` dictionaries.
+
+        Notes:
+            CSV / Parquet rows often serialise a list of messages
+            as a single JSON string under the ``"conversations"`` /
+            ``"messages"`` column.  When that happens we transparently
+            decode the string back into a list -- callers therefore
+            do not have to pre-parse the JSON themselves.
         """
         messages: List[Dict[str, str]] = []
 
         # Prepend the system prompt if configured.
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
+
+        # The row-shape used in CSV/Parquet files may have
+        # "conversations" / "messages" as JSON-encoded strings; if
+        # so, decode them transparently.
+        if "conversations" in obj and isinstance(obj["conversations"], str):
+            try:
+                obj = dict(obj)
+                obj["conversations"] = json.loads(obj["conversations"])
+            except json.JSONDecodeError:
+                return []
+        if "messages" in obj and isinstance(obj["messages"], str):
+            try:
+                obj = dict(obj)
+                obj["messages"] = json.loads(obj["messages"])
+            except json.JSONDecodeError:
+                return []
 
         if "conversations" in obj:
             # ShareGPT format.
@@ -543,7 +615,57 @@ class ChatDataset(BaseDataset):
                 content = turn.get("content", "")
                 messages.append({"role": role, "content": content})
         else:
-            return []
+            # Column-based format (common in CSV exports): e.g.
+            # ``turn_0_role=user``, ``turn_0_content=hi``,
+            # ``turn_1_role=assistant``, ``turn_1_content=hello``.
+            # The columns are gathered by suffix and ordered by the
+            # numeric prefix.
+            turn_cols: Dict[int, Dict[str, str]] = {}
+            for key, value in obj.items():
+                if not isinstance(key, str):
+                    continue
+                # The column naming convention is
+                # ``<prefix>_<idx>_<field>`` where ``prefix`` is
+                # any non-numeric name (e.g. ``turn``) and
+                # ``field`` is one of ``role`` / ``content``.
+                # We split on underscores and look for the first
+                # numeric chunk to find the turn index.
+                parts = key.split("_")
+                if len(parts) < 3:
+                    continue
+                # The field is always the last component.
+                field = parts[-1]
+                if field not in ("role", "content"):
+                    continue
+                # The turn index is the LAST numeric chunk
+                # before the field.  Search from the right so that
+                # a multi-word prefix (e.g. ``my_turn_0``) still
+                # works.
+                idx_str = ""
+                for piece in reversed(parts[:-1]):
+                    if piece.isdigit():
+                        idx_str = piece
+                        break
+                if not idx_str:
+                    continue
+                try:
+                    idx = int(idx_str)
+                except ValueError:
+                    continue
+                turn_cols.setdefault(idx, {})[field] = (
+                    "" if value is None else str(value)
+                )
+            for idx in sorted(turn_cols):
+                row = turn_cols[idx]
+                if not row.get("content"):
+                    continue
+                role = row.get("role", "user")
+                # Honour the ShareGPT role map (so callers can use
+                # the same column names as their JSONL export).
+                role = self._SHAREGPT_ROLE_MAP.get(role.lower(), role)
+                messages.append({"role": role, "content": row["content"]})
+            if not messages:
+                return []
 
         return messages
 
@@ -630,25 +752,46 @@ class ImageTextDataset(BaseDataset):
 
     # ------------------------------------------------------------------
     def _load(self) -> None:
-        """Load image-caption pairs from the JSONL file."""
+        """Load image-caption pairs from the configured file.
+
+        Recognised extensions:
+
+        * ``.jsonl`` -- one JSON object per line.
+        * ``.csv`` / ``.parquet`` -- one row per pair, with the
+          configured ``image_field`` / ``caption_field`` columns.
+        """
         if not self.file_path.exists():
             raise FileNotFoundError(f"Data file not found: {self.file_path}")
 
-        with open(self.file_path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                image_path = obj.get(self.image_field, "")
-                caption = obj.get(self.caption_field, obj.get("text", ""))
-                if image_path and caption:
-                    self._examples.append(
-                        {"image": image_path, "caption": caption}
-                    )
+        suffix = self.file_path.suffix.lower()
+        if suffix == ".jsonl":
+            raw_objects: List[Dict[str, Any]] = []
+            with open(self.file_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        raw_objects.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        elif suffix == ".csv":
+            raw_objects = _read_csv_rows(self.file_path)
+        elif suffix in (".parquet", ".pq"):
+            raw_objects = _read_parquet_rows(self.file_path)
+        else:
+            raise ValueError(
+                f"ImageTextDataset does not support .{suffix} files; "
+                "use .jsonl, .csv or .parquet."
+            )
+
+        for obj in raw_objects:
+            image_path = obj.get(self.image_field, "")
+            caption = obj.get(self.caption_field, obj.get("text", ""))
+            if image_path and caption:
+                self._examples.append(
+                    {"image": image_path, "caption": caption}
+                )
 
         self._logger.info(
             "Loaded %d image-caption pairs from %s.",
@@ -853,3 +996,68 @@ class StreamingDataset(Dataset):
     def collate_fn(self, batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """Collate a batch of streaming examples."""
         return collate_fn(batch, pad_token_id=self.pad_token_id)
+
+
+# ---------------------------------------------------------------------------
+# File-format helpers (shared by every dataset subclass)
+# ---------------------------------------------------------------------------
+def _read_csv_rows(file_path: PathLike) -> List[Dict[str, Any]]:
+    """Read a CSV file and return a list of ``{column: value}`` dicts.
+
+    Values are returned as plain strings (no automatic type
+    coercion) so the dataset layer can decide what to do with
+    them.  Empty cells become the empty string, never ``None``,
+    to keep downstream ``row.get("text", "")`` lookups robust.
+    """
+    with open(file_path, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        return [dict(row) for row in reader]
+
+
+def _read_parquet_rows(file_path: PathLike) -> List[Dict[str, Any]]:
+    """Read a Parquet file and return a list of ``{column: value}`` dicts.
+
+    Parquet support is opt-in: this helper tries ``pyarrow``
+    first, then ``pandas``, and finally raises a clear error
+    when neither optional dependency is available.  The dataset
+    layer is therefore usable in zero-dependency environments
+    *as long as* the operator avoids Parquet files.
+    """
+    p = Path(file_path).expanduser().resolve()
+    if not p.exists():
+        raise FileNotFoundError(f"Parquet file not found: {p}")
+    # pyarrow is the canonical, lightweight reader.
+    try:
+        import pyarrow.parquet as _pq  # type: ignore[import-not-found]
+
+        table = _pq.read_table(p)
+        columns = table.column_names
+        out: List[Dict[str, Any]] = []
+        for i in range(table.num_rows):
+            row: Dict[str, Any] = {}
+            for col in columns:
+                value = table.column(col)[i].as_py()
+                row[str(col)] = "" if value is None else value
+            out.append(row)
+        return out
+    except ImportError:
+        pass
+    # pandas is the second-choice reader -- many production
+    # environments already have it installed for data analysis.
+    try:
+        import pandas as _pd  # type: ignore[import-not-found]
+
+        df = _pd.read_parquet(p)
+        # ``df.to_dict("records")`` returns a list of plain dicts
+        # with Python native types -- exactly what the dataset
+        # layer expects.
+        records: List[Dict[str, Any]] = df.to_dict("records")
+        return [
+            {str(k): ("" if v is None else v) for k, v in row.items()}
+            for row in records
+        ]
+    except ImportError as exc:
+        raise ImportError(
+            "Parquet support requires either `pyarrow` or `pandas`. "
+            "Install one of them (e.g. `pip install pyarrow`) and retry."
+        ) from exc

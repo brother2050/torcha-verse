@@ -151,11 +151,35 @@ def _multimodal_chat(
         A tuple ``(updated_history, cleared_input)``.
     """
     service = _get_service()
+    question = (message or "").strip() or "Describe the input in detail."
 
     try:
-        result = service.multimodal_understand()
+        if image is not None:
+            result = service._run(
+                "multimodal_chat",
+                "image_understand",
+                "img",
+                {
+                    "image": image,
+                    "question": question,
+                    "max_new_tokens": int(max_tokens or 128),
+                },
+                config={"default_multimodal_model": model},
+            )
+        else:
+            result = service._run(
+                "multimodal_chat",
+                "text_chat",
+                "chat",
+                {
+                    "prompt": question,
+                    "model": model or "default",
+                    "max_tokens": int(max_tokens or 256),
+                },
+                config={"default_text_model": model or "default"},
+            )
         if "error" in result:
-            response = f"[Not available] {result['error']}"
+            response = f"[Error] {result['error']}"
         else:
             response = str(result.get("text", ""))
     except Exception as exc:
@@ -376,33 +400,135 @@ def _rag_ingest(
 ) -> str:
     """Ingest uploaded files into the RAG index.
 
-    RAG ingestion is not yet backed by a node; a descriptive message is
-    returned while the tab structure is preserved.
+    Each uploaded file is read as text (best-effort UTF-8, falling
+    back to latin-1) and forwarded to the ``rag_ingest`` L4 node
+    against the default ``"webui"`` index.  The returned status
+    message reports how many documents and chunks were embedded.
     """
     service = _get_service()
-    result = service.rag_query()
-    msg = result.get("error", "RAG ingestion is not yet available via the Pipeline/Node system.")
-    return f"[Not available] {msg}"
+    if not files:
+        return "[Info] No files uploaded."
+    documents: List[Dict[str, Any]] = []
+    for i, f in enumerate(files):
+        path = getattr(f, "name", None) or (f if isinstance(f, str) else None)
+        if not path:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except Exception as exc:  # noqa: BLE001
+            try:
+                with open(path, "r", encoding="latin-1", errors="replace") as fh:
+                    text = fh.read()
+            except Exception as exc2:  # noqa: BLE001
+                logger.warning("Failed to read %s: %s / %s", path, exc, exc2)
+                continue
+        if not text.strip():
+            continue
+        doc_id = f"webui_{i:04d}_{int(time.time())}"
+        documents.append({"doc_id": doc_id, "text": text})
+
+    if not documents:
+        return "[Info] No readable text content in the uploaded files."
+
+    result = service._run(
+        "rag_ingest",
+        "rag_ingest",
+        "ingest",
+        {
+            "index_name": "webui",
+            "documents": documents,
+            "chunk_size": int(chunk_size),
+            "chunk_overlap": int(chunk_overlap),
+        },
+    )
+    if "error" in result:
+        return f"[Error] {result['error']}"
+    docs = int(result.get("documents", 0))
+    vecs = int(result.get("vectors", 0))
+    return f"[OK] Ingested {docs} documents -> {vecs} vectors into index 'webui'."
 
 
 def _rag_query(question: str, top_k: int, rerank: bool) -> Tuple[str, str]:
     """Query the RAG engine.
 
-    RAG query is not yet backed by a node; a ``not_implemented`` message
-    is returned while the tab structure is preserved.
+    Backed by the ``rag_query`` L4 node (embedding + top-k retrieval)
+    followed by a ``text_chat`` L4 node for answer synthesis.  The
+    second tuple element renders the hit list as a Markdown list of
+    source citations.
     """
     service = _get_service()
-    result = service.rag_query()
-    msg = result.get("error", "RAG query is not yet available via the Pipeline/Node system.")
-    return f"[Not available] {msg}", ""
+    question = (question or "").strip()
+    if not question:
+        return "[Error] Question is required.", ""
+
+    retrieval = service._run(
+        "rag_query",
+        "rag_query",
+        "retrieval",
+        {"index_name": "webui", "query": question, "top_k": int(top_k)},
+    )
+    if "error" in retrieval:
+        return f"[Error] {retrieval['error']}", ""
+    hits = retrieval.get("hits", [])
+    context = retrieval.get("context", "")
+
+    if not context:
+        return (
+            "(no relevant context found in the 'webui' index -- "
+            "upload and ingest some documents first)",
+            "",
+        )
+
+    user_prompt = (
+        "Use the following context to answer the question.\n\n"
+        f"Context:\n{context}\n\n"
+        f"Question: {question}\n\nAnswer:"
+    )
+    answer = service._run(
+        "rag_query_synth",
+        "text_chat",
+        "answer",
+        {
+            "prompt": user_prompt,
+            "model": "default",
+            "max_tokens": 256,
+        },
+    )
+    if "error" in answer:
+        return f"[Error] {answer['error']}", ""
+    text = str(answer.get("text", ""))
+
+    sources_lines: List[str] = ["**Sources:**"]
+    for i, h in enumerate(hits[: int(top_k)], start=1):
+        score = float(h.get("score", 0.0))
+        doc_id = h.get("doc_id", "?")
+        chunk_id = h.get("chunk_id", "?")
+        sources_lines.append(
+            f"{i}. `{doc_id}` (chunk `{chunk_id}`, score={score:.3f})"
+        )
+    sources_md = "\n".join(sources_lines) if hits else "(no sources)"
+    return text, sources_md
 
 
 def _rag_clear() -> str:
     """Clear the RAG index.
 
-    RAG management is not yet backed by a node.
+    Backed by the ``rag_delete`` L4 node with ``drop_index=True``
+    against the default ``"webui"`` index.
     """
-    return "[Not available] RAG index management is not yet available via the Pipeline/Node system."
+    service = _get_service()
+    result = service._run(
+        "rag_clear",
+        "rag_delete",
+        "drop",
+        {"index_name": "webui", "drop_index": True},
+    )
+    if "error" in result:
+        return f"[Error] {result['error']}"
+    if result.get("dropped"):
+        return "[OK] RAG index 'webui' was dropped."
+    return "[Info] RAG index 'webui' did not exist (nothing to clear)."
 
 
 def _build_rag_tab() -> None:
@@ -458,16 +584,45 @@ def _agent_run(
 ) -> Tuple[str, str]:
     """Run an agent and return the output and reasoning trace.
 
-    Agent execution is not yet backed by a node; a ``not_implemented``
-    message is returned while the tab structure is preserved.
+    Backed by the ``agent_run`` L4 node (ReAct loop with
+    tool-calling).  The first returned value is the agent's final
+    answer, the second is a Markdown rendering of the per-step
+    ``thought / action / observation`` transcript.
     """
     service = _get_service()
-    result = service.agent_run()
+    task = (task or "").strip()
+    if not task:
+        return "[Error] Task is required.", ""
+    max_steps_i = int(max_steps)
+    result = service._run(
+        "agent_run",
+        "agent_run",
+        "agent",
+        {"query": task, "max_steps": max_steps_i, "temperature": 0.0},
+    )
     if "error" in result:
-        output = f"[Not available] {result['error']}"
+        output = f"[Error] {result['error']}"
+        trace_text = ""
     else:
-        output = str(result.get("output", ""))
-    trace_text = "Agent execution is not yet available via the Pipeline/Node system."
+        output = str(result.get("final_answer", ""))
+        if not result.get("ok", False):
+            output = (
+                f"{output}\n\n[Warning] agent did not converge "
+                f"in {int(result.get('iterations', 0))} step(s)."
+            )
+        steps = result.get("steps", [])
+        trace_lines: List[str] = []
+        for i, s in enumerate(steps, start=1):
+            trace_lines.append(f"**Step {i}**")
+            if s.get("thought"):
+                trace_lines.append(f"- **Thought:** {s['thought']}")
+            if s.get("action"):
+                trace_lines.append(f"- **Action:** {s['action']}")
+            if s.get("observation") is not None:
+                trace_lines.append(
+                    f"- **Observation:** {s['observation']}"
+                )
+        trace_text = "\n".join(trace_lines) if trace_lines else "(no steps)"
     return output, trace_text
 
 

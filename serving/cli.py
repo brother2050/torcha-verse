@@ -609,16 +609,63 @@ def rag() -> None:
 def ingest(docs_path: str, chunk_size: int, chunk_overlap: int) -> None:
     """Ingest documents into the RAG vector store.
 
-    RAG ingestion is not yet backed by a node; a descriptive message is
-    printed while the command structure is preserved.
+    Backed by the ``rag_ingest`` L4 node.  ``docs_path`` can point to
+    a single file (``.txt``/``.md``) or to a directory -- in the
+    latter case every file matching the supported extensions is read
+    and forwarded as a separate document.  Documents are stored under
+    the ``"cli"`` index by default.
     """
+    import os
+
     service = _get_service()
-    result = service.rag_query()
-    msg = result.get("error", "RAG ingestion is not yet available via the Pipeline/Node system.")
-    console.print(f"[yellow]{msg}[/yellow]")
+    documents: List[Dict[str, Any]] = []
+    if os.path.isfile(docs_path):
+        paths = [docs_path]
+    elif os.path.isdir(docs_path):
+        paths = [
+            os.path.join(docs_path, n)
+            for n in sorted(os.listdir(docs_path))
+            if n.lower().endswith((".txt", ".md", ".text", ".log"))
+        ]
+    else:
+        console.print(f"[red]Path not found:[/red] {docs_path}")
+        return
+
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]skip {p}:[/yellow] {exc}")
+            continue
+        if not text.strip():
+            continue
+        doc_id = f"cli_{os.path.basename(p)}_{int(time.time())}"
+        documents.append({"doc_id": doc_id, "text": text, "metadata": {"path": p}})
+
+    if not documents:
+        console.print("[yellow]No readable documents found.[/yellow]")
+        return
+
+    result = service._run(
+        "rag_ingest",
+        "rag_ingest",
+        "ingest",
+        {
+            "index_name": "cli",
+            "documents": documents,
+            "chunk_size": int(chunk_size),
+            "chunk_overlap": int(chunk_overlap),
+        },
+    )
+    if "error" in result:
+        console.print(f"[red]Ingest failed:[/red] {result['error']}")
+        return
+    docs = int(result.get("documents", 0))
+    vecs = int(result.get("vectors", 0))
     console.print(
-        f"[dim]Requested source: {docs_path} "
-        f"(chunk_size={chunk_size}, overlap={chunk_overlap})[/dim]"
+        f"[green]Ingested[/green] {docs} documents "
+        f"[green]into index 'cli' -- {vecs} vectors.[/green]"
     )
 
 
@@ -626,19 +673,104 @@ def ingest(docs_path: str, chunk_size: int, chunk_overlap: int) -> None:
 @click.option("--question", required=True, help="Question to ask.")
 @click.option("--top-k", default=5, type=int, help="Number of chunks to retrieve.")
 @click.option("--rerank", is_flag=True, help="Apply keyword reranking.")
-def query(question: str, top_k: int, rerank: bool) -> None:
+@click.option(
+    "--index-name",
+    default="cli",
+    show_default=True,
+    help="The RAG index to query.",
+)
+@click.option(
+    "--no-synth",
+    is_flag=True,
+    help="Return raw retrieval context only (skip the LLM synthesis step).",
+)
+def query(
+    question: str,
+    top_k: int,
+    rerank: bool,
+    index_name: str,
+    no_synth: bool,
+) -> None:
     """Query the RAG engine with a question.
 
-    RAG query is not yet backed by a node; a ``not_implemented`` message
-    is printed while the command structure is preserved.
+    Backed by the ``rag_query`` L4 node (top-k retrieval) plus a
+    ``text_chat`` L4 node (LLM answer synthesis).  Pass
+    ``--no-synth`` to skip the LLM call and return the raw retrieved
+    context block.
     """
     service = _get_service()
-    result = service.rag_query()
-    msg = result.get("error", "RAG query is not yet available via the Pipeline/Node system.")
-    console.print(f"[yellow]{msg}[/yellow]")
-    console.print(
-        f"[dim]Question: {question} (top_k={top_k}, rerank={rerank})[/dim]"
+    retrieval = service._run(
+        "rag_query",
+        "rag_query",
+        "retrieval",
+        {
+            "index_name": index_name,
+            "query": question,
+            "top_k": int(top_k),
+        },
     )
+    if "error" in retrieval:
+        console.print(f"[red]Retrieval failed:[/red] {retrieval['error']}")
+        return
+    hits = retrieval.get("hits", [])
+    context = retrieval.get("context", "")
+
+    if no_synth:
+        console.print(
+            f"[cyan]Retrieved {len(hits)} chunks from index[/cyan] "
+            f"[bold]{index_name}[/bold]:"
+        )
+        for i, h in enumerate(hits, start=1):
+            console.print(
+                f"  {i}. {h.get('doc_id', '?')} "
+                f"(chunk {h.get('chunk_id', '?')}, "
+                f"score={float(h.get('score', 0.0)):.3f})"
+            )
+        if context:
+            console.print(Panel(context, title="Context", border_style="cyan"))
+        return
+
+    if not context:
+        console.print(
+            f"[yellow]No context found in index '{index_name}'. "
+            f"Ingest some documents first (torcha rag ingest).[/yellow]"
+        )
+        return
+
+    user_prompt = (
+        "Use the following context to answer the question.\n\n"
+        f"Context:\n{context}\n\n"
+        f"Question: {question}\n\nAnswer:"
+    )
+    answer = service._run(
+        "rag_query_synth",
+        "text_chat",
+        "answer",
+        {
+            "prompt": user_prompt,
+            "model": "default",
+            "max_tokens": 256,
+        },
+    )
+    if "error" in answer:
+        console.print(f"[red]Answer failed:[/red] {answer['error']}")
+        return
+    text = str(answer.get("text", ""))
+    console.print(
+        Panel(
+            text,
+            title=f"Answer (index={index_name}, top_k={top_k})",
+            border_style="green",
+        )
+    )
+    if hits:
+        console.print("[dim]Sources:[/dim]")
+        for i, h in enumerate(hits, start=1):
+            console.print(
+                f"  [dim]{i}. {h.get('doc_id', '?')} "
+                f"(chunk {h.get('chunk_id', '?')}, "
+                f"score={float(h.get('score', 0.0)):.3f})[/dim]"
+            )
 
 
 # ===========================================================================
@@ -662,23 +794,68 @@ def agent() -> None:
 def run(task: str, flow: Optional[str], max_steps: int, stream: bool) -> None:
     """Run an agent on a task.
 
-    Agent execution is not yet backed by a node; a ``not_implemented``
-    message is printed while the command structure is preserved.
+    Backed by the ``agent_run`` L4 node (ReAct loop with
+    tool-calling).  The optional ``--flow`` flag is currently a
+    marker only: the v0.5.x line ships the single-agent ReAct
+    backend, and the multi-agent topologies are scheduled for v0.6.
     """
     service = _get_service()
     if flow:
         console.print(
-            f"[cyan]Requested multi-agent flow:[/cyan] [bold]{flow}[/bold]"
+            f"[cyan]Requested multi-agent flow:[/cyan] [bold]{flow}[/bold] "
+            "[dim](single-agent ReAct backend in v0.5.x; multi-agent in v0.6)[/dim]"
         )
     else:
-        console.print("[cyan]Requested single agent (ReAct)...[/cyan]")
+        console.print("[cyan]Running single agent (ReAct)...[/cyan]")
 
-    result = service.agent_run()
-    msg = result.get("error", "Agent execution is not yet available via the Pipeline/Node system.")
-    console.print(f"\n[yellow]{msg}[/yellow]")
-    console.print(
-        f"[dim]Task: {task} (max_steps={max_steps}, stream={stream})[/dim]"
+    result = service._run(
+        "agent_run",
+        "agent_run",
+        "agent",
+        {
+            "query": task,
+            "max_steps": int(max_steps),
+            "temperature": 0.0,
+        },
     )
+    if "error" in result:
+        console.print(f"[red]Agent run failed:[/red] {result['error']}")
+        return
+    final_answer = str(result.get("final_answer", ""))
+    iterations = int(result.get("iterations", 0))
+    ok = bool(result.get("ok", False))
+    steps = result.get("steps", [])
+
+    console.print(
+        Panel(
+            final_answer or "(no final answer)",
+            title=(
+                f"Final answer ({iterations} step(s), ok={ok})"
+            ),
+            border_style="green" if ok else "yellow",
+        )
+    )
+    if steps:
+        console.print(f"[dim]Trace ({len(steps)} step(s)):[/dim]")
+        for i, s in enumerate(steps, start=1):
+            console.print(
+                Panel(
+                    f"[bold]Thought:[/bold] {s.get('thought', '')}\n"
+                    f"[bold cyan]Action:[/bold cyan] {s.get('action', '-')}",
+                    title=f"Step {i}",
+                    border_style="yellow",
+                    expand=False,
+                )
+            )
+            obs = s.get("observation")
+            if obs is not None:
+                console.print(
+                    Panel(
+                        str(obs),
+                        border_style="cyan",
+                        expand=False,
+                    )
+                )
 
 
 def _print_step(step: Any) -> None:

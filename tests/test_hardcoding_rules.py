@@ -147,13 +147,15 @@ class TestRuleRegistry:
     """
 
     def test_default_rules_count(self):
-        assert len(DEFAULT_RULES) == 7
+        # v0.5.x ships 9 rules: 7 original + HardcodedSwitch + ApiKeyPattern.
+        assert len(DEFAULT_RULES) == 9
 
     def test_default_rules_names(self):
         names = [r.name for r in DEFAULT_RULES]
         assert names == [
             "string_literal", "numeric_literal", "path_literal", "list_literal",
             "fstring_template", "regex_pattern", "dict_literal",
+            "hardcoded_switch", "api_key_pattern",
         ]
 
     def test_default_rules_have_descriptions(self):
@@ -717,10 +719,10 @@ class TestScannerCLI:
         for expected in (
             "string_literal", "numeric_literal", "path_literal",
             "list_literal", "fstring_template", "regex_pattern",
-            "dict_literal",
+            "dict_literal", "hardcoded_switch", "api_key_pattern",
         ):
             assert expected in names
-        assert len(names) == 7
+        assert len(names) == 9
 
     def test_scan_directory_only_rule_string(self, tmp_path):
         """When only_rule='string_literal', numeric and path and list

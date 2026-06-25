@@ -1,0 +1,57 @@
+paper:
+  name: hunyuan-dit
+  title: "HunyuanDiT: A Powerful Multi-Resolution Diffusion Transformer with Fine-Grained Chinese Understanding"
+  authors: ["Li", "Wang", "et al."] # full list lives in the paper PDF
+  arxiv_id: "2405.08748"
+  github: "https://github.com/Tencent-Hunyuan/HunyuanDiT"
+  license: apache-2.0
+  published: "2024-05-14"
+
+integration:
+  type: node
+  node_type: image_txt2img
+  method: mm-dit
+  category: text-to-image
+
+models:
+  - name: hunyuan-dit-1.2b
+    source: tencent
+    repo: Tencent-Hunyuan/HunyuanDiT-1.2B
+    size_gb: 2.5
+    vram_gb: 8.0
+    dependencies: ["torch>=2.0", "transformers>=4.30"]
+  - name: hunyuan-dit-internal
+    source: internal
+    repo: torcha-verse/internal-hunyuan-dit
+    size_gb: 0.05
+    vram_gb: 1.0
+    dependencies: []
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  config:
+    num_steps: 50
+    cfg_scale: 6.0
+    width: 64
+    height: 64
+    hardware: "single H100"
+  description: >-
+    Reproduction uses 50 rectified-flow steps with cfg_scale=6.0 and
+    a single H100.  The 20-step preset is the community "fast"
+    recipe.  The v0.5.x line ships a project-internal,
+    dependency-free re-implementation of the HunyuanDiT denoiser
+    (MM-DiT + rotary-2D + adaln-zero).  Bilingual text encoding
+    uses the project :class:`LocalTorchTextProvider` tokenizer
+    for ASCII text and falls back to a deterministic byte-level
+    encoder for CJK input.  Plugging the official Tencent
+    weights is a v0.6.x follow-up.
+
+reference_impl:
+  hunyuan_dit: "https://github.com/Tencent-Hunyuan/HunyuanDiT"
+  diffusers: "https://github.com/huggingface/diffusers"
+
+compatibility:
+  min_torcha_verse: "0.5.0"
+  gpu_required: false
+  min_vram_gb: 1
