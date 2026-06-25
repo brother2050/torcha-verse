@@ -32,6 +32,27 @@
 
 ---
 
+## D2 — `pass` / `NotImplementedError` 审计结果(已审 2026-06-25)
+
+**现状**
+- 42 处 `pass` / `NotImplementedError`,分布在 18 个文件。
+
+**审计结论(全部合法,无需改代码)**
+| 类别 | 数量 | 文件 | 说明 |
+|---|---:|---|---|
+| 协议/抽象方法(必须) | 5 | `nodes/base.py`, `training/dataset.py` ×2, `papers/adapter.py` ×2 | 子类契约,不可改 |
+| device backend 暂未实现 | 2 | `infrastructure/device_manager.py` | 推迟到分布式调度阶段 |
+| try/except 兜底 | 28 | `python_executor.py` ×4, `store.py` ×2, `sandbox.py`, `rope.py` ×2, `config_center.py` ×3, `checkpoint_manager.py` ×2, `device_manager.py`, `manager.py`, `consistency/scene.py`, `consistency/score.py` ×3, `nodes/_helpers.py`, `nodes/export.py` ×5, `training/sft_trainer.py` ×2, `document_loader.py` ×2 | 资源清理/降级路径,已用 `noqa: BLE001` 标注 |
+| Protocol 占位 | 2 | `infrastructure/resource_budget.py` ×2 | 协议 stub,等到 P2 评估模块时再实现 |
+
+**复审触发条件**
+- 任何新的 pass / NotImplementedError 必须经过 PR review,文档化是协议占位还是降级路径。
+- 任何现有降级 pass 如果接到用户报错,优先在调用方显式 raise(而不是静默吞错)。
+
+**结论**:不再处理,等下一次大改(release 切换)时再扫一次。
+
+---
+
 ## 添加新条目
 
 复制下面这段,改成新条目:
