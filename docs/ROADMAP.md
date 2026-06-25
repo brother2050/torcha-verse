@@ -1,7 +1,7 @@
 # TorchaVerse 路线图
 
 > 日期:2026-06-25 · 状态:初期(early-stage)→ 准生产(quasi-production)
-> 当前 HEAD: `e83aa7e` · 目标 next release: **v0.4.x (P0 multi-modal 已并入)**
+> 当前 HEAD: `de35b14` · 已发布: v0.4.0 / v0.4.1 / **v0.4.2** · 目标 next release: **v0.4.3**
 
 ## 定位
 
@@ -9,6 +9,8 @@
 
 - **v0.4.x 准生产化**(当前在做):补齐工程质量、跑通 1-2 个真模型、补薄弱的包
 - **v1.0.0 生产化**(后续):分布式 / 多租户 / 监控 / 完整评估
+
+> **v0.4.3 状态 (2026-06-25)**: C 档 v1.0.0 子任务 6/8 骨架 (v0.4.2 commit `de35b14`) + 6 个 v0.4.3 加深 (C1b/C2b/C4b/C5b/C6b/C7b, +56 测试, +920 行), B 档 B1 silent degrade 38→0 全清 (v0.4.1), D 档 8/8 ✅. 剩余 C3 Gloo 分布式 (启动条件: 选 backend) + C8 真实大模型 e2e (启动条件: HF/Civitai 镜像 + GPU). 总测试数 986 个非 slow 全过, scanner 双 0 维持.
 
 ---
 
@@ -28,7 +30,19 @@
 | **P5** | ROADMAP + DEFERRED_TASKS 维护 | 进行中 | 持续 |
 | **D1** | Hardcoding 规约化与扫描器校准 (阶段一 + 阶段二 + **阶段三**) | **完成 2026-06-25** | 1 天 |
 | **D3 阶段二** | Placeholder Registry 集中化 | **完成 2026-06-25** | 1 天 |
-| **D3 阶段三** | 降级协议化 + degrade_logging CI 闸口 (partial) | **partial 2026-06-25** | 1 天 |
+| **D3 阶段三** | 降级协议化 + degrade_logging CI 闸口 | **完成 2026-06-25** (v0.4.1 补完 38→0) | 1 天 |
+| **C1 (M0)** | `BudgetTracker.allocate_or_wait` 排队 + 超时 | **完成 2026-06-25** (v0.4.2 骨架) | 1 周 |
+| **C1b** | `BudgetTracker` +4 (try_acquire / allocate_many / stats / allocate_with_backoff) | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
+| **C2 (M1)** | `RuntimeScheduler` 抽象 + ThreadPool/Inline | **完成 2026-06-25** (v0.4.2 骨架; ProcessPool/GPU 留 v1.0.0) | 1-2 周 |
+| **C2b** | `ProcessPoolScheduler` (eager pickle 保护) | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
+| **C4 (M2b)** | Prometheus `/metrics` endpoint (stdlib fallback) | **完成 2026-06-25** (v0.4.2 骨架; Grafana 留 v1.0.0) | 0.5-1 周 |
+| **C4b** | `prometheus_client` swap-in (`is_available` + `export_*`) | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
+| **C5 (M2c)** | Dockerfile + docker-compose + docs | **完成 2026-06-25** (v0.4.2) | 0.5-1 周 |
+| **C5b** | `.github/workflows/ci.yml` 4-job 重写 | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
+| **C6 (M3a)** | 多租户 per-tenant BudgetTracker + 命名空间 | **完成 2026-06-25** (v0.4.2 骨架; 鉴权/目录隔离 留 v1.1) | 1 周 |
+| **C6b** | `Tenant.namespace_root` + `namespace` + `ensure_namespace` | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
+| **C7 (M3b)** | 评估 leaderboard + JSON/Markdown 序列化 | **完成 2026-06-25** (v0.4.2 骨架; Grafana 对接 留 v1.0.0) | 1 周 |
+| **C7b** | leaderboard `to_html` + `compare(metric)` | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
 
 > P0 实际改为"项目自有 tiny transformer + 字节级 tokenizer"路线(纯 torch,
 > 不引入 transformers / diffusers 等外部依赖,见 `docs/DEFERRED_TASKS.md`)。

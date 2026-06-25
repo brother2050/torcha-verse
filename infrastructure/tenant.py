@@ -20,7 +20,11 @@ import contextvars
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional
+from pathlib import Path
+from typing import Dict, Iterator, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    _ = (Path, Dict, Iterator, List, Optional)  # noqa: F841
 
 from .logger import get_logger
 from .metrics import MetricsRegistry
@@ -97,6 +101,10 @@ class Tenant:
         metrics: A per-tenant :class:`MetricsRegistry` so counters
             and histograms can be scraped independently.
         tags: Free-form key-value annotations (e.g. ``plan: pro``).
+        namespace_root: Optional root directory under which
+            per-tenant subdirectories (e.g. ``assets/``) live.
+            When ``None``, the v1.0.0 M3a deliverable falls back
+            to in-memory state only.
     """
 
     tenant_id: str
@@ -106,6 +114,7 @@ class Tenant:
     metrics: MetricsRegistry
     tags: Dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=lambda: __import__("time").time())
+    namespace_root: Optional["Path"] = None
 
     def __post_init__(self) -> None:
         if not self.tenant_id:
@@ -123,6 +132,40 @@ class Tenant:
                 raise ValueError(
                     f"Tag {key!r} too long (key<=64, value<=256)."
                 )
+        # ``namespace_root`` is normalised eagerly so callers can
+        # rely on ``Path`` semantics.
+        if self.namespace_root is not None:
+            self.namespace_root = Path(self.namespace_root)
+
+    @property
+    def namespace(self) -> "Path":
+        """Return the per-tenant subdirectory under :attr:`namespace_root`.
+
+        When :attr:`namespace_root` is ``None``, returns ``None``
+        instead of raising so callers can branch on
+        ``tenant.namespace is None`` to decide whether to use the
+        in-memory path or the on-disk path.
+        """
+        if self.namespace_root is None:
+            return None  # type: ignore[return-value]
+        return self.namespace_root / self.tenant_id
+
+    def ensure_namespace(self, *subdirs: str) -> "Path":
+        """Create the per-tenant directory (and optional subdirs) and return the leaf.
+
+        No-op when :attr:`namespace_root` is ``None`` -- returns
+        ``None`` so callers can detect the in-memory fallback.
+        Existing directories are left untouched (``mkdir -p``
+        semantics).
+        """
+        ns = self.namespace
+        if ns is None:
+            return None  # type: ignore[return-value]
+        leaf = ns
+        for sub in subdirs:
+            leaf = leaf / sub
+        leaf.mkdir(parents=True, exist_ok=True)
+        return leaf
 
     def label(self, metric_name: str) -> str:
         """Return the per-tenant name for ``metric_name``.
@@ -155,6 +198,7 @@ class TenantRegistry:
         display_name: Optional[str] = None,
         budget: Optional[ResourceBudget] = None,
         tags: Optional[Dict[str, str]] = None,
+        namespace_root: Optional["Path"] = None,
     ) -> Tenant:
         """Create and register a new :class:`Tenant`.
 
@@ -166,6 +210,8 @@ class TenantRegistry:
             budget: :class:`ResourceBudget` for the tenant.  Defaults
                 to a small v0.4.x "free tier" budget.
             tags: Optional tag map.
+            namespace_root: Optional on-disk root for per-tenant
+                subdirectories.  See :attr:`Tenant.namespace_root`.
         """
         if tenant_id is None:
             tenant_id = "t-" + uuid.uuid4().hex[:12]
@@ -186,6 +232,7 @@ class TenantRegistry:
             budget_tracker=BudgetTracker(budget),
             metrics=MetricsRegistry(),
             tags=tags,
+            namespace_root=namespace_root,
         )
         with self._lock:
             if tenant_id in self._tenants:

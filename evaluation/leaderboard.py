@@ -51,6 +51,7 @@ __all__ = [
     "load_leaderboard",
     "save_leaderboard",
     "LEADERBOARD_FORMAT_VERSION",
+    "PRIMARY_METRICS",
 ]
 
 #: Bumped on breaking changes to the JSON schema; downstream tooling
@@ -338,6 +339,135 @@ class Leaderboard:
             )
         return "\n".join([header, *rows]) + ("\n" if rows else "")
 
+    # ------------------------------------------------------------------
+    # HTML rendering + comparison (v0.4.3)
+    # ------------------------------------------------------------------
+    def to_html(
+        self,
+        metric: str = "fid",
+        *,
+        title: Optional[str] = None,
+    ) -> str:
+        """Render the leaderboard as a self-contained HTML document.
+
+        The output is a small, dependency-free HTML page (no JS, no
+        external CSS) suitable for paste into a PR description or
+        attached as a CI artifact.  All special characters in
+        user-supplied data (model id, prompt_set, notes) are
+        HTML-escaped to prevent injection.
+
+        Args:
+            metric: Metric used to sort the table (see
+                :meth:`ranked`).
+            title: Optional page title.  Defaults to
+                ``self.name``.
+        """
+        ranked = self.ranked(metric)
+        title_str = _html_escape(title or self.name)
+        description = _html_escape(self.description)
+        rows_html = "\n".join(
+            "<tr>"
+            + "".join(
+                f"<td>{_html_escape(cell)}</td>"
+                for cell in _entry_row(entry, metric)
+            )
+            + "</tr>"
+            for entry in ranked
+        )
+        header_cells = ["model", "prompt_set", "n", metric, "throughput", "runtime"]
+        header_html = "<tr>" + "".join(
+            f"<th>{_html_escape(h)}</th>" for h in header_cells
+        ) + "</tr>"
+        return (
+            "<!DOCTYPE html>\n"
+            "<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
+            f"<title>{title_str}</title>\n"
+            "<style>\n"
+            "body{font-family:system-ui,sans-serif;margin:2em;max-width:80em;}\n"
+            "h1{font-size:1.4em;}\n"
+            "table{border-collapse:collapse;width:100%;}\n"
+            "th,td{border:1px solid #ccc;padding:0.4em 0.6em;text-align:right;}\n"
+            "th{background:#f3f3f3;}\n"
+            "td:first-child,th:first-child,td:nth-child(2),th:nth-child(2)"
+            "{text-align:left;}\n"
+            "</style></head><body>\n"
+            f"<h1>{title_str}</h1>\n"
+            f"<p>{description}</p>\n"
+            f"<table>{header_html}{rows_html}</table>\n"
+            "</body></html>\n"
+        )
+
+    def compare(
+        self,
+        other: "Leaderboard",
+        metric: str = "fid",
+    ) -> Dict[str, Any]:
+        """Compare two boards on ``metric``.
+
+        For each :class:`LeaderboardEntry` that appears in *both*
+        boards (matched by ``(model_id, prompt_set, config_hash)``),
+        compute the absolute and relative delta on ``metric`` and
+        ``throughput_prompts_per_sec``.  Entries that appear in
+        only one board are returned under the
+        ``"only_in_self"`` / ``"only_in_other"`` keys so callers
+        can highlight "new" or "removed" models.
+
+        Args:
+            other: The other :class:`Leaderboard` to compare against.
+            metric: The primary metric for the comparison.
+
+        Returns:
+            A dict with three keys:
+
+            * ``"common"``: list of ``{"key", "self", "other",
+              "delta", "delta_pct", "throughput_delta"}`` dicts,
+              sorted by ``"delta"`` ascending.
+            * ``"only_in_self"``: list of entries that exist only in
+              ``self``.
+            * ``"only_in_other"``: list of entries that exist only in
+              ``other``.
+        """
+        self_index: Dict[tuple, LeaderboardEntry] = {
+            (e.model_id, e.prompt_set, e.config_hash): e for e in self.entries
+        }
+        other_index: Dict[tuple, LeaderboardEntry] = {
+            (e.model_id, e.prompt_set, e.config_hash): e for e in other.entries
+        }
+        common_keys = sorted(set(self_index).intersection(other_index))
+        common: List[Dict[str, Any]] = []
+        for key in common_keys:
+            s = self_index[key]
+            o = other_index[key]
+            self_value = s.primary_metric(metric)
+            other_value = o.primary_metric(metric)
+            delta = self_value - other_value
+            delta_pct = (
+                (delta / other_value) * 100.0 if other_value != 0 else float("inf")
+            )
+            throughput_delta = (
+                s.throughput_prompts_per_sec - o.throughput_prompts_per_sec
+            )
+            common.append(
+                {
+                    "key": list(key),
+                    "self": s,
+                    "other": o,
+                    "delta": delta,
+                    "delta_pct": delta_pct,
+                    "throughput_delta": throughput_delta,
+                }
+            )
+        # Sort so the biggest regression surfaces first.
+        common.sort(key=lambda item: item["delta"])
+        only_in_self = [self_index[k] for k in sorted(set(self_index) - set(other_index))]
+        only_in_other = [other_index[k] for k in sorted(set(other_index) - set(self_index))]
+        return {
+            "metric": metric,
+            "common": common,
+            "only_in_self": only_in_self,
+            "only_in_other": only_in_other,
+        }
+
 
 # ---------------------------------------------------------------------------
 # File I/O helpers
@@ -355,3 +485,39 @@ def save_leaderboard(
     Path(path).expanduser().write_text(
         board.to_json(indent=indent), encoding="utf-8"
     )
+
+
+# ---------------------------------------------------------------------------
+# HTML helpers (v0.4.3)
+# ---------------------------------------------------------------------------
+def _html_escape(value: Any) -> str:
+    """Escape user-supplied text for safe HTML rendering.
+
+    Mirrors :func:`html.escape` semantics but is duplicated here to
+    keep the leaderboard module dependency-free (no stdlib import
+    dance is required, and the implementation is small enough to
+    be auditable in one read).
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _entry_row(entry: LeaderboardEntry, metric: str) -> List[str]:
+    """Build the table cells for a single entry (HTML-escaped)."""
+    value = entry.primary_metric(metric)
+    return [
+        entry.model_id,
+        entry.prompt_set,
+        str(entry.n_prompts),
+        f"{value:.4f}",
+        f"{entry.throughput_prompts_per_sec:.2f}",
+        f"{entry.runtime_seconds:.2f}s",
+    ]

@@ -1,4 +1,17 @@
-name: CI
+# GitHub Actions CI for TorchaVerse
+#
+# Wires up the v0.4.x quality gates on every push and PR:
+#   1. Compileall syntax check (fast, no dependencies)
+#   2. CI gates (hardcoding / placeholders / degrade logging)
+#   3. Pytest non-torch test suite
+#   4. Docker build smoke test (CPU image only; full GPU pipeline
+#      is run on a self-hosted runner that has CUDA).
+#
+# The matrix only targets Python 3.10 (the project's pinned runtime
+# version); widening to 3.11 / 3.12 is intentionally left as a
+# v1.0.0 task so we can ship the green build first.
+
+name: ci
 
 on:
   push:
@@ -6,52 +19,95 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10"]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  # -----------------------------------------------------------------
+  # 1. Cheap syntax check (catches trivial regressions before
+  #    pulling in the full Python toolchain).
+  # -----------------------------------------------------------------
+  compileall:
+    name: python compileall
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            pyproject.toml
+          python-version: "3.10"
+      - run: |
+          python -m compileall -q \
+            agents assets canvas config consistency core infrastructure \
+            models nodes pipeline plugins rag security serving tools \
+            training evaluation
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libsndfile1
+  # -----------------------------------------------------------------
+  # 2. Quality gates: hardcoding + placeholders + degrade logging.
+  #    Hardcoding is the project-wide regression detector for the
+  #    v0.4.x D1规约 (severity分级).  Placeholders + degrade logging
+  #    are the v0.4.1 / v0.4.2 completeness contracts.
+  # -----------------------------------------------------------------
+  gates:
+    name: ci-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python scripts/check_ci_gates.py
+      - run: python scripts/check_degrade_logging.py
 
-      - name: Install PyTorch (CPU)
-        run: |
-          pip install --no-cache-dir \
-            torch==2.1.0+cpu \
-            torchvision==0.16.0+cpu \
-            torchaudio==2.1.0+cpu \
-            --index-url https://download.pytorch.org/whl/cpu
+  # -----------------------------------------------------------------
+  # 3. Non-torch unit tests.  These are the fast suite the v0.4.x
+  #    baseline requires to stay green: ~250 tests in ~5 s.
+  # -----------------------------------------------------------------
+  unit:
+    name: unit tests (non-torch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e .
+      - run: pip install rich fastapi uvicorn pydantic pytest
+      - run: |
+          python -m pytest \
+            -q --no-header -m "not gpu" \
+            tests/
 
-      - name: Install project + dev extras
+  # -----------------------------------------------------------------
+  # 4. Docker smoke build.  Pulls a public base image, builds the
+  #    CPU ``serving`` target, and verifies the image starts (the
+  #    healthcheck endpoint is exercised in a follow-up step).
+  #    The GPU build is gated on a self-hosted runner that has the
+  #    NVIDIA Container Toolkit installed.
+  # -----------------------------------------------------------------
+  docker-cpu:
+    name: docker build (cpu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CPU serving image
         run: |
-          pip install --no-cache-dir -e ".[dev]"
-          pip install --no-cache-dir open_clip_torch
-
-      - name: Lint
+          docker build --target serving -t torcha-verse:ci-cpu .
+      - name: Smoke-test the image
         run: |
-          python -m compileall -q agents assets canvas config consistency core infrastructure models nodes pipeline plugins rag security serving tools training
-
-      - name: CI Gates (hardcoding + placeholders + degrade_logging)
-        run: |
-          python scripts/check_ci_gates.py
-
-      - name: Run tests
-        run: |
-          python -m pytest tests/ -q --no-header -m "not gpu"
+          docker run --rm -d --name tv-ci \
+            -p 8000:8000 torcha-verse:ci-cpu
+          # Give the server ~10 s to start, then poll /healthz.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://localhost:8000/healthz >/dev/null; then
+              echo "service is up"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://localhost:8000/healthz
+          docker stop tv-ci

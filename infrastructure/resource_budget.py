@@ -791,6 +791,262 @@ class BudgetTracker:
             "request_slots": float(self._used_request_slots),
         }
 
+    # ------------------------------------------------------------------
+    # v1.0.0 M0 additions (v0.4.3): try_acquire / allocate_many
+    # ------------------------------------------------------------------
+    def try_acquire(
+        self,
+        name: str,
+        vram_gb: float = 0.0,
+        ram_gb: float = 0.0,
+        disk_gb: float = 0.0,
+        *,
+        model_slot: bool = False,
+        request_slot: bool = False,
+    ) -> Optional[AllocationHandle]:
+        """Non-blocking variant of :meth:`allocate`.
+
+        Returns the handle on success, ``None`` when the budget is
+        exhausted.  The two are equivalent when the request itself
+        is infeasible: both surface :class:`BudgetExceededError`
+        immediately so the caller does not have to special-case
+        "infeasible" vs "currently saturated".
+        """
+        with self._lock:
+            if self._would_exceed(
+                vram_gb=vram_gb,
+                ram_gb=ram_gb,
+                disk_gb=disk_gb,
+                model_slot=model_slot,
+                request_slot=request_slot,
+            ):
+                raise BudgetExceededError(
+                    vram_gb=vram_gb,
+                    ram_gb=ram_gb,
+                    disk_gb=disk_gb,
+                    model_slot=model_slot,
+                    request_slot=request_slot,
+                    budget=self._budget,
+                    used=self._snapshot_used(),
+                )
+            if not self._fits(
+                vram_gb=vram_gb,
+                ram_gb=ram_gb,
+                disk_gb=disk_gb,
+                model_slot=model_slot,
+                request_slot=request_slot,
+            ):
+                # slot-only contention has no event source (mirrors
+                # the "reject immediately" branch in
+                # ``allocate_or_wait``).  Surface as a hard
+                # ``BudgetExceededError`` so callers do not have to
+                # special-case "currently saturated" vs "structurally
+                # infeasible" - the former is a transient event
+                # callers may want to retry, the latter is a
+                # permanent one.
+                if (model_slot or request_slot) and not (
+                    vram_gb or ram_gb or disk_gb
+                ):
+                    raise BudgetExceededError(
+                        vram_gb=vram_gb,
+                        ram_gb=ram_gb,
+                        disk_gb=disk_gb,
+                        model_slot=model_slot,
+                        request_slot=request_slot,
+                        budget=self._budget,
+                        used=self._snapshot_used(),
+                    )
+                return None
+            return self._consume(
+                name,
+                vram_gb=vram_gb,
+                ram_gb=ram_gb,
+                disk_gb=disk_gb,
+                model_slot=model_slot,
+                request_slot=request_slot,
+            )
+
+    def allocate_many(
+        self,
+        specs: Sequence[Dict[str, Any]],
+    ) -> List[AllocationHandle]:
+        """Atomically allocate a batch of resources.
+
+        Either every spec in ``specs`` is fulfilled (a list of
+        :class:`AllocationHandle` is returned) or the budget is
+        untouched and an empty list is returned.  Specs are dicts
+        of the form accepted by :meth:`allocate` (``name``,
+        ``vram_gb``, ``ram_gb``, ``disk_gb``, ``model_slot``,
+        ``request_slot``).
+
+        The batch is computed against a *frozen* snapshot of the
+        current usage; this avoids the "first half fits, second
+        half doesn't" failure mode that the naive loop would
+        suffer from.
+        """
+        if not specs:
+            return []
+        with self._lock:
+            # Phase 1: feasibility + fit check against a frozen
+            # snapshot.  No reservation yet.
+            snapshot_used = self._snapshot_used()
+            for spec in specs:
+                vram_gb = float(spec.get("vram_gb", 0.0))
+                ram_gb = float(spec.get("ram_gb", 0.0))
+                disk_gb = float(spec.get("disk_gb", 0.0))
+                model_slot = bool(spec.get("model_slot", False))
+                request_slot = bool(spec.get("request_slot", False))
+                if self._would_exceed(
+                    vram_gb=vram_gb,
+                    ram_gb=ram_gb,
+                    disk_gb=disk_gb,
+                    model_slot=model_slot,
+                    request_slot=request_slot,
+                ):
+                    raise BudgetExceededError(
+                        vram_gb=vram_gb,
+                        ram_gb=ram_gb,
+                        disk_gb=disk_gb,
+                        model_slot=model_slot,
+                        request_slot=request_slot,
+                        budget=self._budget,
+                        used=snapshot_used,
+                    )
+                if not self._fits(
+                    vram_gb=vram_gb,
+                    ram_gb=ram_gb,
+                    disk_gb=disk_gb,
+                    model_slot=model_slot,
+                    request_slot=request_slot,
+                ):
+                    # No partial success: if one spec does not fit
+                    # we return [] and the caller can retry.
+                    return []
+            # Phase 2: actually consume.  ``_fits`` is monotonic
+            # inside the lock so all specs will fit a second time.
+            handles: List[AllocationHandle] = []
+            for spec in specs:
+                handles.append(
+                    self._consume(
+                        str(spec.get("name", "batch")),
+                        vram_gb=float(spec.get("vram_gb", 0.0)),
+                        ram_gb=float(spec.get("ram_gb", 0.0)),
+                        disk_gb=float(spec.get("disk_gb", 0.0)),
+                        model_slot=bool(spec.get("model_slot", False)),
+                        request_slot=bool(spec.get("request_slot", False)),
+                    )
+                )
+            return handles
+
+    def stats(self) -> Dict[str, Any]:
+        """Return a snapshot of tracker state for dashboards / debug.
+
+        The dict is a defensive copy; mutating it does not change
+        the tracker state.
+        """
+        with self._lock:
+            return {
+                "budget": {
+                    "vram_gb": self._budget.vram_gb,
+                    "ram_gb": self._budget.ram_gb,
+                    "disk_gb": self._budget.disk_gb,
+                    "max_concurrent_models": self._budget.max_concurrent_models,
+                    "max_concurrent_requests": self._budget.max_concurrent_requests,
+                },
+                "used": self._snapshot_used(),
+                "active_allocations": self.active_allocations,
+                "free": {
+                    "vram_gb": max(0.0, self._budget.vram_gb - self._used_vram),
+                    "ram_gb": max(0.0, self._budget.ram_gb - self._used_ram),
+                    "disk_gb": max(0.0, self._budget.disk_gb - self._used_disk),
+                    "model_slots": max(
+                        0, self._budget.max_concurrent_models - self._used_model_slots
+                    ),
+                    "request_slots": max(
+                        0,
+                        self._budget.max_concurrent_requests - self._used_request_slots,
+                    ),
+                },
+            }
+
+    def allocate_with_backoff(
+        self,
+        name: str,
+        vram_gb: float = 0.0,
+        ram_gb: float = 0.0,
+        disk_gb: float = 0.0,
+        *,
+        model_slot: bool = False,
+        request_slot: bool = False,
+        max_attempts: int = 5,
+        initial_delay: float = 0.05,
+        max_delay: float = 2.0,
+        backoff_factor: float = 2.0,
+    ) -> AllocationHandle:
+        """Retry-with-exponential-backoff variant of :meth:`allocate_or_wait`.
+
+        Calls :meth:`allocate_or_wait` once per attempt with a
+        geometrically increasing delay in between.  This is the
+        right shape for the v1.0.0 M0 "queue" UX where callers
+        would rather spend a few extra milliseconds in exchange
+        for the "transparent" UX of "just give me a handle".
+
+        Args:
+            name: Same as :meth:`allocate`.
+            vram_gb: Same as :meth:`allocate`.
+            ram_gb: Same as :meth:`allocate`.
+            disk_gb: Same as :meth:`allocate`.
+            model_slot: Same as :meth:`allocate`.
+            request_slot: Same as :meth:`allocate`.
+            max_attempts: Total number of attempts (1 = no retry).
+            initial_delay: Delay before the second attempt.
+            max_delay: Cap on the per-attempt delay.
+            backoff_factor: Multiplier applied to the delay
+                between attempts.
+
+        Returns:
+            A live :class:`AllocationHandle`.
+
+        Raises:
+            BudgetExceededError: If the last attempt exhausts
+                its timeout, or if the request is infeasible
+                from the start.
+        """
+        if max_attempts < 1:
+            raise ValueError(f"max_attempts must be >= 1, got {max_attempts}.")
+        if initial_delay < 0:
+            raise ValueError(f"initial_delay must be >= 0, got {initial_delay}.")
+        if backoff_factor < 1.0:
+            raise ValueError(f"backoff_factor must be >= 1.0, got {backoff_factor}.")
+        delay = initial_delay
+        last_error: Optional[BudgetExceededError] = None
+        for attempt in range(max_attempts):
+            try:
+                # ``timeout=0`` is equivalent to ``allocate``; on
+                # success we return immediately, on contention we
+                # sleep ``delay`` and try again.
+                return self.allocate_or_wait(
+                    name,
+                    vram_gb=vram_gb,
+                    ram_gb=ram_gb,
+                    disk_gb=disk_gb,
+                    model_slot=model_slot,
+                    request_slot=request_slot,
+                    timeout=0,
+                )
+            except BudgetExceededError as exc:
+                last_error = exc
+                if attempt + 1 >= max_attempts:
+                    break
+                # ``time.sleep`` is fine here: ``allocate_or_wait``
+                # with ``timeout=0`` returns synchronously so the
+                # caller's thread is otherwise idle.
+                time.sleep(min(delay, max_delay))
+                delay *= backoff_factor
+        # Reached only when every attempt failed.
+        assert last_error is not None
+        raise last_error
+
     def release(self, handle: AllocationHandle) -> None:
         """Release the budget held by ``handle`` back to the pool.
 

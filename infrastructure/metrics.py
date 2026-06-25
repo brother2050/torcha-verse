@@ -55,6 +55,8 @@ __all__ = [
     "Histogram",
     "METRICS",
     "render_prometheus",
+    "is_prometheus_client_available",
+    "export_to_prometheus_client",
 ]
 
 _logger = get_logger("infrastructure.metrics")
@@ -477,3 +479,123 @@ def _merge_labels(
         )
         parts.append(f'{name}="{escaped}"')
     return "{" + ",".join(parts) + "}"
+
+
+# ---------------------------------------------------------------------------
+# Optional swap-in to ``prometheus_client`` (v1.0.0 M2b)
+# ---------------------------------------------------------------------------
+def is_prometheus_client_available() -> bool:
+    """Return True when the optional ``prometheus_client`` package is importable.
+
+    The v0.4.x -> v1.0.0 bridge keeps the metrics layer dependency-free
+    so the CPU image is small, but operators who want the real
+    Prometheus collectors (``Histogram.collect()``,
+    ``start_http_server``, ``pushgateway``, etc.) can install
+    ``prometheus_client>=0.19`` and then call
+    :func:`export_to_prometheus_client`.
+    """
+    try:
+        import prometheus_client  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def export_to_prometheus_client(
+    registry: Optional[MetricsRegistry] = None,
+) -> Dict[str, Any]:
+    """Mirror ``registry`` into a ``prometheus_client`` registry.
+
+    Creates a fresh :class:`prometheus_client.CollectorRegistry` (so
+    the caller's process-global ``REGISTRY`` is not touched),
+    instantiates the right ``prometheus_client`` primitives for
+    every metric in ``registry``, and copies the current series
+    values.  Subsequent ``inc`` / ``set`` / ``observe`` calls on
+    the v0.4.x registry do *not* propagate to the
+    ``prometheus_client`` registry; this function is intended as a
+    one-shot migration helper for v1.0.0 deploys.
+
+    Args:
+        registry: The :class:`MetricsRegistry` to mirror.  Defaults
+            to the global :data:`METRICS`.
+
+    Returns:
+        A dict with ``"registry"`` (the new CollectorRegistry),
+        ``"counters"``, ``"gauges"``, ``"histograms"`` -- one entry
+        per migrated metric so callers can wire scrape targets
+        against specific names.
+
+    Raises:
+        ImportError: if ``prometheus_client`` is not installed.
+    """
+    try:
+        import prometheus_client as pc
+    except ImportError as exc:  # pragma: no cover - optional dep
+        raise ImportError(
+            "prometheus_client is not installed; install it with "
+            "`pip install 'prometheus_client>=0.19'` before calling "
+            "export_to_prometheus_client()."
+        ) from exc
+
+    try:
+        out_registry = pc.CollectorRegistry()
+    except ImportError as exc:  # pragma: no cover - optional dep
+        # ``prometheus_client`` raised a ``ModuleNotFoundError`` at
+        # first use (e.g. it imports a sub-package that is missing
+        # on the target platform).  Surface a uniform
+        # ``ImportError`` with the install hint.
+        raise ImportError(
+            "prometheus_client is not usable in this environment; "
+            "install it with `pip install 'prometheus_client>=0.19'` "
+            "before calling export_to_prometheus_client()."
+        ) from exc
+
+    target = registry if registry is not None else METRICS
+    counters: Dict[str, Any] = {}
+    gauges: Dict[str, Any] = {}
+    histograms: Dict[str, Any] = {}
+
+    for name in target.names():
+        metric = target.get(name)
+        if metric is None:  # pragma: no cover - invariant
+            continue
+        if isinstance(metric, Counter):
+            pc_metric = pc.Counter(
+                name, metric.help, list(metric.labelnames), registry=out_registry
+            )
+            for key, value in metric._values():
+                pc_metric.labels(*key.values).inc(amount=value)
+            counters[name] = pc_metric
+        elif isinstance(metric, Gauge):
+            pc_metric = pc.Gauge(
+                name, metric.help, list(metric.labelnames), registry=out_registry
+            )
+            for key, value in metric._values():
+                pc_metric.labels(*key.values).set(value)
+            gauges[name] = pc_metric
+        elif isinstance(metric, Histogram):
+            pc_metric = pc.Histogram(
+                name,
+                metric.help,
+                list(metric.labelnames),
+                buckets=list(metric.buckets),
+                registry=out_registry,
+            )
+            for key, state in metric._series_buckets.items():
+                total_sum, total_count, *_ = state
+                if total_count > 0:
+                    # ``prometheus_client.Histogram`` has no
+                    # "set from existing observations" entry
+                    # point, so we use ``observe`` with the mean
+                    # of the recorded series.  Best-effort
+                    # migration; v1.0.0 production deployments
+                    # run the two registries side by side.
+                    pc_metric.labels(*key.values).observe(total_sum / total_count)
+            histograms[name] = pc_metric
+
+    return {
+        "registry": out_registry,
+        "counters": counters,
+        "gauges": gauges,
+        "histograms": histograms,
+    }

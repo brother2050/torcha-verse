@@ -23,6 +23,7 @@ from __future__ import annotations
 import abc
 import concurrent.futures
 import logging
+import pickle
 import threading
 from concurrent.futures import Future
 from typing import Any, Callable, Dict, Optional
@@ -33,6 +34,7 @@ __all__ = [
     "RuntimeScheduler",
     "InlineScheduler",
     "ThreadPoolScheduler",
+    "ProcessPoolScheduler",
     "default_scheduler",
 ]
 
@@ -220,3 +222,109 @@ _default_scheduler: RuntimeScheduler = ThreadPoolScheduler(max_workers=4)
 def default_scheduler() -> RuntimeScheduler:
     """Return the process-wide default :class:`RuntimeScheduler`."""
     return _default_scheduler
+
+
+class ProcessPoolScheduler(RuntimeScheduler):
+    """A scheduler backed by a :class:`ProcessPoolExecutor`.
+
+    The v1.0.0 M1 deliverable uses this to run heavy CPU-bound
+    tasks (tokenisation, eval pre-processing) in separate processes
+    so the GIL does not gate the request-handling threads.
+
+    Tasks submitted to this scheduler **must be picklable**; the
+    pool will pickle ``fn``, ``args`` and ``kwargs`` to ship them
+    to the worker process.  Module-level functions and lambdas
+    defined in ``__main__`` are not picklable on every platform;
+    treat that as a documented footgun.
+    """
+
+    def __init__(self, max_workers: Optional[int] = None) -> None:
+        if max_workers is not None and max_workers <= 0:
+            raise ValueError(f"max_workers must be > 0, got {max_workers}.")
+        self._max_workers: Optional[int] = max_workers
+        self._executor: Optional[concurrent.futures.ProcessPoolExecutor] = None
+        self._lock: threading.RLock = threading.RLock()
+        self._logger = get_logger("infrastructure.scheduler.process_pool")
+        self._submitted: int = 0
+        self._completed: int = 0
+
+    @property
+    def name(self) -> str:
+        return "process_pool"
+
+    @property
+    def max_workers(self) -> Optional[int]:
+        """Configured maximum number of worker processes."""
+        return self._max_workers
+
+    @property
+    def submitted(self) -> int:
+        """Number of tasks that have been submitted so far."""
+        with self._lock:
+            return self._submitted
+
+    @property
+    def completed(self) -> int:
+        """Number of submitted tasks that have completed."""
+        with self._lock:
+            return self._completed
+
+    def _ensure_executor(self) -> concurrent.futures.ProcessPoolExecutor:
+        with self._lock:
+            if self._executor is None:
+                self._executor = concurrent.futures.ProcessPoolExecutor(
+                    max_workers=self._max_workers
+                )
+            return self._executor
+
+    def submit(
+        self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Future:
+        with self._lock:
+            self._submitted += 1
+
+        # Eagerly attempt to pickle the call.  ``concurrent.futures``
+        # defers the pickle to the worker process, so a pickling
+        # error only surfaces from ``future.result()`` -- which is
+        # a much worse failure mode (the call appears to succeed
+        # but the worker crashes).  Catching it here gives callers
+        # a synchronous ``RuntimeError`` they can handle at the
+        # submit site.
+        try:
+            pickle.dumps(fn, protocol=pickle.HIGHEST_PROTOCOL)
+        except (pickle.PicklingError, AttributeError, TypeError) as exc:
+            raise RuntimeError(
+                f"ProcessPoolScheduler refused to pickle {fn!r}: {exc}. "
+                "Tasks must be defined at module scope to be picklable."
+            ) from exc
+
+        executor = self._ensure_executor()
+        try:
+            future = executor.submit(fn, *args, **kwargs)
+        except (pickle.PicklingError, AttributeError, TypeError) as exc:
+            # Defensive: ``executor.submit`` should not raise in
+            # practice, but if it does we surface the same clear
+            # ``RuntimeError`` shape.
+            raise RuntimeError(
+                f"ProcessPoolScheduler refused to pickle {fn!r}: {exc}. "
+                "Tasks must be defined at module scope to be picklable."
+            ) from exc
+        future.add_done_callback(self._on_done)
+        return future
+
+    def _on_done(self, _future: Future) -> None:
+        with self._lock:
+            self._completed += 1
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._lock:
+            executor = self._executor
+            self._executor = None
+        if executor is not None:
+            executor.shutdown(wait=wait)
+        self._logger.debug(
+            "ProcessPoolScheduler shut down (wait=%s, submitted=%d, completed=%d).",
+            wait,
+            self.submitted,
+            self.completed,
+        )

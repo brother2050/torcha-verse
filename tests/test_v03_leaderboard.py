@@ -279,3 +279,117 @@ def test_to_markdown_empty_board() -> None:
     assert "| model |" in text
     # No body rows.
     assert text.count("\n|") == 1
+
+
+# ---------------------------------------------------------------------------
+# HTML rendering (v0.4.3)
+# ---------------------------------------------------------------------------
+def test_to_html_includes_doctype_and_table() -> None:
+    board = Leaderboard(name="v0.4.3 html", description="html smoke")
+    board.add(_entry("a", fid=1.0))
+    text = board.to_html(title="custom title")
+    assert text.startswith("<!DOCTYPE html>")
+    assert "<title>custom title</title>" in text
+    assert "<h1>custom title</h1>" in text
+    assert "<table>" in text
+    assert "<th>model</th>" in text
+    assert ">a<" in text
+
+
+def test_to_html_escapes_user_supplied_data() -> None:
+    board = Leaderboard()
+    # model_id contains a payload that would inject script tags if
+    # not escaped; ``_html_escape`` should neutralise them.
+    board.add(
+        LeaderboardEntry(
+            model_id='<script>alert("xss")</script>',
+            config_hash="h",
+            prompt_set="p&q",
+            n_prompts=1,
+            metrics={"fid": 1.0},
+            throughput_prompts_per_sec=1.0,
+            runtime_seconds=1.0,
+        )
+    )
+    text = board.to_html()
+    assert "<script>" not in text
+    assert "&lt;script&gt;" in text
+    # Double quotes are HTML-escaped too, so the original payload
+    # is neutralised in the rendered output.
+    assert "&quot;xss&quot;" in text
+    assert "p&amp;q" in text
+
+
+def test_to_html_uses_self_name_when_no_title() -> None:
+    board = Leaderboard(name="my-board")
+    text = board.to_html()
+    assert "<title>my-board</title>" in text
+
+
+def test_to_html_empty_board_still_renders() -> None:
+    text = Leaderboard().to_html()
+    assert text.startswith("<!DOCTYPE html>")
+    # No data rows.
+    assert text.count("<tr>") == 1  # header row only
+
+
+# ---------------------------------------------------------------------------
+# Compare (v0.4.3)
+# ---------------------------------------------------------------------------
+def _board(*entries: LeaderboardEntry) -> Leaderboard:
+    board = Leaderboard()
+    board.extend(entries)
+    return board
+
+
+def test_compare_finds_common_deltas() -> None:
+    a = _entry("model-a", fid=10.0, recall=0.5, n=10, t=1.0)
+    b = _entry("model-b", fid=20.0, recall=0.4, n=10, t=2.0)
+    a_again = LeaderboardEntry(
+        model_id=a.model_id,
+        config_hash=a.config_hash,
+        prompt_set=a.prompt_set,
+        n_prompts=a.n_prompts,
+        metrics={"fid": 8.0, "prompt_recall": 0.6},
+        throughput_prompts_per_sec=20.0,
+        runtime_seconds=0.5,
+    )
+    board_old = _board(a, b)
+    board_new = _board(a_again, b)
+    result = board_new.compare(board_old, metric="fid")
+    # model-a appears in both: delta = 8 - 10 = -2 (improvement).
+    common_a = [c for c in result["common"] if c["key"][0] == "model-a"][0]
+    assert common_a["delta"] == pytest.approx(-2.0)
+    assert common_a["delta_pct"] == pytest.approx(-20.0)
+    # Throughput delta = 20 - 10 = +10.
+    assert common_a["throughput_delta"] == pytest.approx(10.0)
+    # Sorted ascending: most-improved first.
+    assert result["common"][0]["key"][0] == "model-a"
+    # Nothing appears in only-one list.
+    assert result["only_in_self"] == []
+    assert result["only_in_other"] == []
+
+
+def test_compare_handles_only_in_self_and_other() -> None:
+    old = _board(_entry("x", fid=1.0))
+    new = _board(_entry("x", fid=1.0), _entry("y", fid=2.0))
+    result = new.compare(old, metric="fid")
+    assert [e.model_id for e in result["only_in_self"]] == ["y"]
+    assert result["only_in_other"] == []
+
+
+def test_compare_handles_only_in_other() -> None:
+    old = _board(_entry("x", fid=1.0), _entry("z", fid=3.0))
+    new = _board(_entry("x", fid=1.0))
+    result = new.compare(old, metric="fid")
+    assert result["only_in_self"] == []
+    assert [e.model_id for e in result["only_in_other"]] == ["z"]
+
+
+def test_compare_delta_pct_handles_zero_baseline() -> None:
+    # When the baseline metric is 0.0, ``delta_pct`` is +inf rather
+    # than ZeroDivisionError.
+    old = _board(_entry("m", fid=0.0))
+    new = _board(_entry("m", fid=5.0))
+    result = new.compare(old, metric="fid")
+    assert result["common"][0]["delta_pct"] == float("inf")

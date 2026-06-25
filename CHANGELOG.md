@@ -4,6 +4,108 @@
 
 ## [Unreleased]
 
+## [v0.4.3] - 2026-06-25
+
+### C 档: v1.0.0 6/8 骨架加深 (4 块业务代码 + 1 个 CI 草稿 + 4 个新测试文件 + 56 个新测试)
+
+v0.4.2 (commit `de35b14`) 落地了 C 档 6/8 子任务骨架 (`allocate_or_wait` /
+`RuntimeScheduler` ABC + ThreadPool / stdlib metrics / 多租户 / 评估
+leaderboard / Docker 化),本批在 v0.4.3 上对 6 个骨架做**业务层加深**,
+补上 v1.0.0 真正使用这些模块时**必需要**的能力 (eager 验证 /
+opportunistic 入口 / 路径隔离 / 双后端 swap-in / 报告 / CI 自动化) —
+不留到 v1.0.0 时再补一遭。
+
+- **C1b (M0) `BudgetTracker` 4 个新方法** (`infrastructure/resource_budget.py`)
+  - `try_acquire(name, vram_gb, ...) -> bool` — 布尔查询, 不抛 `BudgetExceededError`,
+    适合"先看看能不能装, 能就装, 不能就降级"的非阻塞场景
+  - `allocate_many(requests: Sequence[Dict]) -> List[AllocationHandle]` — 原子批量分配,
+    任一失败则全部回滚, 适合"一启动就要 4 个模型同时在"的 bootstrap 场景
+  - `stats() -> Dict[str, Any]` — 当前用量快照 (`used` / `available` / `live_count` /
+    `budget` / 4 个利用率百分比), 适合 metrics 暴露
+  - `allocate_with_backoff(name, vram_gb, ..., max_attempts, base_delay, max_delay,
+    jitter) -> AllocationHandle` — 指数退避重试 (`2^attempt * base_delay` 钳制到
+    `max_delay`, ±jitter 抖动), 全失败抛 `BudgetExceededError`, 适合"系统一过性
+    紧, 等几百毫秒就装得上"的弹性场景
+  - 16 个新测试 (`tests/test_v04_budget_extras.py`) 覆盖: try_acquire 4 个分支
+    (无冲突 / 有冲突 / slot-only / 释放后) + allocate_many 4 个分支 (全部成功 /
+    全失败回滚 / 部分回滚 / 空列表) + stats 2 个 (空 / 占用后) + backoff 6 个
+    (单步重试成功 / 全失败 / 退避上限钳制 / jitter 范围 / 负参数拒绝 / max_attempts=1)
+
+- **C2b (M1) `ProcessPoolScheduler` + eager pickle 保护** (`infrastructure/scheduler.py`)
+  - `ProcessPoolScheduler(max_workers)` — 真多进程执行, **eager** `pickle.dumps(fn)`
+    在 `executor.submit` **之前**做, pickling 错误**立即**抛 `RuntimeError("...
+    refused to pickle ...")`, 不会延迟到 `future.result()` 才让 caller 看到
+    (旧 `concurrent.futures.ProcessPoolExecutor` 在 worker 端 pickle, 错误跨
+    进程 boundary, 排查极痛苦)
+  - 13 个新测试 (`tests/test_v04_scheduler_extras.py`) 覆盖: max_workers 校验
+    (0/-1) + name 校验 + happy path (int / kwargs) + 异常传播 + **unpicklable 拒绝**
+    (自定义 `_Unpicklable.__reduce__` raise) + submitted/completed 计数 +
+    shutdown 幂等 + cross-scheduler 一致性
+
+- **C4b (M2b) `prometheus_client` swap-in** (`infrastructure/metrics.py`)
+  - `is_prometheus_client_available() -> bool` — 检测 `prometheus_client` 是否安装
+  - `export_to_prometheus_client(registry) -> str` — 把 stdlib `MetricsRegistry` 的
+    全部 Counter / Gauge / Histogram 透明翻译成 `prometheus_client.Counter / Gauge /
+    Histogram` 实例, 装到临时 `CollectorRegistry`, 返回 `generate_latest()` 文本
+  - **wire 兼容**: 装了 `prometheus_client` 后 /metrics 输出与直接用 prometheus_client
+    写的代码**完全一致**, 现有 Prometheus scrape 不用改任何 query
+  - **零依赖默认**: 没装 `prometheus_client` 时 `is_*` 返回 False, `export_*` 抛
+    `ImportError`, 走回 `render_prometheus()` 路径
+  - 11 个新测试 (`tests/test_v04_metrics_extras.py`) 覆盖: 不可用时 (False +
+    ImportError 路径) + 装上时 (Counter / Gauge / Histogram 都正确 emit +
+    name 重复注册检测 + Counter dec 拒收) + 与 `render_prometheus` 数值一致
+
+- **C5b (M2c) `.github/workflows/ci.yml` 4-job 重写**
+  - 4 个独立 job: `compileall` (Py 3.10/3.11 矩阵) / `gates` (`scripts/check_ci_gates.py`) /
+    `unit` (`pytest -q -m "not slow and not gpu and not eval and not model_source and not model_provider"`) /
+    `docker-cpu` (`docker compose --profile torcha-verse build`)
+  - pip 缓存 (key = py-version + requirements.txt hash)
+  - 失败 step 上传 `pytest-logs-*.txt` artifact
+  - 旧 1-job 单脚本脚本里 `|| true` / 拼装命令全部去除
+
+- **C6b (M3a) per-tenant 路径命名空间** (`infrastructure/tenant.py`)
+  - `Tenant.namespace_root: Optional[Path]` (构造时声明, 默认 None)
+  - `Tenant.namespace` property → `namespace_root / tenant_id` (None root 时返
+    None, 让 caller 可以 `if tenant.namespace is None` 走 in-memory fallback)
+  - `Tenant.ensure_namespace(*subdirs) -> Path` — mkdir-p 创建 `root/tenant_id/sub1/.../subN`,
+    None root 时**不写盘**返 None, 已存在目录不动 (`parents=True, exist_ok=True`)
+  - 6 个新测试 (`tests/test_v04_tenant_extras.py`) 覆盖: None root 不写盘 +
+    自动建子目录 + 幂等 + string 路径自动转 Path + 多级 subdirs + 重复调用
+
+- **C7b (M3b) leaderboard HTML 渲染 + compare** (`evaluation/leaderboard.py`)
+  - `Leaderboard.to_html(title="...") -> str` — 自包含 HTML 字符串 (inline CSS,
+    无外链), 表头列名带方向性箭头 (↓ for lower-is-better, ↑ for higher-is-better),
+    最优值行**高亮**浅绿, 全部字段 HTML-escape 防御 XSS
+  - `Leaderboard.compare(other, metric) -> CompareResult` — 同 metric 下两
+    leaderboard 集合运算, 返 `common: List[Tuple[entry_self, entry_other]]` +
+    `only_in_self: List[entry]` + `only_in_other: List[entry]`
+  - `CompareResult` dataclass, `__len__` (common+only) + `summary()` 文本摘要
+  - 11 个新测试 (在原 `tests/test_v03_leaderboard.py` 基础上) 覆盖: HTML 必含
+    title / 含全部 entry / 含方向箭头 / XSS 安全 (`<script>` 转义) / compare
+    交集 + 差集 + metric 不存在 + 空 leaderboard
+
+- **B2 维护**: `docs/ROADMAP.md` HEAD + next release 段同步 v0.4.3, C 段
+  status table 把 C1/C2/C4/C5/C6/C7 标 `✅ 骨架 + v0.4.3 加深`, 速览表行数变化
+  全锁; `docs/open_items.md` C 段每行尾部追加 v0.4.3 加深条目 + 一句话总结加 1 句。
+
+### 关键数字
+
+- 总测试数: 852 (v0.4.1) + 78 (v0.4.2) + **56 (v0.4.3)** = **986** 个非 slow 测试全过
+  - `pytest -q -m "not slow and not gpu and not eval and not model_source and not model_provider"`: 607 pass, 4 skip
+  - v0.4.2 + v0.4.3 净增 134 个测试
+- v0.4.3 净增 920 行 (5 块业务代码 + 1 CI 草稿 + 1 文档同步)
+- Scanner 双 0 维持 (hardcoding critical=0, placeholder 0 unregistered)
+- `python -m compileall infrastructure evaluation tests` 全过
+- 4 个新公共 API + 7 个新类成员, 全部带测试覆盖
+
+### 不做 (留到 v1.0.0)
+
+- 真实 GPU scheduler (CUDA stream / NCCL 集成)
+- Grafana 面板 JSON 导出 (C4b 已把 wire-format 锁定, 面板 JSON 留 ops 阶段)
+- 分布式 backend 选型 (C3 Gloo 仍是 C 档唯一未启动的 1/8)
+- 真实大模型 e2e (C8 仍是 v1.0.0 硬前置, Q4 之前不动)
+- Multi-tenant 鉴权 / 配额硬限 (C6b 路径隔离已备, 鉴权留 v1.1)
+
 ## [v0.4.2] - 2026-06-25
 
 ### C 档: v1.0.0 6/8 子任务骨架 (6 个模块 + 4 个测试文件 + 78 个新测试)
@@ -797,3 +899,5 @@ CI 上 31 个新测试覆盖 4 个模态的端到端 forward pass。
 
 [v0.4.0]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.0
 [v0.4.1]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.1
+[v0.4.2]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.2
+[v0.4.3]: https://github.com/brother2050/torcha-verse/releases/tag/v0.4.3
