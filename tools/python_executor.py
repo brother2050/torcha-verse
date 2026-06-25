@@ -84,21 +84,28 @@ _SANDBOX_PREAMBLE: str = textwrap.dedent(
     """\
     import builtins as _builtins
     import sys as _sys
+    import json as _json
 
     _BLOCKED = __BLOCKED_MODULES__
 
     # --- Block dangerous imports -----------------------------------------
-    _real_import = _builtins.__import__
+    # NOTE: we deliberately do *not* keep a reference to the real
+    # ``__import__`` in a module-level global.  Earlier versions exposed
+    # ``_real_import`` here, which meant that any user code that managed
+    # to read the preamble (e.g. via ``_real_import('os')``) could
+    # trivially bypass the import blocklist.  Instead we install a
+    # safe wrapper and immediately discard the original.
+    def _make_safe_import(_real_import):
+        def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+            root = name.split('.')[0]
+            if root in _BLOCKED:
+                raise ImportError(
+                    "Import of '" + root + "' is blocked in the sandbox."
+                )
+            return _real_import(name, globals, locals, fromlist, level)
+        return _safe_import
 
-    def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
-        root = name.split('.')[0]
-        if root in _BLOCKED:
-            raise ImportError(
-                "Import of '" + root + "' is blocked in the sandbox."
-            )
-        return _real_import(name, globals, locals, fromlist, level)
-
-    _builtins.__import__ = _safe_import
+    _builtins.__import__ = _make_safe_import(_builtins.__import__)
 
     # --- Remove already-imported dangerous modules ----------------------
     for _mod in list(_sys.modules):
@@ -118,12 +125,23 @@ _SANDBOX_PREAMBLE: str = textwrap.dedent(
         _builtins.eval = lambda *a, **k: (_ for _ in ()).throw(
             PermissionError("eval() is blocked in the sandbox.")
         )
+    if hasattr(_builtins, "compile"):
+        _builtins.compile = lambda *a, **k: (_ for _ in ()).throw(
+            PermissionError("compile() is blocked in the sandbox.")
+        )
+    if hasattr(_builtins, "__build_class__"):
+        _builtins.__build_class__ = lambda *a, **k: (_ for _ in ()).throw(
+            PermissionError("class definition is blocked in the sandbox.")
+        )
+    if hasattr(_builtins, "breakpoint"):
+        _builtins.breakpoint = lambda *a, **k: (_ for _ in ()).throw(
+            PermissionError("breakpoint() is blocked in the sandbox.")
+        )
 
     # --- Capture the return value of the user expression ----------------
     _SENTINEL = __RETURN_SENTINEL__
 
     def _emit_return(value):
-        import json as _json
         try:
             payload = _json.dumps({"value": value}, default=str)
         except Exception:
@@ -135,6 +153,18 @@ _SANDBOX_PREAMBLE: str = textwrap.dedent(
         _emit_return(value)
 
     _builtins.return_value = return_value
+
+    # Defensive cleanup: explicitly delete every internal name we just
+    # created so they cannot be re-imported / re-bound by user code.
+    # ``_make_safe_import`` is intentionally referenced via ``_builtins``
+    # so that the closure keeps the import wrapper alive even after the
+    # factory itself goes out of scope.
+    for _name in ("_make_safe_import", "_BLOCKED", "_emit_return",
+                  "_SENTINEL", "_json", "_sys"):
+        try:
+            del globals()[_name]
+        except KeyError:
+            pass
     """
 ).replace("__BLOCKED_MODULES__", repr(_BLOCKED_MODULES)).replace(
     "__RETURN_SENTINEL__", repr(_RETURN_SENTINEL)

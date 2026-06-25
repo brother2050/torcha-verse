@@ -712,7 +712,16 @@ class GuidanceController:
             batch_size = sample.shape[0]
             # Duplicate the sample for both passes.
             sample_doubled = torch.cat([sample, sample], dim=0)
-            t_doubled = torch.cat([t, t], dim=0) if t.dim() > 0 else t
+            # CFG batches the conditional and unconditional passes through
+            # the same forward call, so the timestep tensor must also be
+            # duplicated.  The previous implementation only doubled ``t``
+            # when ``t.dim() > 0``, but the sampler passes a 0-D scalar
+            # tensor here, which fell through to the un-doubled branch
+            # and silently produced a shape mismatch downstream.
+            if t.dim() == 0:
+                t_doubled = t.repeat(2)
+            else:
+                t_doubled = torch.cat([t, t], dim=0)
             cond_doubled = torch.cat([unconditional_conditioning, conditioning], dim=0)
 
             output = model(sample_doubled, t_doubled, cond_doubled, **kwargs)
@@ -1013,21 +1022,26 @@ class DiffusionScheduler:
         else:
             sample = torch.randn(shape, device=self._device, dtype=torch.float32)
 
-        for i, t in enumerate(self.timesteps):
-            t_tensor = torch.tensor([t], device=self._device, dtype=torch.long)
+        # Run the reverse diffusion under ``torch.no_grad`` so we do not
+        # build an autograd graph for every step.  Without this guard
+        # the memory footprint of a 50-step sample grows linearly with
+        # the number of steps, which OOMs even on small hardware.
+        with torch.no_grad():
+            for i, t in enumerate(self.timesteps):
+                t_tensor = torch.tensor([t], device=self._device, dtype=torch.long)
 
-            # Apply guidance.
-            model_output = self.guidance.apply(
-                model,
-                sample,
-                t_tensor,
-                conditioning,
-                unconditional_conditioning,
-                **kwargs,
-            )
+                # Apply guidance.
+                model_output = self.guidance.apply(
+                    model,
+                    sample,
+                    t_tensor,
+                    conditioning,
+                    unconditional_conditioning,
+                    **kwargs,
+                )
 
-            # Denoise step.
-            sample = self.sampler.step(model_output, t_tensor, sample)
+                # Denoise step.
+                sample = self.sampler.step(model_output, t_tensor, sample)
 
         self._logger.info("Diffusion sampling completed in %d steps.", steps)
         return sample

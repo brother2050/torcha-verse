@@ -322,9 +322,18 @@ def _attention_forward(
     # Apply rotary position embeddings if provided.
     if position_embeddings is not None:
         cos, sin = position_embeddings
-        # Ensure cos/sin cover the current sequence length.
-        cos = cos[:seq_len].unsqueeze(0).unsqueeze(0)
-        sin = sin[:seq_len].unsqueeze(0).unsqueeze(0)
+        # When a KV cache is in use, the new tokens occupy positions
+        # ``[past_len, past_len + seq_len)`` rather than ``[0, seq_len)``.
+        # The previous implementation always sliced from index 0, which
+        # made every cached generation see the *same* position
+        # embeddings as the very first step and silently corrupted
+        # attention scores.
+        if kv_cache is not None and isinstance(kv_cache, tuple) and len(kv_cache) == 2:
+            past_len = int(kv_cache[0].shape[-2])
+        else:
+            past_len = 0
+        cos = cos[past_len : past_len + seq_len].unsqueeze(0).unsqueeze(0)
+        sin = sin[past_len : past_len + seq_len].unsqueeze(0).unsqueeze(0)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
     # Concatenate with the KV cache.

@@ -13,22 +13,41 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 from core.tool_registry import BaseTool, Tool, ToolRegistry, ToolResult
-from dataclasses import dataclass
-@dataclass
-class Message:
-    role: str = "user"
-    content: str = ""
-
-class ToolCall:
-    pass
+from dataclasses import dataclass, field
 from infrastructure.logger import get_logger
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
+
 from .base_agent import Memory, Result, Step
 from .react_agent import ReActAgent
 
-__all__ = ["ToolCallAgent"]
+
+@dataclass
+class ToolCall:
+    """Structured tool-call request emitted by the model."""
+
+    id: str = ""
+    name: str = ""
+    arguments: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Message:
+    """Chat message used by :class:`ToolCallAgent`.
+
+    Mirrors the OpenAI Chat Completions message schema so that any
+    model adapter can be plugged in without translation.
+    """
+
+    role: str = "user"
+    content: str = ""
+    tool_calls: List["ToolCall"] = field(default_factory=list)
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
+
+
+__all__ = ["ToolCall", "Message", "ToolCallAgent"]
 
 
 class ToolCallAgent(ReActAgent):
@@ -324,7 +343,28 @@ class ToolCallAgent(ReActAgent):
                 )
                 continue
 
-            result: ToolResult = self.tool_registry.execute_tool(tc.name, tc.arguments)
+            # The OpenAI / Anthropic tool-calling protocol returns
+            # ``arguments`` as a *JSON string*; TorchaVerse's internal
+            # contracts use a dict.  Accept both shapes transparently so
+            # that any model adapter can plug in without translation.
+            arguments: Dict[str, Any]
+            if isinstance(tc.arguments, str):
+                try:
+                    arguments = json.loads(tc.arguments) if tc.arguments else {}
+                except json.JSONDecodeError as exc:
+                    results.append(
+                        f"Error: Tool '{tc.name}' arguments are not valid JSON: {exc}"
+                    )
+                    continue
+            elif isinstance(tc.arguments, dict):
+                arguments = tc.arguments
+            else:
+                results.append(
+                    f"Error: Tool '{tc.name}' arguments must be a dict or JSON string."
+                )
+                continue
+
+            result: ToolResult = self.tool_registry.execute_tool(tc.name, arguments)
             if result.success:
                 results.append(str(result.output))
             else:

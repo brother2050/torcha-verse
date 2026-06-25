@@ -141,12 +141,37 @@ class BaseSampler(abc.ABC):
 
     The sampler is stateless between calls; all configuration is passed
     via :meth:`sample` arguments.
+
+    Note:
+        All concrete :meth:`sample` methods are wrapped with
+        :func:`torch.no_grad` so that inference does not retain the
+        autograd graph for every denoising step.  Without this guard a
+        50-step generation requires ~50x more GPU memory than necessary.
     """
 
     def __init__(self) -> None:
         self._device_manager: DeviceManager = DeviceManager()
         self._device: torch.device = self._device_manager.get_device()
         self._logger = get_logger(self.__class__.__name__)
+
+    # ------------------------------------------------------------------
+    # Subclass registration: every concrete sample() runs under no_grad.
+    # ------------------------------------------------------------------
+    def __init_subclass__(cls, **kwargs: Any) -> None:  # type: ignore[no-untyped-def]
+        super().__init_subclass__(**kwargs)
+        original = getattr(cls, "sample", None)
+        if original is None or getattr(original, "__no_grad_wrapped__", False):
+            return
+
+        import functools
+
+        @functools.wraps(original)
+        def _wrapped(self, *args: Any, **kw: Any) -> Any:
+            with torch.no_grad():
+                return original(self, *args, **kw)
+
+        _wrapped.__no_grad_wrapped__ = True  # type: ignore[attr-defined]
+        cls.sample = _wrapped  # type: ignore[assignment]
 
     # ------------------------------------------------------------------
     # Abstract API
@@ -264,7 +289,14 @@ class BaseSampler(abc.ABC):
 
         # Batched CFG: concatenate unconditional and conditional.
         latent_input = torch.cat([latents, latents], dim=0)
-        t_input = torch.cat([t, t], dim=0) if t.dim() > 0 else t
+        # ``t`` here is typically a 0-D scalar tensor (a single
+        # timestep) so the previous ``cat if t.dim() > 0`` branch
+        # skipped the doubling and produced a shape mismatch with the
+        # doubled latent/cond inputs.  Always double it explicitly.
+        if t.dim() == 0:
+            t_input = t.repeat(2)
+        else:
+            t_input = torch.cat([t, t], dim=0)
         cond_input = torch.cat([neg_cond, cond], dim=0)
 
         output = model(latent_input, t_input, cond_input)

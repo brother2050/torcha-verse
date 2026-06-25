@@ -60,10 +60,30 @@ class BaseModel(nn.Module):
             torch.save(state_dict, path)
 
     def load(self, path: str, strict: bool = True) -> None:
-        """Load model weights from *path*."""
+        """Load model weights from *path*.
+
+        Prefers safetensors (safe format).  Falls back to
+        ``torch.load(..., weights_only=True)`` which refuses pickle
+        execution.  Use :meth:`load_unsafe` to opt in to pickle loading
+        for legacy self-produced checkpoints.
+        """
         try:
             from safetensors.torch import load_file
             state_dict = load_file(path)
-        except (ImportError, Exception):
-            state_dict = torch.load(path, map_location="cpu")
+        except ImportError:
+            # safetensors unavailable; use torch.load with the safe
+            # default.  The previous ``weights_only=False`` fallback
+            # allowed pickle RCE; we refuse that path here.
+            state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        self.load_state_dict(state_dict, strict=strict)
+
+    def load_unsafe(self, path: str, strict: bool = True) -> None:
+        """Load model weights from a pickle checkpoint.
+
+        This is **insecure** (allows arbitrary code execution) and
+        should only be used to load self-produced checkpoints from a
+        trusted location.  Prefer :meth:`load` (safetensors) whenever
+        possible.
+        """
+        state_dict = torch.load(path, map_location="cpu", weights_only=False)
         self.load_state_dict(state_dict, strict=strict)

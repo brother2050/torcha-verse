@@ -147,6 +147,7 @@ class CheckpointManager:
         scheduler: Optional[Any] = None,
         map_location: Optional[Union[str, torch.device]] = None,
         strict: bool = True,
+        allow_unsafe_pickle: bool = False,
     ) -> Dict[str, Any]:
         """Load a checkpoint and restore model / optimizer state.
 
@@ -158,6 +159,13 @@ class CheckpointManager:
             scheduler: Optional scheduler to restore state into.
             map_location: Device to map tensors to when loading.
             strict: Forwarded to ``load_state_dict`` for weight loading.
+            allow_unsafe_pickle: When ``True`` the legacy
+                ``weights_only=False`` path is used for pickle
+                checkpoints.  This is **insecure** (arbitrary code
+                execution) and is only intended for loading
+                self-produced checkpoints from a trusted location.
+                Defaults to ``False`` so that pickle RCE is impossible
+                by default.
 
         Returns:
             The metadata dictionary associated with the checkpoint.
@@ -166,10 +174,23 @@ class CheckpointManager:
 
         if path.is_dir():
             return self._load_from_directory(
-                path, model, optimizer, scheduler, map_location, strict
+                path,
+                model,
+                optimizer,
+                scheduler,
+                map_location,
+                strict,
+                allow_unsafe_pickle=allow_unsafe_pickle,
             )
         if path.is_file():
-            return self._load_from_file(path, model, optimizer, map_location, strict)
+            return self._load_from_file(
+                path,
+                model,
+                optimizer,
+                map_location,
+                strict,
+                allow_unsafe_pickle=allow_unsafe_pickle,
+            )
 
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
@@ -344,17 +365,17 @@ class CheckpointManager:
         """Load a weights file, auto-detecting the format.
 
         ``safetensors`` is preferred when available.  For legacy ``.pt`` /
-        ``.bin`` files we attempt a secure ``weights_only=True`` load first
-        and transparently fall back to ``weights_only=False`` for files that
-        contain non-tensor objects (e.g. older checkpoints).
+        ``.bin`` files we attempt a secure ``weights_only=True`` load.  The
+        previous implementation silently downgraded to ``weights_only=False``
+        on any exception, which allowed pickle RCE.  We now propagate the
+        error instead, and require callers to opt in to unsafe loading
+        explicitly via :meth:`load_checkpoint(allow_unsafe_pickle=True)`.
         """
         if path.suffix == ".safetensors" and _HAS_SAFETENSORS:
             return _safetensors_load(str(path))
-        # Fallback / legacy formats.
-        try:
-            return torch.load(path, map_location=map_location, weights_only=True)
-        except Exception:
-            return torch.load(path, map_location=map_location, weights_only=False)
+        # Use the safe path; failures must be surfaced so the caller can
+        # either retry, use safetensors, or opt in to unsafe loading.
+        return torch.load(path, map_location=map_location, weights_only=True)
 
     # ------------------------------------------------------------------
     # Internals: directory / file loading
@@ -367,6 +388,7 @@ class CheckpointManager:
         scheduler: Optional[Any],
         map_location: Optional[Union[str, torch.device]],
         strict: bool,
+        allow_unsafe_pickle: bool = False,
     ) -> Dict[str, Any]:
         """Load a full checkpoint from a directory."""
         weights_path = self._find_weights_file(ckpt_dir)
@@ -383,6 +405,17 @@ class CheckpointManager:
         if state_path.exists():
             # Training state contains optimizer/scheduler state and RNG
             # states (including numpy/python) which require full unpickling.
+            # Pickle is unsafe: only allow it when the caller has explicitly
+            # opted in via ``allow_unsafe_pickle=True`` (and even then the
+            # path should be trusted, e.g. self-produced checkpoints).
+            if not allow_unsafe_pickle:
+                raise RuntimeError(
+                    "Refusing to unpickle training state without explicit "
+                    "opt-in: re-call load_checkpoint(allow_unsafe_pickle=True) "
+                    "only when loading a self-produced checkpoint from a "
+                    "trusted location. The pickle format allows arbitrary "
+                    "code execution."
+                )
             training_state = torch.load(
                 state_path, map_location=map_location, weights_only=False
             )
@@ -403,10 +436,19 @@ class CheckpointManager:
         optimizer: Optional[torch.optim.Optimizer],
         map_location: Optional[Union[str, torch.device]],
         strict: bool,
+        allow_unsafe_pickle: bool = False,
     ) -> Dict[str, Any]:
         """Load a single-file checkpoint (legacy or weights-only)."""
-        # A legacy single-file checkpoint may be a dict containing everything,
-        # including optimizer state, so full unpickling is required.
+        # A legacy single-file checkpoint may be a dict containing
+        # everything, including optimizer state, so full unpickling is
+        # required.  Pickle is unsafe: gate behind ``allow_unsafe_pickle``.
+        if not allow_unsafe_pickle:
+            raise RuntimeError(
+                "Refusing to load a single-file pickle checkpoint without "
+                "explicit opt-in: re-call load_checkpoint(allow_unsafe_pickle=True) "
+                "only when the file is a self-produced checkpoint from a "
+                "trusted location."
+            )
         payload = torch.load(
             path, map_location=map_location, weights_only=False
         )

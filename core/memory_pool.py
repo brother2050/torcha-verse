@@ -820,28 +820,48 @@ class ModelOffloader:
 
         if self._strategy == OffloadStrategy.CPU:
             model = model.to("cpu")
+            # ``del model`` here only dropped the *local* binding; the
+            # previous implementation never assigned the CPU copy back
+            # to ``self._offloaded`` and as a result the original GPU
+            # model was kept alive by the offloaded entry's attribute
+            # (or by the caller holding a reference), which meant GPU
+            # memory was *never* released.  We now store the CPU copy
+            # in the entry and explicitly clear the CUDA cache.
             self._offloaded[model_id] = _OffloadedEntry(
                 model=model, size_bytes=size_bytes, strategy=OffloadStrategy.CPU,
             )
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         elif self._strategy == OffloadStrategy.DISK:
             disk_path = os.path.join(
                 self._disk_dir,
                 "{}{}.pt".format(_DISK_FILE_PREFIX, model_id),
             )
             torch.save(model, disk_path)
-            # Remove from GPU memory.
+            # Move the (now-saved) model to CPU and drop the GPU tensor
+            # explicitly.  Without ``empty_cache()`` the CUDA caching
+            # allocator keeps the freed blocks around for reuse which
+            # is the right thing for steady state, but a top-level
+            # offload operation should expose the released memory so
+            # that the next allocation does not have to wait for
+            # fragmentation.
             model = model.to("cpu")
-            del model
             self._offloaded[model_id] = _OffloadedEntry(
                 model=None, size_bytes=size_bytes,
                 strategy=OffloadStrategy.DISK, disk_path=disk_path,
             )
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         else:
             # NONE: just dereference.
-            del model
             self._offloaded[model_id] = _OffloadedEntry(
                 model=None, size_bytes=size_bytes, strategy=OffloadStrategy.NONE,
             )
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         self._logger.info(
             "Offloaded model '%s' (%dB) via %s.",

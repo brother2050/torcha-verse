@@ -712,8 +712,19 @@ class RLHFTrainer:
         advantages = torch.zeros_like(rewards)
         last_gae = torch.zeros(rewards.shape[0], device=rewards.device)
 
+        # ``values`` has the same length as ``rewards``; the next-state
+        # value is the value at the *following* timestep, not the
+        # current one.  The previous implementation used
+        # ``values[:, t]`` (== current value) which made
+        # ``delta = rewards[:, t] + gamma * V(s_t) - V(s_t) = rewards[:, t]``,
+        # i.e. GAE collapsed to a plain reward sum and the critic had
+        # zero influence.  We use ``values[:, t + 1]`` here, with a zero
+        # bootstrap for the terminal timestep.
         for t in reversed(range(seq_len)):
-            next_value = values[:, t] if t < values.shape[1] else torch.zeros_like(last_gae)
+            if t + 1 < values.shape[1]:
+                next_value = values[:, t + 1]
+            else:
+                next_value = torch.zeros_like(last_gae)
             delta = rewards[:, t] + gamma * next_value - values[:, t]
             last_gae = delta + gamma * lam * last_gae
             advantages[:, t] = last_gae

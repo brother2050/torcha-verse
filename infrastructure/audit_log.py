@@ -274,13 +274,22 @@ class AuditLogger:
     def flush(self) -> int:
         """Write all buffered events to the JSONL sink and clear the buffer.
 
+        Uses the swap-buffer pattern: under the lock we take the entire
+        current buffer out and install a fresh empty list.  The disk
+        write then happens *outside* the lock so that we don't hold it
+        across slow I/O, but a concurrent :meth:`log` always lands in
+        the new buffer (so we can never lose events the way the old
+        ``del self._buffer[:len(batch)]`` slice did when the buffer
+        was concurrently extended).
+
         Returns:
             The number of events flushed.
         """
         with self._lock:
             if not self._buffer:
                 return 0
-            batch = list(self._buffer)
+            batch = self._buffer
+            self._buffer = []  # swap — any new log() lands here.
 
         # 锁外写入磁盘（慢速 I/O 不持有锁）。
         try:
@@ -303,13 +312,14 @@ class AuditLogger:
                         handle.write(line)
                     handle.flush()
                     os.fsync(handle.fileno())  # 确保写入磁盘
-            # 写入成功后才清空缓冲区（仅移除已写入的事件，保留写入期间
-            # 新追加的事件，避免数据丢失）。
-            with self._lock:
-                del self._buffer[: len(batch)]
             return len(batch)
         except Exception as exc:
-            # 写入失败，保留缓冲区以便下次重试。
+            # 写入失败：把 batch 放回 buffer 头部以便下次重试。
+            with self._lock:
+                # Preserve chronological order: put the failed batch
+                # ahead of any events that were appended in the
+                # meantime.
+                self._buffer = list(batch) + self._buffer
             self._diag.warning("Flush failed, retaining buffer: %s", exc)
             raise
 

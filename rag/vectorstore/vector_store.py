@@ -357,10 +357,13 @@ class FaissVectorStore(BaseVectorStore):
         self._faiss: Optional[Any] = None
         self._index: Optional[Any] = None
 
-        # Parallel storage for metadata / content / ids.
+        # Parallel storage for metadata / content / ids.  ``_vectors``
+        # keeps a copy of each L2-normalised vector so that ``delete``
+        # can rebuild the FAISS index without losing data.
         self._metadata: List[Dict[str, Any]] = []
         self._contents: List[str] = []
         self._ids: List[str] = []
+        self._vectors: List[Any] = []
         self._id_counter: int = 0
 
         try:
@@ -461,6 +464,9 @@ class FaissVectorStore(BaseVectorStore):
             self._metadata.append(metadata[i] if i < len(metadata) else {})
             self._contents.append(contents[i] if i < len(contents) else "")
             self._ids.append(vec_id)
+            # Keep a copy of the (already L2-normalised) vector so that
+            # ``delete`` can rebuild the FAISS index from scratch.
+            self._vectors.append(np_vectors[i])
             ids.append(vec_id)
 
         self._logger.debug("Added %d vectors (total: %d).", n, self.size)
@@ -518,7 +524,10 @@ class FaissVectorStore(BaseVectorStore):
         """Delete vectors by id.
 
         FAISS does not support efficient in-place deletion, so the index
-        is rebuilt from the remaining vectors.
+        is rebuilt from the remaining vectors.  We keep a copy of every
+        L2-normalised vector in :attr:`_vectors` (see :meth:`add`) so
+        that the rebuild can faithfully re-add the survivors without
+        losing data.
 
         Args:
             ids: List of vector ids to remove.
@@ -538,13 +547,30 @@ class FaissVectorStore(BaseVectorStore):
         self._metadata = [self._metadata[i] for i in keep_indices]
         self._contents = [self._contents[i] for i in keep_indices]
         self._ids = [self._ids[i] for i in keep_indices]
+        self._vectors = [self._vectors[i] for i in keep_indices]
 
-        # Rebuild the FAISS index from scratch.
+        # Rebuild the FAISS index from scratch and re-add the remaining
+        # vectors.  ``_vectors`` carries the L2-normalised copies so we
+        # don't need to re-normalise here.
         self._build_index()
-        if self._ids:
-            # Re-add remaining vectors.  We don't have the original
-            # tensors, so we store raw vectors alongside metadata.
-            # In a production system you would persist the raw vectors.
+        if self._vectors:
+            remaining = np.stack(self._vectors, axis=0)
+            # IVF indexes need to be (re)trained before adding; if the
+            # index was rebuilt with fewer than ``nlist`` vectors, train
+            # with whatever we have (faiss requires at least nlist).
+            if self._index_type == "ivf" and not self._index.is_trained:
+                if remaining.shape[0] >= self._nlist:
+                    self._index.train(remaining)
+                else:
+                    # Too few to train IVF; replace with a flat index.
+                    self._logger.debug(
+                        "After delete only %d vectors remain (< nlist=%d); "
+                        "replacing IVF with a flat index.",
+                        remaining.shape[0], self._nlist,
+                    )
+                    self._index = self._faiss.IndexFlatIP(self.dim)
+            if self._index.is_trained:
+                self._index.add(remaining)
             self._logger.debug("Rebuilt FAISS index with %d vectors.", len(self._ids))
         return True
 
@@ -559,6 +585,7 @@ class FaissVectorStore(BaseVectorStore):
         self._metadata.clear()
         self._contents.clear()
         self._ids.clear()
+        self._vectors.clear()
         self._id_counter = 0
         self._build_index()
 

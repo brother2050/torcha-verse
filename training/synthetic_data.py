@@ -20,12 +20,28 @@ import json
 import random
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Union, runtime_checkable
 
-# engines removed - use Pipeline
+# engines removed - use Pipeline or inject a generator function.
+# We declare a minimal ``TextEngine`` protocol so that the rest of the
+# module (which used to depend on the removed ``TextEngine`` class) can
+# still be type-checked and instantiated in tests.
 from infrastructure.logger import get_logger
 
-__all__ = ["SyntheticDataGenerator", "SyntheticDataConfig"]
+__all__ = ["TextEngine", "SyntheticDataGenerator", "SyntheticDataConfig"]
+
+
+@runtime_checkable
+class TextEngine(Protocol):
+    """Protocol for a pluggable text-generation backend.
+
+    Real production systems inject an LLM client; tests inject a
+    deterministic stub.  The only contract is :meth:`generate`, which
+    takes a prompt and returns a string.
+    """
+
+    def generate(self, prompt: str, **kwargs: Any) -> str: ...
+
 
 PathLike = Union[str, Path]
 

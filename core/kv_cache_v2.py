@@ -570,12 +570,19 @@ class PagedKVCache:
                     # Return to free list.
                     if bid not in self._free_blocks:
                         self._free_blocks.append(bid)
-                    # Clear physical storage.
-                    if bid in self._blocks:
-                        del self._blocks[bid]
-                    # Remove from prefix index.
-                    pb = self._blocks.get(bid)
-                    if pb is not None and pb.tokens is not None:
+                    # Look up the physical block *before* dropping it so
+                    # the prefix-index cleanup below can actually see
+                    # the tokens.  The previous order-of-operations bug
+                    # (``del self._blocks[bid]`` then ``self._blocks.get``)
+                    # meant the prefix index was never cleaned up.
+                    pb = self._blocks.pop(bid, None)
+                    if pb is None:
+                        # Nothing to clean up; refcount only entry
+                        # existed.  Move on.
+                        continue
+                    # Remove from prefix index now that we still have
+                    # the block reference.
+                    if pb.tokens is not None:
                         chunk = tuple(pb.tokens)
                         if chunk in self._prefix_index:
                             del self._prefix_index[chunk]

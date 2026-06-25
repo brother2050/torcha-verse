@@ -25,15 +25,19 @@ import io
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Union, runtime_checkable
 
 import torch
 from torch.utils.data import Dataset
 
-# TokenizerHub removed - use ModuleBus
+# TokenizerHub removed - use ModuleBus or inject tokenizer directly.
+# A minimal ``BaseTokenizer`` protocol is provided here so that the
+# dataset classes remain type-safe without depending on the old
+# ``TokenizerHub`` abstraction.
 from infrastructure.logger import get_logger
 
 __all__ = [
+    "BaseTokenizer",
     "BaseDataset",
     "TextDataset",
     "ChatDataset",
@@ -42,8 +46,47 @@ __all__ = [
     "collate_fn",
 ]
 
+
+@runtime_checkable
+class BaseTokenizer(Protocol):
+    """Minimal tokenizer protocol used by TorchaVerse datasets.
+
+    Implementations must expose ``encode``, ``decode``, ``pad_token_id``,
+    ``bos_token_id`` and ``eos_token_id``.  The protocol is duck-typed
+    so that any tokenizer (HuggingFace, tiktoken, custom) is accepted
+    without a hard dependency.
+    """
+
+    pad_token_id: int
+    bos_token_id: int
+    eos_token_id: int
+
+    def encode(self, text: str, **kwargs: Any) -> List[int]: ...
+    def decode(self, ids: Sequence[int], **kwargs: Any) -> str: ...
+
+
 #: Path-like type alias.
 PathLike = Union[str, Path]
+
+
+class _DefaultTokenizer:
+    """A tiny character-level fallback tokenizer.
+
+    Used when no external tokenizer is supplied.  It maps every Unicode
+    code point to its ordinal and reserves ids 0/1/2 for PAD/BOS/EOS.
+    This keeps the dataset classes import-safe even when the optional
+    tokenizer dependency is not installed.
+    """
+
+    pad_token_id: int = 0
+    bos_token_id: int = 1
+    eos_token_id: int = 2
+
+    def encode(self, text: str, **_: Any) -> List[int]:
+        return [self.bos_token_id] + [ord(c) + 3 for c in text] + [self.eos_token_id]
+
+    def decode(self, ids: Sequence[int], **_: Any) -> str:
+        return "".join(chr(int(i) - 3) for i in ids if int(i) >= 3)
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +116,11 @@ class BaseDataset(Dataset):
         max_length: int = 512,
         pad_token_id: Optional[int] = None,
     ) -> None:
-        self.tokenizer: BaseTokenizer = tokenizer or TokenizerHub().get_tokenizer(
-            "text", vocab_size=256, max_length=max_length
-        )
+        # Fall back to a tiny built-in tokenizer so that ``BaseDataset``
+        # and its subclasses can be instantiated without depending on the
+        # legacy ``TokenizerHub`` (which has been removed).  Callers that
+        # have a real tokenizer should pass it explicitly.
+        self.tokenizer: BaseTokenizer = tokenizer or _DefaultTokenizer()
         self.max_length: int = max(1, int(max_length))
         self.pad_token_id: int = (
             pad_token_id
