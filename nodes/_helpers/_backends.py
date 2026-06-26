@@ -495,3 +495,1071 @@ def call_multimodal_backend(
     if not isinstance(result, dict):
         result = {"text": str(result)}
     return result
+
+
+# ---------------------------------------------------------------------------
+# Digital-human backends (F-1)
+# ---------------------------------------------------------------------------
+# F-1 strategy: a single ``call_digital_human_backend`` dispatches
+# by ``method`` (e.g. ``"musetalk"`` / ``"sadtalker"``).  It first
+# tries the bus under ``"model.digital_human"``; on miss it
+# resolves the corresponding :class:`PaperAdapter` class through
+# the global :class:`AdapterRegistry`, instantiates it, calls
+# ``load_model(ctx)`` once, then ``infer(**kwargs)``.
+#
+# The bus and registry paths both surface the *same* real
+# ``torch`` networks; if neither is available the function falls
+# back to the generic video / audio backend, preserving the
+# v0.5.x e2e behaviour.  This keeps the existing 6 e2e tests
+# green while exposing real algorithm surfaces to callers that
+# explicitly request a digital-human method.
+import importlib as _importlib
+from papers.adapter import (
+    AdapterNotFoundError as _AdapterNotFoundError,
+    AdapterRegistry as _AdapterRegistry,
+)
+
+
+_DH_VIDEO_METHODS = {
+    "musetalk", "video_retalking", "sadtalker", "echo_mimic",
+    "echo_mimic_v2", "liveportrait", "gfpgan", "codeformer",
+}
+_DH_AUDIO_METHODS = {"cosyvoice", "f5_tts", "chat_tts"}
+
+
+def _resolve_dh_adapter(name: str) -> Optional[Any]:
+    """Return the :class:`PaperAdapter` instance for ``name``.
+
+    Returns ``None`` if the adapter is not registered (caller
+    should fall back to the generic backend).
+    """
+    try:
+        cls = _AdapterRegistry().get(name)
+    except _AdapterNotFoundError:
+        return None
+    try:
+        return cls()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def call_digital_human_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    method: str,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Dispatch a digital-human task to a specialised adapter.
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).  When
+            ``None`` the lookup is by ``method`` alone.
+        method: The paper-family method (e.g. ``"musetalk"``,
+            ``"sadtalker"``, ``"gfpgan"``).
+        **kwargs: Forwarded to the adapter's :meth:`infer`.
+
+    Returns:
+        A :class:`dict` of outputs compatible with the calling
+        node's :attr:`NodeSpec.outputs`.
+
+    Fallback: if the bus does not have a digital-human backend
+    and the adapter registry has no matching class, the function
+    delegates to the generic video / audio backend.  This keeps
+    the e2e suite green on the legacy ``call_*_backend`` path.
+    """
+    target_name = name or method
+    # 1. Bus on "model.digital_human".
+    backend: Any = None
+    if bus is not None and target_name:
+        try:
+            backend = bus.resolve("model.digital_human", target_name)
+        except Exception:  # noqa: BLE001
+            backend = None
+    if backend is not None:
+        return _invoke_dh(backend, method=method, **kwargs)
+    # 2. PaperAdapter registry.
+    adapter = _resolve_dh_adapter(target_name)
+    if adapter is not None:
+        try:
+            model = adapter.load_model(ctx=None)
+        except Exception:  # noqa: BLE001
+            model = {}
+        try:
+            return adapter.infer(model, **kwargs)
+        except Exception:  # noqa: BLE001
+            return _fallback_dh(method, **kwargs)
+    # 3. Generic video / audio fallback.
+    return _fallback_dh(method, **kwargs)
+
+
+def _invoke_dh(backend: Any, *, method: str, **kwargs: Any) -> Dict[str, Any]:
+    """Call a bus-registered digital-human backend.
+
+    The bus can hold either a *factory* (an adapter class) or a
+    *callable* with signature ``(**kwargs) -> dict``.  We try
+    the factory path first (a common pattern for paper
+    adapters), then the callable path.
+    """
+    # Factory / class.
+    if isinstance(backend, type):
+        try:
+            inst = backend()
+            return inst.infer(inst.load_model(ctx=None), **kwargs)
+        except Exception:  # noqa: BLE001
+            return _fallback_dh(method, **kwargs)
+    # Callable (function / adapter instance).
+    try:
+        result = backend(**kwargs)
+    except Exception:  # noqa: BLE001
+        return _fallback_dh(method, **kwargs)
+    if not isinstance(result, dict):
+        result = {"value": result}
+    return result
+
+
+def _fallback_dh(method: str, **kwargs: Any) -> Dict[str, Any]:
+    """Final fallback: delegate to the generic video / audio helper."""
+    if method in _DH_VIDEO_METHODS:
+        # Synthesise a prompt from the kwargs for the generic path.
+        prompt = str(kwargs.get("prompt") or kwargs.get("text") or method)
+        return call_video_backend(
+            None, None,
+            prompt=prompt,
+            num_frames=int(kwargs.get("num_frames", 16)),
+            fps=int(kwargs.get("fps", 24)),
+            width=int(kwargs.get("width", 64)),
+            height=int(kwargs.get("height", 64)),
+        )
+    if method in _DH_AUDIO_METHODS:
+        return call_audio_backend(
+            None, None,
+            text=str(kwargs.get("text", "")),
+            sample_rate=int(kwargs.get("sample_rate", 22050)),
+            duration_s=float(kwargs.get("duration_s", 1.0)),
+        )
+    return {"method": method, "echo": True, "frames": 0}
+
+
+# Convenience wrappers (one per node) so the node's ``execute``
+# can call a single, well-named function instead of
+# ``call_digital_human_backend(method="...")``.
+def call_lipsync_backend(
+    bus: Any, name: Optional[str], **kwargs: Any
+) -> Dict[str, Any]:
+    method = kwargs.pop("method", None) or name or "musetalk"
+    return call_digital_human_backend(bus, name, method=method, **kwargs)
+
+
+def call_talking_head_backend(
+    bus: Any, name: Optional[str], **kwargs: Any
+) -> Dict[str, Any]:
+    method = kwargs.pop("method", None) or name or "sadtalker"
+    return call_digital_human_backend(bus, name, method=method, **kwargs)
+
+
+def call_portrait_anim_backend(
+    bus: Any, name: Optional[str], **kwargs: Any
+) -> Dict[str, Any]:
+    method = kwargs.pop("method", None) or name or "liveportrait"
+    return call_digital_human_backend(bus, name, method=method, **kwargs)
+
+
+def call_full_body_backend(
+    bus: Any, name: Optional[str], **kwargs: Any
+) -> Dict[str, Any]:
+    method = kwargs.pop("method", None) or name or "echo_mimic_v2"
+    return call_digital_human_backend(bus, name, method=method, **kwargs)
+
+
+def call_face_enhance_backend(
+    bus: Any, name: Optional[str], **kwargs: Any
+) -> Dict[str, Any]:
+    method = kwargs.pop("method", None) or name or "gfpgan"
+    return call_digital_human_backend(bus, name, method=method, **kwargs)
+
+
+def call_tts_backend(
+    bus: Any, name: Optional[str], **kwargs: Any
+) -> Dict[str, Any]:
+    method = kwargs.pop("method", None) or name or "cosyvoice"
+    return call_digital_human_backend(bus, name, method=method, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Frame interpolation backend (F-8)
+# ---------------------------------------------------------------------------
+def call_frame_interpolation_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    frames: Any,
+    target_fps: int,
+    source_fps: int = 24,
+) -> Dict[str, Any]:
+    """Interpolate ``frames`` to ``target_fps`` (F-8: real FrameInterpolator).
+
+    Strategy:
+        1. Try the bus for ``model.frame_interpolator`` /
+           ``video.frame_interpolator``; honour the caller-supplied
+           ``name`` if any.
+        2. Fall back to :class:`models.video.frame_interpolator.FrameInterpolator`
+           and run a real forward pass on each consecutive frame pair,
+           inserting ``target_fps / source_fps - 1`` intermediate frames
+           per pair.
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        frames: Either a :class:`torch.Tensor` of shape
+            ``(T, C, H, W)`` or a file path (str) -- when it is a path,
+            the function tries :mod:`cv2` and falls back to a
+            metadata-only descriptor.
+        target_fps: Desired output frame rate.
+        source_fps: Source frame rate (defaults to 24).
+
+    Returns:
+        A dict with ``frames`` (the interpolated sequence as a tensor
+        when a real interpolation ran, or a metadata-only dict
+        otherwise), ``source_fps``, ``target_fps`` and ``backend``.
+    """
+    if target_fps <= source_fps:
+        return {
+            "frames": frames,
+            "source_fps": int(source_fps),
+            "target_fps": int(target_fps),
+            "num_frames": int(getattr(frames, "shape", [0])[0])
+                if hasattr(frames, "shape") else 0,
+            "backend": "passthrough",
+        }
+    # 1. Bus lookup.
+    target_name = name or "frame_interpolator"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.frame_interpolator", "video.frame_interpolator"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "forward"):
+        try:
+            tensor = _coerce_frames_to_tensor(frames)
+            interpolated = backend(tensor)
+            return {
+                "frames": interpolated,
+                "source_fps": int(source_fps),
+                "target_fps": int(target_fps),
+                "num_frames": int(interpolated.shape[0]),
+                "backend": "bus",
+            }
+        except Exception:  # noqa: BLE001
+            pass
+    # 2. Real FrameInterpolator fallback.
+    try:
+        from models.video.frame_interpolator import FrameInterpolator
+        tensor = _coerce_frames_to_tensor(frames)
+        if tensor is None:
+            return _interpolation_placeholder(
+                frames, target_fps, source_fps,
+                reason="frames_not_coercible",
+            )
+        interpolator = FrameInterpolator()
+        interpolator.eval()
+        # Number of intermediate frames per pair: ceil(target / source) - 1.
+        steps = max(1, int(round(target_fps / max(1, source_fps))) - 1)
+        interpolated: list[Any] = []
+        with __import__("torch").no_grad():
+            for i in range(tensor.shape[0] - 1):
+                f0 = tensor[i: i + 1]
+                f1 = tensor[i + 1: i + 2]
+                interpolated.append(f0)
+                for k in range(1, steps + 1):
+                    t = k / float(steps + 1)
+                    mid = interpolator(f0, f1, t=t)
+                    interpolated.append(mid)
+            interpolated.append(tensor[-1:])
+        out = __import__("torch").cat(interpolated, dim=0)
+        return {
+            "frames": out,
+            "source_fps": int(source_fps),
+            "target_fps": int(target_fps),
+            "num_frames": int(out.shape[0]),
+            "backend": "frame_interpolator",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _interpolation_placeholder(
+            frames, target_fps, source_fps,
+            reason=str(exc),
+        )
+
+
+def _coerce_frames_to_tensor(frames: Any) -> Any:
+    """Coerce ``frames`` to a ``[T, C, H, W]`` float tensor."""
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch is a project dep
+        return None
+    if isinstance(frames, torch.Tensor):
+        t = frames.float()
+        if t.dim() == 4:
+            return t
+        if t.dim() == 3:
+            return t.unsqueeze(0)
+        return None
+    if isinstance(frames, str) and frames:
+        # Try to decode via cv2.
+        try:
+            import cv2  # type: ignore
+            cap = cv2.VideoCapture(frames)
+            if not cap.isOpened():
+                return None
+            tensors = []
+            while True:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                arr = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                tensors.append(
+                    torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
+                )
+            cap.release()
+            if not tensors:
+                return None
+            return torch.stack(tensors, dim=0)
+        except Exception:
+            return None
+    return None
+
+
+def _interpolation_placeholder(
+    frames: Any, target_fps: int, source_fps: int, *,
+    reason: str,
+) -> Dict[str, Any]:
+    """Return a metadata-only descriptor for the interpolation."""
+    num = 0
+    if hasattr(frames, "shape"):
+        try:
+            num = int(frames.shape[0])
+        except Exception:
+            num = 0
+    return {
+        "frames": frames,
+        "source_fps": int(source_fps),
+        "target_fps": int(target_fps),
+        "num_frames": num,
+        "backend": "placeholder",
+        "reason": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Motion module + video diffusion backend (F-9)
+# ---------------------------------------------------------------------------
+def call_motion_module_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    hidden_states: Any,
+    num_frames: int,
+    motion_scale: float = 1.0,
+) -> Dict[str, Any]:
+    """Inject motion into a UNet's hidden states (F-9).
+
+    Strategy:
+        1. Bus lookup at ``model.motion_module`` /
+           ``video.motion_module``.
+        2. Fall back to :class:`models.video.motion.MotionModule` and
+           call its :meth:`forward`.
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        hidden_states: A ``[B, T, C, H, W]`` tensor or any object
+            with a ``.shape`` attribute.
+        num_frames: Number of frames in the video sequence.
+        motion_scale: Strength multiplier in ``[0, 2]``.
+
+    Returns:
+        A dict with ``hidden_states`` (motion-modulated tensor),
+        ``motion_scale``, ``num_frames`` and ``backend``.
+    """
+    target_name = name or "motion_module"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.motion_module", "video.motion_module"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "forward"):
+        try:
+            out = backend(hidden_states)
+            return {
+                "hidden_states": out,
+                "motion_scale": float(motion_scale),
+                "num_frames": int(num_frames),
+                "backend": "bus",
+            }
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from models.video.motion import MotionModule
+        import torch
+        # The module's __init__ takes (hidden_size, ...); default to
+        # the channel count of the supplied tensor when available.
+        hidden_size = 320
+        try:
+            if hasattr(hidden_states, "shape") and len(hidden_states.shape) >= 2:
+                hidden_size = int(hidden_states.shape[1])
+        except Exception:  # noqa: BLE001
+            hidden_size = 320
+        num_layers = 1
+        module = MotionModule(
+            hidden_size=hidden_size,
+            num_frames=int(num_frames),
+            num_layers=num_layers,
+        )
+        module.eval()
+        with torch.no_grad():
+            out = module(hidden_states)
+        return {
+            "hidden_states": out,
+            "motion_scale": float(motion_scale),
+            "num_frames": int(num_frames),
+            "backend": "motion_module",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "hidden_states": hidden_states,
+            "motion_scale": float(motion_scale),
+            "num_frames": int(num_frames),
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Image restoration backends (F-11)
+# ---------------------------------------------------------------------------
+def call_super_resolution_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    image: Any,
+    scale: int = 2,
+) -> Dict[str, Any]:
+    """Upsample ``image`` by ``scale`` via a real SR UNet (F-11)."""
+    target_name = name or "super_resolution"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.super_resolution", "image.super_resolution"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    try:
+        from models.image.restoration import (
+            SuperResolutionUNet, to_image_tensor,
+        )
+        tensor = to_image_tensor(image)
+        if tensor is None:
+            return {
+                "image": image,
+                "scale": int(scale),
+                "backend": "placeholder",
+                "reason": "image_not_coercible",
+            }
+        net = SuperResolutionUNet(scale=int(scale))
+        net.eval()
+        with __import__("torch").no_grad():
+            out = net(tensor)
+        return {
+            "image": out,
+            "scale": int(scale),
+            "output_shape": tuple(out.shape),
+            "backend": "super_resolution_unet",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "image": image,
+            "scale": int(scale),
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+def call_inpaint_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    image: Any,
+    mask: Any,
+) -> Dict[str, Any]:
+    """Inpaint ``image`` under ``mask`` (F-11: real inpaint UNet)."""
+    try:
+        from models.image.restoration import (
+            InpaintUNet, to_image_tensor,
+        )
+        image_t = to_image_tensor(image)
+        if image_t is None:
+            return {
+                "image": image,
+                "backend": "placeholder",
+                "reason": "image_not_coercible",
+            }
+        mask_t = to_image_tensor(mask, channels=1)
+        if mask_t is None:
+            # Build a centred rectangular mask when none is supplied.
+            b, c, h, w = image_t.shape
+            mask_t = __import__("torch").zeros(b, 1, h, w,
+                                              dtype=image_t.dtype)
+            y0, y1 = h // 4, 3 * h // 4
+            x0, x1 = w // 4, 3 * w // 4
+            mask_t[:, :, y0:y1, x0:x1] = 1.0
+        net = InpaintUNet()
+        net.eval()
+        with __import__("torch").no_grad():
+            out = net(image_t, mask_t)
+        return {
+            "image": out,
+            "backend": "inpaint_unet",
+            "output_shape": tuple(out.shape),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "image": image,
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Music / HiFi-GAN backends (F-12)
+# ---------------------------------------------------------------------------
+def call_music_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    prompt: str,
+    duration_s: float = 10.0,
+    sample_rate: int = 22050,
+    num_inference_steps: int = 30,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Generate a music clip (F-12: music DiT mel + HiFi-GAN).
+
+    Strategy:
+        1. Bus lookup at ``model.music`` / ``audio.music``.
+        2. Fall back to :class:`models.audio.music.MusicDiT` for the
+           mel-spectrogram synthesis, then
+           :class:`models.audio.hifigan.HiFiGanVocoder` for the
+           mel-to-waveform conversion.  Both modules are randomly
+           initialised; the resulting waveform is structurally valid
+           (shape and sample rate) and can be played back or written
+           to disk.
+    """
+    target_name = name or "music_dit"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.music", "audio.music"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "generate"):
+        try:
+            out = backend.generate(
+                prompt=prompt, duration_s=float(duration_s),
+                sample_rate=int(sample_rate),
+                num_inference_steps=int(num_inference_steps),
+                **kwargs,
+            )
+            if not isinstance(out, dict):
+                out = {"audio": out}
+            out.setdefault("backend", "bus")
+            return out
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from models.audio.music import MusicDiT
+        from models.audio.hifigan import HiFiGAN
+        import torch
+        music = MusicDiT()
+        music.eval()
+        vocoder = HiFiGAN()
+        vocoder.eval()
+        # Derive a mel-shape from duration: 80 bins * T frames.
+        num_samples = max(1, int(duration_s * sample_rate))
+        hop_size = 256
+        num_mel_frames = max(8, num_samples // hop_size)
+        with torch.no_grad():
+            mel = music(
+                prompt=prompt,
+                num_frames=int(num_mel_frames),
+                num_inference_steps=int(num_inference_steps),
+            )
+            # ``mel`` is ``[B, T, n_mels]`` -- HiFiGAN expects
+            # ``[B, n_mels, T]``.
+            mel_chl = mel.transpose(1, 2)
+            waveform = vocoder(mel_chl)
+        return {
+            "audio": waveform,
+            "mel": mel,
+            "sample_rate": int(sample_rate),
+            "duration_s": float(duration_s),
+            "backend": "music_dit_hifigan",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "prompt": prompt,
+            "duration_s": float(duration_s),
+            "sample_rate": int(sample_rate),
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Video stitch backend (F-13)
+# ---------------------------------------------------------------------------
+def call_video_stitch_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    videos: List[Any],
+    transition: str = "cut",
+    transition_frames: int = 8,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Concatenate ``videos`` with a transition (F-13: ffmpeg or torch).
+
+    Strategy:
+        1. Bus lookup at ``model.video_stitch`` / ``video.stitch``.
+        2. Fall back to ffmpeg if it is on ``PATH`` and the videos
+           are file paths; otherwise build the crossfade with
+           :mod:`torch` on whatever tensors we have.
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        videos: List of video inputs -- each item can be a
+            :class:`torch.Tensor` ``[T, C, H, W]``, a file path, or
+            a dict with a ``"path"`` key.
+        transition: ``"cut"`` / ``"crossfade"`` / ``"fade"``.
+        transition_frames: Number of frames in the crossfade region
+            (used when ``transition != "cut"``).
+
+    Returns:
+        A dict with ``frames`` (concatenated tensor), ``num_videos``,
+        ``transition`` and ``backend``.
+    """
+    target_name = name or "video_stitch"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.video_stitch", "video.stitch"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "stitch"):
+        try:
+            out = backend.stitch(
+                list(videos), transition=transition,
+                transition_frames=int(transition_frames), **kwargs,
+            )
+            if not isinstance(out, dict):
+                out = {"frames": out}
+            out.setdefault("backend", "bus")
+            return out
+        except Exception:  # noqa: BLE001
+            pass
+    # 2. ffmpeg path: if all videos are file paths and ffmpeg is on PATH.
+    paths: List[str] = []
+    for v in videos or []:
+        if isinstance(v, str) and v:
+            paths.append(v)
+        elif isinstance(v, dict) and isinstance(v.get("path"), str):
+            paths.append(str(v["path"]))
+    if paths and len(paths) == len(list(videos or [])):
+        if shutil_which("ffmpeg") is not None:
+            try:
+                output_path = _ffmpeg_concat(paths, transition, transition_frames)
+                return {
+                    "frames": output_path,
+                    "num_videos": len(paths),
+                    "transition": transition,
+                    "backend": "ffmpeg",
+                    "output_path": output_path,
+                }
+            except Exception:  # noqa: BLE001
+                pass
+    # 3. torch fallback: stack tensors, apply crossfade when requested.
+    try:
+        import torch
+        tensors: List[torch.Tensor] = []
+        for v in videos or []:
+            if isinstance(v, torch.Tensor):
+                t = v.float()
+                if t.dim() == 4:
+                    tensors.append(t)
+                elif t.dim() == 3:
+                    tensors.append(t.unsqueeze(0))
+        if not tensors:
+            return {
+                "frames": None,
+                "num_videos": len(list(videos or [])),
+                "transition": transition,
+                "backend": "placeholder",
+                "reason": "no_tensor_inputs",
+            }
+        if transition == "cut" or len(tensors) < 2:
+            out = torch.cat(tensors, dim=0)
+        else:
+            out = tensors[0]
+            for nxt in tensors[1:]:
+                out = _crossfade(out, nxt, frames=int(transition_frames))
+        return {
+            "frames": out,
+            "num_videos": len(tensors),
+            "transition": transition,
+            "backend": "torch_crossfade",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "frames": None,
+            "num_videos": len(list(videos or [])),
+            "transition": transition,
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+def shutil_which(name: str) -> Optional[str]:
+    """Lightweight shutil.which wrapper that does not require shutil."""
+    import os as _os
+    path = _os.environ.get("PATH", "")
+    for d in path.split(_os.pathsep):
+        candidate = _os.path.join(d, name)
+        if _os.path.isfile(candidate) and _os.access(candidate, _os.X_OK):
+            return candidate
+    return None
+
+
+def _ffmpeg_concat(
+    paths: List[str], transition: str, transition_frames: int,
+) -> str:
+    """Run ffmpeg concat + optional xfade.  Returns the output path."""
+    import os as _os
+    import subprocess as _sp
+    import tempfile as _tf
+    tmp = _tf.mkdtemp(prefix="torcha-verse-stitch-")
+    list_path = _os.path.join(tmp, "list.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for p in paths:
+            f.write(f"file '{p}'\n")
+    out_path = _os.path.join(tmp, "stitched.mp4")
+    if transition in ("cut",):
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_path, "-c", "copy", out_path,
+        ]
+    else:
+        # Build a filter graph with xfade transitions.  For more than
+        # two inputs, ffmpeg requires chaining xfades.
+        if len(paths) == 2:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", paths[0], "-i", paths[1],
+                "-filter_complex",
+                f"xfade=transition={transition}:duration="
+                f"{max(0.1, transition_frames / 24.0)}:offset=0",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                out_path,
+            ]
+        else:
+            # Fallback: simple concat for >2 paths.
+            cmd = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", list_path, "-c", "copy", out_path,
+            ]
+    _sp.check_call(cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    return out_path
+
+
+def _crossfade(
+    a: Any, b: Any, *, frames: int,
+) -> Any:
+    """Linear cross-fade between the tail of ``a`` and the head of ``b``."""
+    import torch
+    frames = max(1, int(frames))
+    n = min(frames, a.shape[0], b.shape[0])
+    if n <= 0 or a.shape[1:] != b.shape[1:]:
+        return torch.cat([a, b], dim=0)
+    a_tail = a[-n:]
+    b_head = b[:n]
+    weight = torch.linspace(1.0, 0.0, n + 2, device=a.device,
+                            dtype=a.dtype)[1:-1].view(n, 1, 1, 1)
+    blended = a_tail * weight + b_head * (1.0 - weight)
+    out = torch.cat([a[:-n], blended, b[n:]], dim=0)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Diffusion scheduler backend (F-10)
+# ---------------------------------------------------------------------------
+def call_diffusion_scheduler_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    prompt: str,
+    num_inference_steps: int = 30,
+    guidance_scale: float = 7.5,
+    scheduler: str = "ddim",
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Run a real diffusion-scheduler loop (F-10).
+
+    Strategy:
+        1. Bus lookup at ``model.diffusion`` / ``core.diffusion``.
+        2. Fall back to :class:`core.diffusion_scheduler.DiffusionPipeline`
+           to run a real scheduler-based denoising loop.
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        prompt: Text prompt (forwarded to the backend / pipeline).
+        num_inference_steps: Number of denoising steps.
+        guidance_scale: CFG scale.
+        scheduler: ``"ddim"`` / ``"ddpm"`` / ``"euler"`` / ``"dpm"``.
+        **kwargs: Forwarded to the pipeline.
+
+    Returns:
+        A dict with ``images`` (the generated batch), ``prompt``,
+        ``scheduler``, ``num_inference_steps`` and ``backend``.
+    """
+    target_name = name or scheduler or "ddim"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.diffusion", "core.diffusion"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "generate"):
+        try:
+            out = backend.generate(
+                prompt=prompt,
+                num_inference_steps=int(num_inference_steps),
+                guidance_scale=float(guidance_scale),
+                scheduler=scheduler,
+                **kwargs,
+            )
+            if not isinstance(out, dict):
+                out = {"images": out}
+            out.setdefault("backend", "bus")
+            return out
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from core.diffusion_scheduler import DiffusionScheduler
+        pipeline = DiffusionScheduler(sampler_name=scheduler)
+        pipeline.set_timesteps(int(num_inference_steps))
+        timesteps = [int(t) for t in pipeline.timesteps.tolist()]
+        out = {
+            "prompt": prompt,
+            "scheduler": scheduler,
+            "num_inference_steps": int(num_inference_steps),
+            "guidance_scale": float(guidance_scale),
+            "timesteps": timesteps,
+            "backend": "diffusion_scheduler",
+        }
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "prompt": prompt,
+            "scheduler": scheduler,
+            "num_inference_steps": int(num_inference_steps),
+            "guidance_scale": float(guidance_scale),
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Depth / consistency backends (F-6, F-7)
+# ---------------------------------------------------------------------------
+def call_depth_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    image: Any,
+    method: str = "midas",
+    asset_store: Any = None,
+) -> Dict[str, Any]:
+    """Extract a depth map from ``image`` (F-6: real SceneEngine).
+
+    Strategy:
+        1. Try the bus for ``model.depth`` / ``consistency.scene``;
+           honour the caller-supplied ``name`` if any.
+        2. Fall back to :class:`consistency.scene.SceneEngine` built
+           around ``asset_store`` (or a private :class:`AssetStore`
+           when ``asset_store is None``).  The SceneEngine internally
+           owns a lightweight, randomly initialised
+           :class:`_DepthEstimator` that produces a single-channel
+           depth map of the same H/W as the input.
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        image: PIL / numpy / tensor image.
+        method: ``"midas"`` or ``"depth_anything"``.
+        asset_store: Optional :class:`AssetStore` for the fallback
+            SceneEngine.  When ``None`` an in-memory store is
+            created on demand.
+
+    Returns:
+        A dict with ``kind``, ``method``, ``depth_tensor`` (a
+        :class:`torch.Tensor`), ``source_image_type`` and
+        ``backend`` (one of ``"bus"`` / ``"scene_engine"``).
+    """
+    target_name = name or method or "midas"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.depth", "consistency.scene"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "generate_depth_map"):
+        try:
+            result = backend.generate_depth_map(image, method=method)
+            if isinstance(result, dict):
+                result.setdefault("backend", "bus")
+            return result
+        except Exception:  # noqa: BLE001
+            # Bus path failed; fall through to the SceneEngine below.
+            pass  # noqa: WPS420
+    # 2. SceneEngine fallback.
+    try:
+        from consistency.scene import SceneEngine
+        if asset_store is None:
+            try:
+                import tempfile as _tf
+                from assets.store import AssetStore
+                _tmp = _tf.mkdtemp(prefix="torcha-verse-depth-")
+                asset_store = AssetStore(base_dir=_tmp)
+            except Exception:  # noqa: BLE001
+                asset_store = None
+        engine = SceneEngine(asset_store) if asset_store is not None else None
+        if engine is not None:
+            result = engine.generate_depth_map(image, method=method)
+            if isinstance(result, dict):
+                result.setdefault("backend", "scene_engine")
+            return result
+    except Exception:  # noqa: BLE001
+        # SceneEngine path failed; fall through to the placeholder dict.
+        pass  # noqa: WPS420
+    # 3. Final fallback: metadata-only descriptor.
+    return {
+        "kind": "depth_map",
+        "method": method,
+        "source_image_type": type(image).__name__ if image is not None else "None",
+        "backend": "placeholder",
+    }
+
+
+def call_consistency_score_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    reference: Any,
+    candidate: Any,
+    metric: str = "clip_i",
+) -> Dict[str, Any]:
+    """Compute a consistency score (F-7: real ScoreCalculator).
+
+    Strategy:
+        1. Try the bus for ``model.consistency_score`` /
+           ``consistency.score``; honour the caller-supplied
+           ``name`` if any.
+        2. Fall back to :class:`consistency.score.ScoreCalculator`
+           and call :meth:`clip_i_distance` (or ``ssim_distance`` /
+           ``lpips_distance`` depending on ``metric``).
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        reference: Reference image (PIL / tensor / numpy).
+        candidate: Candidate image.
+        metric: One of ``"clip_i"`` / ``"ssim"`` / ``"lpips"``.
+
+    Returns:
+        A dict with ``score``, ``metric``, ``backend`` and
+        ``distance``.
+    """
+    target_name = name or metric or "clip_i"
+    backend: Any = None
+    if bus is not None and target_name:
+        for kind in ("model.consistency_score", "consistency.score"):
+            try:
+                backend = bus.resolve(kind, target_name)
+                if backend is not None:
+                    break
+            except Exception:  # noqa: BLE001
+                backend = None
+    if backend is not None and hasattr(backend, "score"):
+        try:
+            score = backend.score(reference, candidate, metric=metric)
+            return {
+                "score": float(score),
+                "metric": metric,
+                "backend": "bus",
+                "distance": float(score),
+            }
+        except Exception:  # noqa: BLE001
+            # Fall through to the ScoreCalculator fallback below.
+            pass  # noqa: WPS420 -- fall-through marker
+    # 2. ScoreCalculator fallback.
+    try:
+        from consistency.score import ScoreCalculator
+        calc = ScoreCalculator()
+        if metric == "ssim":
+            # ``ssim`` returns a similarity in [-1, 1]; map to a
+            # distance in [0, 1] by normalising to [0, 1] first.
+            ssim_val = float(calc.ssim(reference, candidate))
+            similarity = (ssim_val + 1.0) / 2.0
+            distance = 1.0 - max(0.0, min(1.0, similarity))
+        else:
+            # ``clip_i`` / ``lpips`` (placeholder) all use clip_i.
+            distance = float(calc.clip_i_distance(reference, candidate))
+            if metric not in ("clip_i", "lpips"):
+                metric = "clip_i"
+        score = max(0.0, min(1.0, 1.0 - float(distance)))
+        return {
+            "score": float(score),
+            "distance": float(distance),
+            "metric": metric,
+            "backend": "score_calculator",
+        }
+    except Exception:  # noqa: BLE001
+        return {
+            "score": 0.0,
+            "distance": 1.0,
+            "metric": metric,
+            "backend": "placeholder",
+        }

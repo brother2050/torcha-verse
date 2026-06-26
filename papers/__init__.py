@@ -100,6 +100,19 @@ _ADAPTER_NAME_TO_MODULE: dict[str, str] = {
     "sd3": "papers.adapters.stable_diffusion_3",
     "hunyuan-dit": "papers.adapters.hunyuan_dit",
     "hunyuan_dit": "papers.adapters.hunyuan_dit",
+    # F-1 -- 11 digital-human adapters (lip-sync / talking-head /
+    # portrait-anim / full-body / face-enhance / voice-clone)
+    "musetalk": "papers.adapters.digital_human",
+    "video_retalking": "papers.adapters.digital_human",
+    "sadtalker": "papers.adapters.digital_human",
+    "echo_mimic": "papers.adapters.digital_human",
+    "echo_mimic_v2": "papers.adapters.digital_human",
+    "liveportrait": "papers.adapters.digital_human",
+    "gfpgan": "papers.adapters.digital_human",
+    "codeformer": "papers.adapters.digital_human",
+    "cosyvoice": "papers.adapters.digital_human",
+    "f5_tts": "papers.adapters.digital_human",
+    "chat_tts": "papers.adapters.digital_human",
 }
 
 #: Cache of the resolved class objects so we only pay the import

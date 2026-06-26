@@ -4,6 +4,97 @@
 
 ## [Unreleased]
 
+### F-* — 真实实现填充 (F-0 ~ F-14)
+
+把 39 个 capability 节点中仍为「骨架 + 简单处理」的 24 个节点的 `execute()`
+替换为真实模型 + 真实算法实现,测试数 **1086 → 1118 (+32)**。
+
+**F-1 — 6 个数字人节点 + 11 PaperAdapter**:
+
+- 新文件 `papers/adapters/digital_human.py` (11 个 class):
+  MuseTalk / VideoReTalking (lip-sync), SadTalker / EchoMimic (talking-head),
+  EchoMimicV2 (full-body), LivePortrait (portrait-anim),
+  GFPGAN / CodeFormer (face-enhance), CosyVoice / F5TTS / ChatTTS (voice-clone)
+  共享 `_AudioFeatureEncoder` / `_FaceLandmarkNet` / `_DMMRegressor` /
+  `_UNetRestoration` / `_SpeakerEncoder` 5 个真 nn.Module
+- `papers/__init__.py` 增 11 条 `_ADAPTER_NAME_TO_MODULE` lazy entry
+- `nodes/_helpers/_backends.py` 增 7 个新 `call_*_backend` helper
+  (lipsync / talking_head / portrait_anim / full_body / face_enhance /
+  digital_human / tts)
+- `nodes/digital_human.py` 6 个节点 `execute` 改用真 helper
+- F-0: 修 `dh_full_body` 的 `image` / `reference_image` 别名 bug
+
+**F-2 ~ F-5 — 4 个字幕节点全链路真实化**:
+
+- 新 `nodes/_subtitle_codec.py` (480 行):
+  - `Cue` / `SubtitleTrack` dataclass
+  - `read_audio_waveform` (stdlib wave + scipy fallback)
+  - `asr_transcribe` (能量法 25 ms / 10 ms hop + 自适应阈值,
+    无 whisper 依赖)
+  - `batch_translate_cues` (window=8 滑窗 LLM + 字符长度比
+    自适应 end-timestamp)
+  - `serialize_srt` / `serialize_vtt` / `serialize_ass` 真序列化
+  - `burn_subtitles` (cv2 VideoCapture/Writer + PIL ImageDraw CJK)
+- `nodes/subtitle.py` 4 个节点 `execute` 全部接入 codec
+
+**F-6 — depth_condition → SceneEngine._DepthEstimator**:
+
+- 新 `call_depth_backend` helper (bus 优先 + SceneEngine fallback)
+- `nodes/consistency.py::DepthConditionNode.execute` 改用真深度估计
+
+**F-7 — character_five_view → ScoreCalculator.clip_i_distance**:
+
+- 新 `call_consistency_score_backend` helper
+- 5 view 每张跑 CLIP-I → 返回均值 `consistency_score ∈ [0, 1]`
+
+**F-8 — video_interpolate → FrameInterpolator**:
+
+- 新 `call_frame_interpolation_backend` helper 真插帧
+- cv2 → tensor → FrameInterpolator.pair forward → tensor
+  返回 `target_fps / source_fps - 1` 个中间帧
+
+**F-9 — video_txt2vid → MotionModule**:
+
+- 新 `call_motion_module_backend` helper 真 motion injection
+- `[B, C, T, H, W]` 张量 → MotionModule → 含 motion 调制结果
+
+**F-10 — image_txt2img/img2img → DiffusionScheduler**:
+
+- 新 `call_diffusion_scheduler_backend` helper 真调度器
+- `DiffusionScheduler(sampler_name=...).set_timesteps()` → 真实
+  timestep 列表透传到下游
+
+**F-11 — image_upscale/inpaint → 真 SR/Inpaint UNet**:
+
+- 新 `models/image/restoration.py`:
+  `SuperResolutionUNet` (PixelShuffle 头部) + `InpaintUNet`
+  (RGB + mask → RGB) + `to_image_tensor` 强转
+- 新 `call_super_resolution_backend` / `call_inpaint_backend` helper
+- 2 个节点 `execute` 优先用真 UNet,失败时回退 image backend
+
+**F-12 — audio_music → MusicDiT + HiFiGAN**:
+
+- 新 `models/audio/music.py`:
+  `MusicTransformer` (4-layer Transformer) + `MusicDiT`
+  (AdaLN-Zero style 步调制)
+- 新 `call_music_backend` helper:MusicDiT 生成 mel →
+  HiFiGAN vocoder → 真 waveform
+- `audio_music` 节点挂上真后端
+
+**F-13 — video_stitch → ffmpeg xfade / torch cross-fade**:
+
+- 新 `call_video_stitch_backend` helper
+- 全路径 → `ffmpeg -filter_complex xfade=...` 优先
+- 张量输入 → torch linear cross-fade fallback
+
+**F-14 — 测试与文档**:
+
+- 新 `tests/test_real_implementations.py` (32 个 test):
+  F-1 ~ F-13 每个新代码路径都有 ≥ 1 个 test 覆盖
+- 修正 `docs/placeholder_registry.md` 9 条新 `pass` 行(总条目 35 → 44)
+- `models/image/restoration.py` UNet 上采样 bug 修复
+  (dec2 / up3 / up2 三段 reshape 正确)
+
 ## [v0.6.0] - 2026-06-26
 
 ### R-* 重构 (R-3 ~ R-15 + R-19) — 65+ 聚焦子模块

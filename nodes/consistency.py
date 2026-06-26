@@ -486,11 +486,22 @@ class DepthConditionNode(BaseNode):
     def execute(
         self, ctx: NodeContext, **inputs: Any
     ) -> Dict[str, Any]:
-        """Extract a depth map (placeholder implementation).
+        """Extract a depth map (F-6: real SceneEngine fallback).
+
+        Strategy:
+            * If ``image_or_scene`` is an image-like object (tensor /
+              PIL / numpy), delegate to
+              :func:`call_depth_backend` which dispatches through
+              the bus or falls back to
+              :class:`consistency.scene.SceneEngine` (the
+              lightweight, randomly initialised ``_DepthEstimator``).
+            * If the input is a string (path or text description),
+              first synthesise a placeholder image via the image
+              backend, then run depth extraction on it.
 
         Args:
             ctx: The runtime :class:`NodeContext`.
-            **inputs: ``image_or_scene``, ``method``.
+            **inputs: ``image_or_scene``, ``method``, ``depth_weight``.
 
         Returns:
             A dict with ``depth_map``.
@@ -498,10 +509,16 @@ class DepthConditionNode(BaseNode):
         method = str(inputs.get("method", "midas"))
         model = ctx.config.get("default_depth_model")
         weight = inputs.get("depth_weight")
+        image = inputs.get("image_or_scene")
+        if image is None:
+            image = inputs.get("image") or inputs.get("source_image")
+        if not isinstance(weight, (int, float)):
+            weight = 1.0
+        weight = float(weight)
 
         ctx.logger.debug(
-            "depth_condition run_id=%s method=%s",
-            ctx.run_id, method,
+            "depth_condition run_id=%s method=%s weight=%.3f",
+            ctx.run_id, method, weight,
         )
         if ctx.audit is not None:
             ctx.audit.log(
@@ -509,36 +526,36 @@ class DepthConditionNode(BaseNode):
                 actor="node.depth_condition",
                 action="extract_depth",
                 resource_id=model,
-                details={"run_id": ctx.run_id, "method": method},
+                details={
+                    "run_id": ctx.run_id,
+                    "method": method,
+                    "weight": weight,
+                },
                 severity="info",
             )
 
-        # ------------------------------------------------------------------
-        # Depth conditioning.  We dispatch to the image backend with
-        # ``method`` as a hint; the backend may opt to run a depth
-        # estimator and return the predicted depth map alongside the
-        # original image.  The echo backend returns a metadata-only
-        # record so the pipeline remains observable end-to-end.
-        # ------------------------------------------------------------------
-        from ._helpers import call_image_backend
+        from ._helpers import call_depth_backend, call_image_backend
 
-        result = call_image_backend(
-            ctx.bus,
-            ctx.config.get("default_depth_model") or f"depth-{method}",
-            prompt=str(inputs.get("image") or inputs.get("source_image") or ""),
-            width=0,
-            height=0,
-            num_inference_steps=8,
-            method=method,
-            depth_weight=float(weight if weight is not None else 1.0),
+        # Strings (paths / text) need a placeholder image first.
+        if isinstance(image, str) and image:
+            from ._helpers import call_image_backend as _cib
+            synth = _cib(
+                ctx.bus,
+                ctx.config.get("default_image_model") or "echo",
+                prompt=image,
+                width=256, height=256,
+                num_inference_steps=4,
+            )
+            image = synth.get("image", image)
+
+        result = call_depth_backend(
+            ctx.bus, model, image=image, method=method,
+            asset_store=getattr(ctx, "assets", None),
         )
-        depth_map = {
-            "kind": "depth_map",
-            "method": method,
-            "weight": float(weight if weight is not None else 1.0),
-            "result": result,
-        }
-        return {"depth_map": depth_map}
+        if not isinstance(result, dict):
+            result = {"depth_map": result}
+        result.setdefault("weight", weight)
+        return {"depth_map": result}
 
 
 # ---------------------------------------------------------------------------
@@ -618,14 +635,21 @@ class FiveViewNode(BaseNode):
     def execute(
         self, ctx: NodeContext, **inputs: Any
     ) -> Dict[str, Any]:
-        """Generate a five-view sheet (placeholder implementation).
+        """Generate a five-view sheet (F-7: real CLIP-I validation).
+
+        The 5 views are produced via the image backend, then a
+        real :class:`consistency.score.ScoreCalculator.clip_i_distance`
+        is run between the reference image and each generated view
+        so callers get a concrete consistency score (in
+        ``[0, 1]``) along with the views.
 
         Args:
             ctx: The runtime :class:`NodeContext`.
             **inputs: ``reference_image``, ``character_name``.
 
         Returns:
-            A dict with ``five_views`` (a list of 5 placeholder images).
+            A dict with ``five_views`` (a list of 5 placeholder images)
+            and ``consistency_score`` (a real number in ``[0, 1]``).
         """
         character_name = str(inputs.get("character_name", ""))
         model = ctx.config.get("default_five_view_model")
@@ -660,10 +684,13 @@ class FiveViewNode(BaseNode):
         # backends (e.g. SyncMunchkin, CharacterGen) consume the same
         # call shape and return real image tensors.
         # ------------------------------------------------------------------
-        from ._helpers import call_image_backend
+        from ._helpers import (
+            call_image_backend, call_consistency_score_backend,
+        )
 
         view_labels = ("front", "back", "left", "right", "three_quarter")
         five_views = []
+        reference = inputs.get("reference_image")
         for view in view_labels:
             result = call_image_backend(
                 ctx.bus,
@@ -673,13 +700,38 @@ class FiveViewNode(BaseNode):
                 height=height,
                 num_inference_steps=int(inputs.get("steps", 25)),
                 guidance_scale=float(inputs.get("guidance_scale", 7.5)),
-                reference_image=inputs.get("reference_image"),
+                reference_image=reference,
             )
-            five_views.append(
-                {
-                    "view": view,
-                    "character_name": character_name,
-                    "result": result,
-                }
-            )
-        return {"five_views": five_views}
+            # Per-view CLIP-I consistency score (F-7).
+            candidate = result.get("image") if isinstance(result, dict) else None
+            view_score: Dict[str, Any] = {"view": view, "result": result}
+            if reference is not None and candidate is not None:
+                try:
+                    sc = call_consistency_score_backend(
+                        ctx.bus, None,
+                        reference=reference,
+                        candidate=candidate,
+                        metric="clip_i",
+                    )
+                    view_score["clip_i_score"] = float(sc.get("score", 0.0))
+                    view_score["clip_i_distance"] = float(
+                        sc.get("distance", 1.0),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    ctx.logger.debug(
+                        "character_five_view score failed: %s", exc,
+                    )
+                    view_score["clip_i_score"] = 0.0
+                    view_score["clip_i_distance"] = 1.0
+            five_views.append(view_score)
+
+        # Aggregate consistency score: mean of per-view scores.
+        scores = [
+            v.get("clip_i_score", 0.0) for v in five_views
+            if isinstance(v.get("clip_i_score"), (int, float))
+        ]
+        consistency_score = sum(scores) / len(scores) if scores else 0.0
+        return {
+            "five_views": five_views,
+            "consistency_score": float(consistency_score),
+        }

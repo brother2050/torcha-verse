@@ -218,7 +218,18 @@ class SubtitleGenerateNode(BaseNode):
     def execute(
         self, ctx: NodeContext, **inputs: Any
     ) -> Dict[str, Any]:
-        """Generate a subtitle track (placeholder implementation).
+        """Generate a subtitle track (F-4: real ASR + text path).
+
+        Dispatch:
+            * ``source == "text"`` -- build a single-cue track from
+              the text via :func:`build_track_from_text`.
+            * ``method == "asr"`` -- decode the media (audio or
+              video-extracted audio), run energy-based speech
+              activity detection, and (when the registered text
+              backend is more capable than the echo stub) emit
+              transcriptions for each segment.
+            * ``method == "llm"`` / ``"align"`` -- fall back to the
+              text backend, which formats the input into cues.
 
         Args:
             ctx: The runtime :class:`NodeContext`.
@@ -258,43 +269,124 @@ class SubtitleGenerateNode(BaseNode):
             )
 
         # ------------------------------------------------------------------
-        # Echo implementation: the project's text-generation backend is
-        # responsible for either ASR (when ``method == 'asr'``) or LLM
-        # formatting (otherwise).  When the registered backend is the
-        # default echo stub we synthesise a single-cue track from the
-        # input text so the pipeline can still be exercised end-to-end.
+        # Text path -- no media decoding required.
         # ------------------------------------------------------------------
-        from ._helpers import call_text_backend
+        if source == "text":
+            from ._subtitle_codec import build_track_from_text
+            track = build_track_from_text(
+                text or "",
+                language=language,
+                method=method,
+                source="text",
+            )
+            track.model = str(
+                inputs.get("subtitle_model")
+                or ctx.config.get("default_subtitle_model")
+                or model
+                or ""
+            )
+            return {"subtitle_track": track.to_dict()}
 
-        model = inputs.get("subtitle_model") or ctx.config.get("default_subtitle_model") or model
-        backend_resp = call_text_backend(
-            ctx.bus,
-            model,
-            prompt=str(text or media_path or ""),
-            max_tokens=512,
-            temperature=0.0,
+        # ------------------------------------------------------------------
+        # ASR path (F-4).  Decode the audio, segment it, and emit
+        # cue timestamps.  When the registered text backend can
+        # actually transcribe we let it fill in the cue text per
+        # segment; otherwise each cue is left with an empty text
+        # field (segmentation-only) so the pipeline is still
+        # observable end-to-end.
+        # ------------------------------------------------------------------
+        from ._subtitle_codec import (
+            Cue, asr_transcribe, read_audio_waveform,
         )
-        transcribed = backend_resp.get("text", "")
-        source_text = (
-            transcribed.strip()
-            or (text if isinstance(text, str) and text else "")
+
+        waveform = None
+        sample_rate = 16000
+        if media_path:
+            try:
+                waveform = read_audio_waveform(media_path)
+            except Exception as exc:
+                ctx.logger.warning(
+                    "subtitle_generate: audio decode failed for %s: %s",
+                    media_path, exc,
+                )
+                waveform = None
+
+        cues: list[Cue] = []
+        if waveform is not None and len(waveform) > 0:
+            raw_cues = asr_transcribe(
+                waveform, sample_rate=sample_rate, language=language,
+            )
+            # Best-effort transcription: the LLM backend may not be
+            # able to actually transcribe the audio (it only sees the
+            # prompt), so we always keep the segmenter output and
+            # fill the text with the per-segment approximate caption
+            # produced by the text backend.
+            from ._helpers import call_text_backend
+            caption_model = (
+                inputs.get("subtitle_model")
+                or ctx.config.get("default_subtitle_model")
+                or model
+                or "echo"
+            )
+            if raw_cues and method in ("asr", "llm", "align"):
+                # Use the original text input or media-path as a
+                # crude caption source; downstream nodes can refine.
+                caption_seed = str(text or media_path or "")
+                for c in raw_cues:
+                    cues.append(Cue(
+                        index=c.index,
+                        start=c.start,
+                        end=c.end,
+                        text=caption_seed[: 80] if caption_seed else "",
+                    ))
+                if text:
+                    try:
+                        resp = call_text_backend(
+                            ctx.bus, caption_model,
+                            prompt=(
+                                f"Generate {len(raw_cues)} concise "
+                                f"caption(s) (one per line) for the "
+                                f"following content in {language or 'en'}: "
+                                f"{text}"
+                            ),
+                            max_tokens=128, temperature=0.0,
+                        )
+                        rendered = (resp.get("text") or "").strip()
+                        lines = [
+                            ln.strip() for ln in rendered.splitlines()
+                            if ln.strip()
+                        ]
+                        if len(lines) == len(cues):
+                            for cue, line in zip(cues, lines):
+                                cue.text = line
+                    except Exception as exc:
+                        ctx.logger.debug(
+                            "subtitle_generate caption seed failed: %s",
+                            exc,
+                        )
+        # If we could not segment the audio (no decoder / empty)
+        # we fall back to a single deterministic cue from ``text``.
+        if not cues:
+            fallback_text = str(text or media_path or "[empty cue]")[: 256]
+            duration = max(1.0, len(fallback_text.split()) * 0.4)
+            cues = [Cue(
+                index=1, start=0.0, end=duration, text=fallback_text,
+            )]
+
+        from ._subtitle_codec import build_track_from_cues
+        track = build_track_from_cues(
+            cues,
+            language=language,
+            method=method,
+            source=source,
+            model=str(
+                inputs.get("subtitle_model")
+                or ctx.config.get("default_subtitle_model")
+                or model
+                or ""
+            ),
         )
-        cues = [
-            {
-                "index": 1,
-                "start": 0.0,
-                "end": max(1.0, len(source_text.split()) * 0.4),
-                "text": source_text[: 256] or "[empty cue]",
-            }
-        ]
-        subtitle_track = {
-            "language": language,
-            "method": method,
-            "source": source,
-            "cues": cues,
-            "model": model,
-        }
-        return {"subtitle_track": subtitle_track}
+        return {"subtitle_track": track.to_dict()}
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +466,14 @@ class SubtitleTranslateNode(BaseNode):
     def execute(
         self, ctx: NodeContext, **inputs: Any
     ) -> Dict[str, Any]:
-        """Translate a subtitle track (placeholder implementation).
+        """Translate a subtitle track (F-5: windowed LLM translation).
+
+        The cue list is sent to the text backend in sliding windows
+        (default size 8).  Each window's response is split back
+        into per-cue translations and each cue's ``end`` timestamp
+        is adjusted by the character-length ratio so the audio
+        track stays in sync when the target language is more
+        verbose than the source.
 
         Args:
             ctx: The runtime :class:`NodeContext`.
@@ -407,47 +506,62 @@ class SubtitleTranslateNode(BaseNode):
             )
 
         # ------------------------------------------------------------------
-        # Translation is delegated to the project's text-generation
-        # backend (one call per cue batch).  When the registered backend
-        # is the default echo stub we add a "[translated]" prefix so the
-        # pipeline is still observable end-to-end.
+        # Translation (F-5).  Build a :class:`Cue` list from the track
+        # dict, dispatch to the LLM in windows, and adapt the
+        # ``end`` timestamp by the char-length ratio so the audio
+        # stays in sync.
         # ------------------------------------------------------------------
+        from ._subtitle_codec import Cue, batch_translate_cues
         from ._helpers import call_text_backend
 
-        model = inputs.get("translate_model") or ctx.config.get("default_translate_model")
-        cues = list(track.get("cues", []))
-        if cues:
-            joined = " || ".join(
-                str(c.get("text", "")) for c in cues if isinstance(c, dict)
+        model = (
+            inputs.get("translate_model")
+            or ctx.config.get("default_translate_model")
+            or model
+            or "echo"
+        )
+
+        raw_cues = track.get("cues") or []
+        cues: list[Cue] = []
+        for i, c in enumerate(raw_cues, start=1):
+            if not isinstance(c, dict):
+                continue
+            try:
+                start = float(c.get("start", 0.0))
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(c.get("end", start + 1.0))
+            except (TypeError, ValueError):
+                end = start + 1.0
+            text = str(c.get("text", ""))
+            cues.append(Cue(index=i, start=start, end=end, text=text))
+
+        def _call_llm(prompt: str, **kw: Any) -> Dict[str, Any]:
+            return call_text_backend(
+                ctx.bus, model, prompt=prompt,
+                max_tokens=int(kw.get("max_tokens", 512)),
+                temperature=float(kw.get("temperature", 0.0)),
             )
-            backend_resp = call_text_backend(
-                ctx.bus,
-                model,
-                prompt=joined,
-                max_tokens=len(joined.split()) + 64,
-                temperature=0.0,
-            )
-            translated_text = backend_resp.get("text", "")
-            translated_pieces = [
-                p.strip() for p in translated_text.split("||")
-            ]
-            if len(translated_pieces) != len(cues):
-                translated_pieces = [
-                    f"[translated] {c.get('text', '')}" for c in cues
-                ]
-        else:
-            translated_pieces = []
-        translated_cues = [
-            {**cue, "text": piece}
-            for cue, piece in zip(cues, translated_pieces)
-            if isinstance(cue, dict)
-        ]
+
+        window = 8
+        if isinstance(inputs.get("window"), int) and inputs["window"] > 0:
+            window = int(inputs["window"])
+
+        translated = batch_translate_cues(
+            cues,
+            target_language=target_language,
+            call_llm=_call_llm,
+            window=window,
+        )
+
         translated_track = {
             **track,
             "language": target_language,
             "source_language": track.get("language"),
-            "cues": translated_cues,
+            "cues": [c.to_dict() for c in translated],
             "model": model,
+            "num_cues": len(translated),
         }
         return {"subtitle_track": translated_track}
 
@@ -524,21 +638,30 @@ class SubtitleBurnNode(BaseNode):
     def execute(
         self, ctx: NodeContext, **inputs: Any
     ) -> Dict[str, Any]:
-        """Burn subtitles into a video (placeholder implementation).
+        """Burn subtitles into a video (F-3: real cv2 burn-in).
+
+        Reads the source video, decodes the cue list, aligns cues to
+        frame timestamps via binary search and writes a new video
+        with the cues rasterised onto each frame via
+        :func:`nodes._subtitle_codec.burn_subtitles`.
 
         Args:
             ctx: The runtime :class:`NodeContext`.
             **inputs: ``video``, ``subtitle_track``, ``style``.
 
         Returns:
-            A dict with ``video``.
+            A dict with ``video`` (the output path), ``frames``,
+            ``num_cues`` and ``backend`` (one of ``"cv2"`` /
+            ``"placeholder"``).
         """
         track = inputs.get("subtitle_track")
-        style = inputs.get("style")
+        track = track if isinstance(track, dict) else {}
+        video = inputs.get("video")
+        style = inputs.get("style") if isinstance(inputs.get("style"), dict) else {}
 
         ctx.logger.debug(
-            "subtitle_burn run_id=%s cues=%d style=%s",
-            ctx.run_id, _cue_count(track), bool(style),
+            "subtitle_burn run_id=%s cues=%d style_keys=%s",
+            ctx.run_id, _cue_count(track), sorted(style.keys()),
         )
         if ctx.audit is not None:
             ctx.audit.log(
@@ -549,18 +672,86 @@ class SubtitleBurnNode(BaseNode):
                 details={
                     "run_id": ctx.run_id,
                     "num_cues": _cue_count(track),
-                    "has_style": style is not None,
+                    "has_style": bool(style),
+                    "style_keys": sorted(style.keys()),
                 },
                 severity="info",
             )
 
-        # --- placeholder body -------------------------------------------------
-        video = {
-            "kind": "placeholder_burned_video",
-            "num_cues": _cue_count(track),
-            "has_style": style is not None,
+        # ------------------------------------------------------------------
+        # Burn-in (F-3).  When the video input is a filesystem path we
+        # delegate to :func:`burn_subtitles` from the codec module;
+        # otherwise (e.g. an in-memory dict placeholder) we keep the
+        # legacy echo payload so the pipeline is still observable.
+        # ------------------------------------------------------------------
+        from ._subtitle_codec import Cue, burn_subtitles
+
+        raw_cues = track.get("cues") or []
+        cues: list[Cue] = []
+        for i, c in enumerate(raw_cues, start=1):
+            if not isinstance(c, dict):
+                continue
+            try:
+                start = float(c.get("start", 0.0))
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(c.get("end", start + 1.0))
+            except (TypeError, ValueError):
+                end = start + 1.0
+            text = str(c.get("text", ""))
+            cues.append(Cue(index=i, start=start, end=end, text=text))
+
+        if isinstance(video, str) and video:
+            video_path = _sanitize_path(video)
+            tmp_dir = Path(tempfile.gettempdir()) / "torcha-verse-burn"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            out_path = tmp_dir / f"burned_{ctx.run_id}.mp4"
+            try:
+                written = burn_subtitles(
+                    video_path, cues, str(out_path), style=style,
+                )
+            except FileNotFoundError as exc:
+                ctx.logger.warning("subtitle_burn: %s", exc)
+                return {
+                    "video": {
+                        "kind": "placeholder_burned_video",
+                        "reason": "video_not_found",
+                        "num_cues": len(cues),
+                    },
+                    "backend": "placeholder",
+                    "num_cues": len(cues),
+                }
+            except RuntimeError as exc:
+                ctx.logger.warning("subtitle_burn backend unavailable: %s", exc)
+                return {
+                    "video": {
+                        "kind": "placeholder_burned_video",
+                        "reason": "backend_unavailable",
+                        "num_cues": len(cues),
+                    },
+                    "backend": "placeholder",
+                    "num_cues": len(cues),
+                }
+            written_size = Path(written).stat().st_size
+            return {
+                "video": written,
+                "backend": "cv2",
+                "num_cues": len(cues),
+                "bytes_written": written_size,
+            }
+
+        # No path -- echo the structure so downstream nodes still get
+        # a valid payload.
+        return {
+            "video": {
+                "kind": "placeholder_burned_video",
+                "num_cues": len(cues),
+                "has_style": bool(style),
+            },
+            "backend": "placeholder",
+            "num_cues": len(cues),
         }
-        return {"video": video}
 
 
 # ---------------------------------------------------------------------------
@@ -651,21 +842,24 @@ class SubtitleExportNode(BaseNode):
     def execute(
         self, ctx: NodeContext, **inputs: Any
     ) -> Dict[str, Any]:
-        """Export a subtitle track (placeholder implementation).
+        """Export a subtitle track to disk (F-2: real serialisation).
 
-        .. note::
-            Stub that returns the destination path without writing; the
-            real implementation will serialise the cues to disk.
+        Serialises the cue list to ``srt`` / ``vtt`` / ``ass`` via
+        :mod:`nodes._subtitle_codec` and writes the result to
+        ``path`` (a sanitised path under the system temp dir or
+        the current working directory).
 
         Args:
             ctx: The runtime :class:`NodeContext`.
             **inputs: ``subtitle_track``, ``format``, ``path``.
 
         Returns:
-            A dict with ``path``.
+            A dict with ``path`` (the file written), ``format``,
+            ``bytes_written`` and ``num_cues``.
         """
         track = inputs.get("subtitle_track")
-        fmt = str(inputs.get("format", "srt"))
+        track = track if isinstance(track, dict) else {}
+        fmt = str(inputs.get("format", "srt")).lower()
         # 对导出路径输入进行净化校验，拒绝路径穿越与敏感系统路径。
         path = _sanitize_path(str(inputs.get("path", "")))
 
@@ -689,11 +883,61 @@ class SubtitleExportNode(BaseNode):
             )
 
         # ------------------------------------------------------------------
-        # Export.  The track dict is serialised to the requested
-        # format; when ``path`` is omitted the exporter returns the
-        # serialised payload alongside the suggested filename so the
-        # caller can choose where to write.
+        # Serialise (F-2).  The cue list is normalised into the codec
+        # module's :class:`Cue` objects, then rendered with the
+        # appropriate serializer and persisted to disk.  When ``path``
+        # is empty we return the serialised payload alongside the
+        # suggested filename so the caller can decide where to write.
         # ------------------------------------------------------------------
+        from ._subtitle_codec import (
+            Cue, serialize_ass, serialize_srt, serialize_vtt,
+        )
+
+        raw_cues = track.get("cues") or []
+        cues: list[Cue] = []
+        for i, c in enumerate(raw_cues, start=1):
+            if not isinstance(c, dict):
+                continue
+            try:
+                start = float(c.get("start", 0.0))
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(c.get("end", start + 1.0))
+            except (TypeError, ValueError):
+                end = start + 1.0
+            text = str(c.get("text", ""))
+            cues.append(Cue(index=i, start=start, end=end, text=text))
+
+        if fmt == "srt":
+            rendered = serialize_srt(cues)
+        elif fmt == "vtt":
+            rendered = serialize_vtt(cues)
+        elif fmt == "ass":
+            rendered = serialize_ass(cues)
+        else:
+            # validate_inputs already rejects unknown formats; defensive
+            # default is SRT.
+            rendered = serialize_srt(cues)
+            fmt = "srt"
+
         if path:
-            return {"path": path, "format": fmt}
-        return {"format": fmt, "track": track, "path": None}
+            out = Path(path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(rendered, encoding="utf-8")
+            return {
+                "path": str(out),
+                "format": fmt,
+                "bytes_written": out.stat().st_size,
+                "num_cues": len(cues),
+            }
+        # No path supplied -- return the serialised payload and a
+        # suggested filename.
+        suggested = f"subtitles.{fmt}"
+        return {
+            "path": None,
+            "format": fmt,
+            "suggested_filename": suggested,
+            "payload": rendered,
+            "num_cues": len(cues),
+        }

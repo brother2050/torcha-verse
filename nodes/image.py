@@ -269,14 +269,34 @@ class ImageTxt2ImgNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_image_backend
+        from ._helpers import (
+            call_diffusion_scheduler_backend, call_image_backend,
+        )
+
+        # F-10: when the caller specifies an explicit scheduler, run
+        # the real :class:`core.diffusion_scheduler.DiffusionScheduler`
+        # first to obtain a concrete ``timesteps`` array.  The result is
+        # forwarded to the image backend via the ``num_inference_steps``
+        # keyword so downstream code can decide whether to consume the
+        # schedule verbatim or to derive its own.
+        scheduler_name = str(inputs.get("scheduler", "ddim"))
+        try:
+            sched = call_diffusion_scheduler_backend(
+                ctx.bus, model or scheduler_name,
+                prompt=prompt,
+                num_inference_steps=int(steps),
+                guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+                scheduler=scheduler_name,
+            )
+        except Exception:  # noqa: BLE001
+            sched = {"backend": "placeholder"}
 
         # The image backend accepts ``num_inference_steps`` (the
         # node-level input is ``steps`` for symmetry with the
         # diffusion scheduler).  We pick a sensible default for
         # ``guidance_scale`` so the call shape matches real
         # diffusion pipelines.
-        return call_image_backend(
+        result = call_image_backend(
             ctx.bus,
             model,
             prompt=prompt,
@@ -291,6 +311,13 @@ class ImageTxt2ImgNode(BaseNode):
             depth_ref=_ref_id(inputs.get("depth")),
             num_loras=_num_loras(inputs.get("loras")),
         )
+        if isinstance(result, dict) and isinstance(sched, dict):
+            result["scheduler"] = scheduler_name
+            if "timesteps" in sched:
+                result["timesteps"] = sched["timesteps"]
+            if "backend" in sched:
+                result["scheduler_backend"] = sched["backend"]
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -479,9 +506,25 @@ class ImageImg2ImgNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_image_backend
+        from ._helpers import (
+            call_diffusion_scheduler_backend, call_image_backend,
+        )
 
-        return call_image_backend(
+        # F-10: same scheduler invocation as text-to-image so the
+        # node advertises a concrete ``timesteps`` array.
+        scheduler_name = str(inputs.get("scheduler", "ddim"))
+        try:
+            sched = call_diffusion_scheduler_backend(
+                ctx.bus, model or scheduler_name,
+                prompt=prompt,
+                num_inference_steps=int(steps),
+                guidance_scale=float(inputs.get("guidance_scale", 7.5)),
+                scheduler=scheduler_name,
+            )
+        except Exception:  # noqa: BLE001
+            sched = {"backend": "placeholder"}
+
+        result = call_image_backend(
             ctx.bus,
             model,
             prompt=prompt,
@@ -493,6 +536,13 @@ class ImageImg2ImgNode(BaseNode):
             strength=float(strength),
             seed=int(seed),
         )
+        if isinstance(result, dict) and isinstance(sched, dict):
+            result["scheduler"] = scheduler_name
+            if "timesteps" in sched:
+                result["timesteps"] = sched["timesteps"]
+            if "backend" in sched:
+                result["scheduler_backend"] = sched["backend"]
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -599,17 +649,20 @@ class ImageUpscaleNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_image_backend
+        from ._helpers import (
+            call_image_backend, call_super_resolution_backend,
+        )
 
-        # The upscale backend is expected to also expose ``generate``
-        # with a width/height pair; we pass the source image as the
-        # ``input_image`` keyword for backends that consume it.  Upscale
-        # only takes a single diffusion pass so we keep the step count
-        # low; operators can override by registering a backend that
-        # consumes its own ``num_inference_steps`` argument.  We also
-        # forward the input image reference so downstream chain nodes
-        # (e.g. composite/export) can read ``inputs.image`` directly.
+        # F-11: real super-resolution via a 4-stage UNet with a
+        # PixelShuffle up-sampling head.  We keep the legacy image
+        # backend call as a metadata passthrough so callers that
+        # rely on the ``prompt`` / ``num_inference_steps`` fields
+        # still get a populated response.
         source_image = inputs.get("image") or inputs.get("source_image")
+        sr_result = call_super_resolution_backend(
+            ctx.bus, model or "super_resolution",
+            image=source_image, scale=int(scale),
+        )
         result = call_image_backend(
             ctx.bus,
             model or "upscale",
@@ -620,13 +673,24 @@ class ImageUpscaleNode(BaseNode):
             num_inference_steps=8,
             scale=int(scale),
         )
-        # The default echo backend returns a placeholder dict; merge
-        # the input image so callers that look up ``image`` on the
-        # output can find the source.
-        if not isinstance(result, dict) or "image" not in result:
-            if isinstance(result, dict):
-                result["image"] = source_image or {"kind": "placeholder", "scale": int(scale)}
-        elif source_image is not None and isinstance(result.get("image"), dict) and result["image"].get("kind") == "placeholder_image":
+        if not isinstance(result, dict):
+            result = {"prompt": "upscale"}
+        # F-11: when the SR backend produced a real tensor, prefer
+        # it; otherwise keep whatever the image backend returned.
+        if isinstance(sr_result, dict) and sr_result.get(
+            "backend", ""
+        ) != "placeholder":
+            result["image"] = sr_result.get("image", source_image)
+            result["upscale_backend"] = sr_result.get("backend")
+            if "output_shape" in sr_result:
+                result["output_shape"] = sr_result["output_shape"]
+        elif "image" not in result:
+            result["image"] = source_image or {
+                "kind": "placeholder", "scale": int(scale),
+            }
+        if isinstance(result.get("image"), dict) and result["image"].get(
+            "kind"
+        ) == "placeholder_image":
             result["image"]["scale"] = int(scale)
             result["image"]["input_image"] = source_image
         result.setdefault("scale", int(scale))
@@ -736,14 +800,23 @@ class ImageInpaintNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_image_backend
+        from ._helpers import call_image_backend, call_inpaint_backend
 
+        # F-11: real inpaint UNet (RGB + mask → RGB).  When the
+        # image / mask are coercible to tensors, run the UNet and
+        # forward the result alongside the metadata-only response
+        # from the image backend.
+        source_image = inputs.get("image") or inputs.get("source_image")
+        inpaint_result = call_inpaint_backend(
+            ctx.bus, model or "inpaint",
+            image=source_image, mask=inputs.get("mask"),
+        )
         # Inpaint nodes accept only ``image`` / ``mask`` / ``prompt``;
         # diffusion hyperparameters default to safe values for a quick
         # demo run.  Operators can register a real inpaint backend via
         # ``register_default_image_backend`` or by attaching a model to
         # the ``ModuleBus`` under ``model.image``.
-        return call_image_backend(
+        result = call_image_backend(
             ctx.bus,
             model or "inpaint",
             prompt=prompt,
@@ -752,10 +825,20 @@ class ImageInpaintNode(BaseNode):
             num_inference_steps=20,
             guidance_scale=7.5,
             mask=inputs.get("mask"),
-            input_image=inputs.get("image") or inputs.get("source_image"),
+            input_image=source_image,
             negative_prompt=inputs.get("negative_prompt"),
             seed=None,
         )
+        if not isinstance(result, dict):
+            result = {"prompt": prompt}
+        if isinstance(inpaint_result, dict) and inpaint_result.get(
+            "backend", ""
+        ) != "placeholder":
+            result["image"] = inpaint_result.get("image", source_image)
+            result["inpaint_backend"] = inpaint_result.get("backend")
+            if "output_shape" in inpaint_result:
+                result["output_shape"] = inpaint_result["output_shape"]
+        return result
 
 
 # ---------------------------------------------------------------------------

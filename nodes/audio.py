@@ -339,9 +339,22 @@ class AudioMusicNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_audio_backend
+        from ._helpers import (
+            call_audio_backend, call_music_backend,
+        )
 
+        # F-12: real music DiT (mel) + HiFi-GAN vocoder.  We always
+        # fall back to the audio backend so the result payload
+        # remains populated when the music backend is unavailable.
         sample_rate = int(inputs.get("sample_rate", 22050))
+        num_inference_steps = int(inputs.get("steps", 30))
+        music_result = call_music_backend(
+            ctx.bus, model or "music_dit",
+            prompt=prompt,
+            duration_s=float(duration),
+            sample_rate=sample_rate,
+            num_inference_steps=num_inference_steps,
+        )
         result = call_audio_backend(
             ctx.bus,
             model,
@@ -349,4 +362,12 @@ class AudioMusicNode(BaseNode):
             sample_rate=sample_rate,
             duration_s=float(duration),
         )
+        if isinstance(music_result, dict) and music_result.get(
+            "backend", ""
+        ) != "placeholder":
+            result["music_backend"] = music_result.get("backend")
+            if "mel" in music_result:
+                result["mel"] = music_result["mel"]
+            if "duration_s" in music_result:
+                result["duration_s"] = music_result["duration_s"]
         return {"audio": result}

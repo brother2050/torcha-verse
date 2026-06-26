@@ -276,7 +276,9 @@ class VideoTxt2VidNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import (
+            call_motion_module_backend, call_video_backend,
+        )
 
         result = call_video_backend(
             ctx.bus,
@@ -289,6 +291,38 @@ class VideoTxt2VidNode(BaseNode):
             num_inference_steps=int(steps),
             seed=int(seed),
         )
+        # F-9: motion module -- if the backend produced a tensor of
+        # hidden states, pipe it through the real MotionModule to
+        # inject cross-frame attention.  Backends that return a
+        # metadata-only dict (echo) are left untouched.
+        frames_obj = None
+        if isinstance(result, dict):
+            cand = result.get("frames")
+            if cand is None:
+                cand = result.get("video")
+            if cand is not None and not isinstance(cand, bool):
+                frames_obj = cand
+        # Only call MotionModule when the object exposes a torch-like
+        # ``dim()`` method (i.e. it is a tensor).
+        has_dim = (
+            frames_obj is not None
+            and callable(getattr(frames_obj, "dim", None))
+        )
+        if has_dim:
+            motion_scale = float(inputs.get("motion_scale", 1.0))
+            motion = call_motion_module_backend(
+                ctx.bus,
+                ctx.config.get("default_motion_model"),
+                hidden_states=frames_obj,
+                num_frames=int(num_frames),
+                motion_scale=motion_scale,
+            )
+            if isinstance(motion, dict) and motion.get("backend") != "placeholder":
+                if isinstance(result, dict):
+                    result["hidden_states"] = motion.get(
+                        "hidden_states", frames_obj,
+                    )
+                    result["motion_scale"] = motion_scale
         return {"video": result, "seed": int(seed)}
 
 
@@ -396,20 +430,34 @@ class VideoInterpolateNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import (
+            call_frame_interpolation_backend, call_video_backend,
+        )
 
-        # Frame interpolation: target fps is encoded as a thin call into
-        # the video backend.  Backends that do not support interpolation
-        # should ignore the ``target_fps`` keyword and return the
-        # original frames unchanged (a behaviour the echo backend uses).
-        result = call_video_backend(
+        source_fps = _coerce_int(inputs.get("source_fps")) or 24
+        # Frame interpolation: when the source video is a path or a
+        # tensor, run the real FrameInterpolator forward pass.  For
+        # generic backends that do not understand interpolation we
+        # still call the video backend (which may opt to ignore the
+        # ``target_fps`` keyword and return the original frames).
+        result = call_frame_interpolation_backend(
             ctx.bus,
             model or "frame-interpolator",
-            prompt="interpolate",
-            num_frames=0,
-            fps=int(target_fps),
-            input_video=inputs.get("video"),
+            frames=inputs.get("video"),
+            target_fps=int(target_fps),
+            source_fps=int(source_fps),
         )
+        if result.get("backend") == "placeholder":
+            video_result = call_video_backend(
+                ctx.bus,
+                model or "frame-interpolator",
+                prompt="interpolate",
+                num_frames=0,
+                fps=int(target_fps),
+                input_video=inputs.get("video"),
+            )
+            if isinstance(video_result, dict):
+                result.update(video_result)
         return {"video": result}
 
 
@@ -570,12 +618,19 @@ class VideoStitchNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import (
+            call_video_backend, call_video_stitch_backend,
+        )
 
-        # Stitching: we hand the backend the concatenated input list and
-        # the desired transition.  The echo backend ignores both and
-        # returns a zero-filled clip; production backends (e.g. ffmpeg
-        # wrappers) consume them.
+        # F-13: real stitch via ffmpeg (when all videos are paths
+        # and ffmpeg is on PATH) or a torch cross-fade fallback.
+        transition_frames = int(inputs.get("transition_frames", 8))
+        stitch = call_video_stitch_backend(
+            ctx.bus, "video_stitch",
+            videos=list(videos),
+            transition=str(transition),
+            transition_frames=transition_frames,
+        )
         result = call_video_backend(
             ctx.bus,
             "video-stitcher",
@@ -585,4 +640,9 @@ class VideoStitchNode(BaseNode):
             input_videos=list(videos),
             transition=transition,
         )
+        if isinstance(stitch, dict) and stitch.get("backend") != "placeholder":
+            if "frames" in stitch and stitch["frames"] is not None:
+                result["stitched_frames"] = stitch["frames"]
+            result["stitch_backend"] = stitch.get("backend")
+            result["num_videos"] = stitch.get("num_videos", len(videos))
         return {"video": result}

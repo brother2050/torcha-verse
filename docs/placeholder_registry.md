@@ -112,6 +112,15 @@
 | 69 | `infrastructure/config_center/_center.py:172` | config re-seed `except Exception: pass` | 重新初始化默认值失败,允许后续尝试 | |
 | 72 | `training/dataset/_readers.py:91` | pyarrow → pandas 切换 |
 | 95 | `serving/cli/_image.py:87` | PIL ImageDraw 不可用时回退纯色 |
+| 101 | `nodes/_helpers/_backends.py:759` | call_frame_interpolation_backend bus 路径失败后回退 FrameInterpolator |
+| 102 | `nodes/_helpers/_backends.py:909` | call_motion_module_backend bus 路径失败后回退 MotionModule |
+| 103 | `nodes/_helpers/_backends.py:1091` | call_music_backend bus 路径失败后回退 MusicDiT+HiFiGAN |
+| 104 | `nodes/_helpers/_backends.py:1186` | call_video_stitch_backend bus 路径失败后回退 ffmpeg |
+| 105 | `nodes/_helpers/_backends.py:1206` | call_video_stitch_backend ffmpeg 失败后回退 torch |
+| 106 | `nodes/_helpers/_backends.py:1375` | call_diffusion_scheduler_backend bus 路径失败后回退 DiffusionScheduler |
+| 107 | `nodes/_helpers/_backends.py:1456` | call_depth_backend bus 路径失败后回退 SceneEngine |
+| 108 | `nodes/_helpers/_backends.py:1476` | call_depth_backend SceneEngine 路径失败后回退元数据字典 |
+| 109 | `nodes/_helpers/_backends.py:1536` | call_consistency_score_backend bus 路径失败后回退 ScoreCalculator |
 
 ### 2.4 if-branch noop(`degrade_noop`,3 条)
 

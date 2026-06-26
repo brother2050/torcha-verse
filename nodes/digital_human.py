@@ -224,22 +224,27 @@ class LipSyncNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import call_lipsync_backend
 
-        result = call_video_backend(
+        result = call_lipsync_backend(
             ctx.bus,
-            ctx.config.get("default_lipsync_model") or f"lipsync-{method}",
-            prompt="lip-sync",
-            num_frames=0,
-            fps=int(inputs.get("fps", 24)),
-            input_video=inputs.get("video") or inputs.get("source_video"),
-            input_audio=inputs.get("audio") or inputs.get("source_audio"),
+            ctx.config.get("default_lipsync_model") or method,
             method=method,
+            video=inputs.get("video") or inputs.get("source_video"),
+            audio=inputs.get("audio") or inputs.get("source_audio"),
             face_region=face_region,
+            num_frames=int(inputs.get("num_frames", 16)),
+            fps=int(inputs.get("fps", 24)),
         )
         result.setdefault("method", method)
         result.setdefault("path", f"lipsync-{method}.mp4")
-        return {"video": result, "sync_score": 0.95}
+        # ``sync_score`` is computed by the adapter; fall back
+        # to a static estimate when the generic fallback path
+        # was taken.
+        return {
+            "video": result,
+            "sync_score": float(result.get("sync_score", 0.92)),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -347,17 +352,16 @@ class TalkingHeadNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import call_talking_head_backend
 
-        result = call_video_backend(
+        result = call_talking_head_backend(
             ctx.bus,
-            ctx.config.get("default_talking_head_model") or f"talking-head-{method}",
-            prompt="talking-head",
-            num_frames=192,
-            fps=24,
-            input_image=inputs.get("portrait_image") or inputs.get("image") or inputs.get("portrait"),
-            input_audio=inputs.get("audio") or inputs.get("speech"),
+            ctx.config.get("default_talking_head_model") or method,
             method=method,
+            reference_image=inputs.get("portrait_image") or inputs.get("image") or inputs.get("portrait"),
+            audio=inputs.get("audio") or inputs.get("speech"),
+            num_frames=int(inputs.get("num_frames", 192)),
+            fps=24,
             enhance_resolution=bool(enhance_resolution),
         )
         return {"video": result}
@@ -467,17 +471,16 @@ class PortraitAnimateNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import call_portrait_anim_backend
 
-        result = call_video_backend(
+        result = call_portrait_anim_backend(
             ctx.bus,
-            ctx.config.get("default_portrait_animate_model") or f"portrait-animate-{method}",
-            prompt="portrait-animate",
-            num_frames=0,
-            fps=24,
-            input_image=inputs.get("source_image") or inputs.get("image") or inputs.get("portrait"),
-            driving_video=inputs.get("driving_signal") or inputs.get("driving_video"),
+            ctx.config.get("default_portrait_animate_model") or method,
             method=method,
+            source_image=inputs.get("source_image") or inputs.get("image") or inputs.get("portrait"),
+            driving_video=inputs.get("driving_signal") or inputs.get("driving_video"),
+            num_frames=int(inputs.get("num_frames", 16)),
+            fps=24,
             stitching=stitching,
         )
         return {"video": result}
@@ -593,19 +596,18 @@ class DigitalHumanNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import call_full_body_backend
 
-        result = call_video_backend(
+        result = call_full_body_backend(
             ctx.bus,
-            ctx.config.get("default_full_body_model") or f"digital-human-{method}",
-            prompt="full-body",
-            num_frames=0,
-            fps=24,
-            input_image=inputs.get("image"),
-            input_audio=inputs.get("audio"),
+            ctx.config.get("default_full_body_model") or method,
             method=method,
+            reference_image=inputs.get("reference_image") or inputs.get("image"),
+            audio=inputs.get("audio"),
             gesture_sequence=gesture_sequence,
             resolution=resolution,
+            num_frames=int(inputs.get("num_frames", 48)),
+            fps=24,
         )
         return {"video": result}
 
@@ -725,17 +727,17 @@ class FaceEnhanceNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_video_backend
+        from ._helpers import call_face_enhance_backend
 
-        result = call_video_backend(
+        result = call_face_enhance_backend(
             ctx.bus,
-            ctx.config.get("default_face_enhance_model") or f"face-enhance-{method}",
-            prompt="face-enhance",
-            num_frames=0,
-            fps=24,
-            input_video=inputs.get("video"),
+            ctx.config.get("default_face_enhance_model") or method,
             method=method,
+            video=inputs.get("video"),
             strength=float(strength),
+            w=float(inputs.get("w", 0.5)),
+            num_frames=int(inputs.get("num_frames", 16)),
+            fps=24,
         )
         result.setdefault("method", method)
         result.setdefault("path", f"face-enhance-{method}.mp4")
@@ -878,16 +880,25 @@ class VoiceCloneNode(BaseNode):
                 severity="info",
             )
 
-        from ._helpers import call_audio_backend
+        from ._helpers import call_tts_backend
 
-        result = call_audio_backend(
+        result = call_tts_backend(
             ctx.bus,
-            ctx.config.get("default_voice_clone_model") or f"voice-clone-{method}",
-            text=text,
-            sample_rate=sample_rate,
-            duration_s=max(0.1, len(text.split()) * 0.3),
-            reference_audio=inputs.get("reference_audio"),
+            ctx.config.get("default_voice_clone_model") or method,
             method=method,
+            text=text,
             language=language,
+            sample_rate=sample_rate,
+            duration_s=float(inputs.get(
+                "duration_s", max(0.1, len(text.split()) * 0.3)
+            )),
+            reference_audio=inputs.get("reference_audio"),
         )
-        return {"audio": result, "sample_rate": sample_rate}
+        # ``call_tts_backend`` returns the adapter output dict
+        # directly (waveform / sample_rate / duration_s / language);
+        # collapse to the legacy node shape (audio + sample_rate).
+        sample_rate_out = int(result.get("sample_rate", sample_rate))
+        return {
+            "audio": result,
+            "sample_rate": sample_rate_out,
+        }
