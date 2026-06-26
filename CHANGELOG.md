@@ -159,6 +159,86 @@ test**,总测试数 **1128 → 1157 (+29)**,第一次达到 ≥ 1150 目标。
 - 4 个 pre-existing `rich` ModuleNotFoundError 与 3 个 pre-existing
   warnings test 不计入本节新增,均与本节无关
 
+### v0.8.5 — 第二波:ModelPatcher + LoRA 注入 + CPU offload
+
+接续 §4.1.1 后续三项(LoRA 注入 / 显存管理 / 测试数 ≥ 1200)。
+本节新增 **25 个 test**,总测试数 **1157 → 1182 (+25)**。
+
+**新模块 — `core/offload.py`**:
+
+- `ModelPatcher` (ComfyUI 风格 hook 注册表):
+  - `Patch` 描述符(name / op / strength / key_filter / metadata)
+  - `add` / `remove` / `clear` / `apply` / `__enter__` / `__exit__`
+  - 闭包式 undo:op 返回的 undo callable 接收**被打补丁的子模块**
+    (不是 patcher 根),正确处理深层树中的 leaf 节点
+- `enable_model_cpu_offload(model, compute_device, offload_device)`:
+  - 每子模块 offload (前向 pre-hook 移入 compute / post-hook 移出 offload)
+  - `compute_device == offload_device` 时为 0 hook no-op
+- `enable_sequential_cpu_offload(model, ...)`:
+  - 严格流式 offload:stream 顺序遍历 leaf,前一个 leaf 在新 leaf
+    进入前移回 offload,峰值内存最小
+- `disable_offload(model)`:清理所有 hook,幂等
+
+**新模块 — `models/lora.py`**:
+
+- `LoRASpec` dataclass:name / rank / alpha / target_modules / dropout /
+  init_seed,自动计算 `scale = alpha / rank`
+- `default_target_modules()` 返回 HunyuanDiT-LoRA 默认 target 集
+  (`blocks.*.attn.qkv / out_proj / mlp.fc1 / mlp.fc2`)
+- `LoRAInjector(model)`:
+  - 绑定到 ModelPatcher;`add` 注册 spec,`apply` 物化 A/B 并 patch
+  - `lora_op` 闭包:`W' = W + (B @ A) * scale`,**不复制** base weight
+    (ComfyUI "non-destructive" 约定)
+  - `undo` 闭包恢复 `module.forward = cls.forward.__get__(module, cls)`
+    (unbound class method,免疫多 LoRA 叠加)
+  - A 零初始化 → 初始 delta 为零(模型输出在 apply 后保持不变)
+  - B Kaiming 初始化 (per-spec seed)
+  - `rank` 自动 cap 到 `min(in, out)`
+  - `lora_state_dict()` + `load_lora_state_dict()` 兼容 diffusers
+    `lora.safetensors` 约定
+- `inject_lora(model, ...)` 一次性 helper
+
+**`HunyuanDiT` 集成**:
+
+- `HunyuanDiT.lora_apply(name, rank, alpha, target_modules)` → 返回
+  `int` 实际 patch 数(默认 8 = 2 blocks × 4 targets)
+- `HunyuanDiT.lora_remove(name)` → `bool`
+- `HunyuanDiT.lora_clear()` → 清理所有 LoRA
+- `HunyuanDiT.enable_cpu_offload(compute_device, offload_device,
+  sequential=False)` → `int` hook 数(CPU-only 时为 0)
+
+**测试**:
+
+- 新 `tests/test_v085_lora_offload.py` (25 个 test, 6 个 Section):
+  1. **ModelPatcher** (5):add/apply/clear round-trip / context manager /
+     key_filter glob / duplicate name raise / remove unknown no-op
+  2. **CPU offload** (4):no-op when same device / per-submodule
+     attaches hooks / sequential attaches hooks / disable is idempotent
+  3. **LoRAInjector** (7):zero initial delta / nonzero delta after
+     mutating A / remove restores output / rank cap to min dim /
+     default HunyuanDiT targets / inject_lora helper /
+     state-dict round-trip
+  4. **HunyuanDiT LoRA convenience** (3):lora_apply default 8 patches /
+     lora_remove clears / lora_remove unknown returns False
+  5. **E2E HunyuanDiT LoRA** (3):zero-init LoRA 不改变 sample 输出 /
+     non-zero A 改变 QKV 输出 / lora_remove 恢复 sample 输出
+  6. **HunyuanDiT offload** (3):enable_cpu_offload no-op /
+     sequential=True no-op / offload 不影响 LoRA
+
+**`__all__` 扩展**:
+
+- `core.offload` 导出 `Patch` / `ModelPatcher` /
+  `enable_model_cpu_offload` / `enable_sequential_cpu_offload` /
+  `disable_offload`
+- `models.lora` 导出 `LoRASpec` / `LoRAInjector` / `inject_lora` /
+  `lora_state_dict` / `load_lora_state_dict` / `default_target_modules`
+
+**测试数累计**:
+
+- v0.8.0 起点: 1128
+- v0.8.5 第一波 (HunyuanDiT-Tiny + LatentValidator): +29 → 1157
+- v0.8.5 第二波 (ModelPatcher + LoRA + CPU offload): +25 → **1182**
+
 ## [v0.6.0] - 2026-06-26
 
 ### R-* 重构 (R-3 ~ R-15 + R-19) — 65+ 聚焦子模块

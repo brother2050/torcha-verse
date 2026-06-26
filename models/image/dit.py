@@ -844,3 +844,125 @@ class HunyuanDiT(BaseModel):
                 v = v_pos
             x = x + (t_next - t_now).view(-1, 1, 1, 1) * v
         return x
+
+    # ------------------------------------------------------------------
+    # v0.8.5 LoRA injection (ComfyUI / diffusers style)
+    # ------------------------------------------------------------------
+    def lora_apply(
+        self,
+        name: str = "lora",
+        *,
+        rank: int = 4,
+        alpha: Optional[float] = None,
+        target_modules: Optional[Tuple[str, ...]] = None,
+    ) -> "LoRAInjector":  # noqa: F821 -- forward ref resolved at import
+        """Attach a LoRA delta to this model (v0.8.5).
+
+        Convenience wrapper around
+        :class:`models.lora.LoRAInjector`.  The default
+        ``target_modules`` are
+        ``("blocks.*.attn.qkv", "blocks.*.attn.out_proj",
+        "blocks.*.mlp.fc1", "blocks.*.mlp.fc2")`` -- the
+        HunyuanDiT-LoRA convention.
+
+        Args:
+            name: Identifier for the LoRA.  Use a unique
+                name per LoRA so :meth:`lora_remove` can
+                find it.
+            rank: Low-rank dimension.  ``rank=0`` is a
+                no-op.
+            alpha: Scaling factor (defaults to ``rank``).
+            target_modules: Custom glob patterns.  ``None``
+                picks the HunyuanDiT default.
+
+        Returns:
+            The number of ``(module, LoRA)`` pairs newly
+            patched (typically ``num_layers * 4`` for the
+            default HunyuanDiT target set).  The bound
+            :class:`LoRAInjector` is reachable via
+            ``self._lora_injector`` and supports
+            :py:meth:`LoRAInjector.lora_state_dict` for
+            delta serialisation.
+        """
+        from models.lora import LoRAInjector, LoRASpec
+        if not hasattr(self, "_lora_injector") or self._lora_injector is None:
+            self._lora_injector = LoRAInjector(self)
+        spec = LoRASpec(
+            name=name,
+            rank=rank,
+            alpha=alpha,
+            target_modules=target_modules or (),
+        )
+        self._lora_injector.add(spec)
+        n = self._lora_injector.apply()
+        # Stash the most-recently-applied patch count for the
+        # caller's convenience.  The injector remains
+        # reachable via ``self._lora_injector`` for
+        # serialisation / lora_state_dict().
+        self._lora_last_applied: int = n
+        return n
+
+    def lora_remove(self, name: str) -> bool:
+        """Remove a LoRA previously attached with :meth:`lora_apply`."""
+        injector = getattr(self, "_lora_injector", None)
+        if injector is None:
+            return False
+        if name not in injector._specs:
+            return False
+        injector.remove(name)
+        return True
+
+    def lora_clear(self) -> None:
+        """Remove every LoRA attached to this model."""
+        injector = getattr(self, "_lora_injector", None)
+        if injector is None:
+            return
+        injector.clear()
+        self._lora_injector = None
+
+    # ------------------------------------------------------------------
+    # v0.8.5 offload helpers
+    # ------------------------------------------------------------------
+    def enable_cpu_offload(
+        self,
+        compute_device: str = "cpu",
+        offload_device: str = "cpu",
+        *,
+        sequential: bool = False,
+    ) -> int:
+        """Attach CPU offload hooks to every leaf submodule.
+
+        Args:
+            compute_device: Device the leaf is moved to on
+                forward entry.
+            offload_device: Device the leaf is moved to on
+                forward exit (per-submodule mode) or
+                globally on the next forward entry
+                (sequential mode).
+            sequential: ``True`` to use the strict
+                stream-mode offload (only one leaf in
+                memory at a time); ``False`` to use the
+                per-submodule mode (every leaf is
+                re-materialised on entry and sent back to
+                offload on exit).
+
+        Returns:
+            The number of leaf modules that were hooked.
+            ``0`` when ``compute_device == offload_device``
+            (the common CPU-only path).
+        """
+        from core.offload import (
+            enable_model_cpu_offload,
+            enable_sequential_cpu_offload,
+        )
+        if sequential:
+            return enable_sequential_cpu_offload(
+                self,
+                compute_device=compute_device,
+                offload_device=offload_device,
+            )
+        return enable_model_cpu_offload(
+            self,
+            compute_device=compute_device,
+            offload_device=offload_device,
+        )
