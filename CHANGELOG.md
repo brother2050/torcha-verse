@@ -29,6 +29,22 @@
 
 ## [v0.6.1] - 2026-06-26
 
+### R-18 — papers 懒化
+
+`import papers` 不再触发 1000+ 行 torch 模块加载:
+- **Cold import**: 1288 ms → **47 ms (-96%)**
+- **import 后 `sys.modules` 中 0 个 `papers.adapters.*` 模块**
+
+变更:
+- `papers/__init__.py` — 移除 `from .adapters import ...` 的 eager 加载;
+  - 加 `_ADAPTER_NAME_TO_MODULE` 字典 + `_loaded_adapters` 模块级 cache
+  - `AdapterRegistry.get` / `has` 加 lazy fallback (monkey-patch): bundled name 未注册时,先 import 模块再 register
+  - `__getattr__` (PEP 562) 懒导出 `StableDiffusion3Adapter` / `HunyuanDiTAdapter` / `cli` (用 module-level cache,不写 `globals()`,支持测试 purge)
+  - `__dir__` 暴露懒导出给 IDE
+  - `TYPE_CHECKING` 守卫 import 给静态分析器
+- `papers/adapters/__init__.py` — 改为 lazy: `PaperAdapter` 仍 eager (无 torch),`StableDiffusion3Adapter` / `HunyuanDiTAdapter` 改 `__getattr__` 懒加载子模块
+- `tests/test_r18_lazy.py` — 11 个新测试: import 不加载 torch / `has` 不触发 import / `get` 触发 / cache hit / 未知名字抛 `AdapterNotFoundError` / PEP 562 懒导出 / 子包懒 / `PaperAdapter` 仍 eager
+
 ### R-16 — 性能优化
 
 优化 `NodeContext` / `NodeRegistry` hot path,微基准:
