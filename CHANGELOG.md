@@ -95,6 +95,79 @@
 - `models/image/restoration.py` UNet 上采样 bug 修复
   (dec2 / up3 / up2 三段 reshape 正确)
 
+## v0.9.5 / v1.0.0 深度收尾 — 视频 / 文本 / 多模态 / 训练 / 组件
+
+紧接 v0.9.0 key-map 矩阵之后的第二波深度覆盖。新增 **74 个 test**,
+总测试数 **1327 → 1401 (+74)**,达成 §6.3 目标 **≥ 1400**。
+
+**v0.9.5 视频链路补完** — `models/video/*` + `papers/adapters/hunyuan_video.py` 深入:
+
+- `test_v095_video_pipeline.py` (8) — `MotionModule` / `TemporalAttention`
+  forward shape + 非法 head_dim 报错 / `FrameInterpolator.forward(t=0.5)`
+  准确返回均值 / `flow_warp` 零流恒等 + 非零流位移 /
+  `LocalTorchVideoProvider.from_file` 不存在路径 / `VideoProviderConfig`
+  defaults + `to_dict` / `num_parameters` 正值
+- `test_v095_video_vae_dit.py` (4) — `ResBlock3D` 维度变化 / `VideoVAE`
+  eval 分支 reparameterize / `VideoVAE.generate(shape)` /
+  `SpatioTemporalPatchEmbed` 空间+时间 patch 输出
+- `test_v100_video_node_validation.py` (4) — `VideoTxt2VidNode` 宽度
+  下界 / `VideoInterpolateNode` 目标 fps 越界 / `VideoStitchNode` 空
+  视频列表 / `VideoTxt2VidNode.estimate_resources` 返回 dict
+- `test_v100_hunyuan_video_deeper.py` (4) — HunyuanVideo 适配器
+  `_materialise_per_block_map` 直接调用 / `from_pretrained` 缺失
+  路径报错 / 参数量正
+
+**v0.9.5 文本链路补完** — `models/text/*` 100% 未测模块:
+
+- `test_v100_text_tokenizer.py` (7) — `byte_level_encode/decode`
+  ASCII 字节往返 / `SimpleByteBPETokenizer` fallback 模式 /
+  `SimpleByteBPETokenizer.decode` / `T5Tokenizer` fallback /
+  `T5Tokenizer.decode` / `SimpleSentencePieceTokenizer` BOS/EOS
+- `test_v100_text_embeddings.py` (3) — `TokenEmbedding` √D 缩放 /
+  `padding_idx` 零行不变 / `PositionalEmbedding` `seq_len > max` 报错
+- `test_v100_text_attention.py` (5) — `apply_rotary_pos_emb` 数值
+  正确性 / `repeat_kv` n_rep>1 复制 + n_rep==1 恒等 /
+  `MultiHeadAttention.forward` shape / `GroupedQueryAttention`
+  KV-cache 增量路径
+- `test_v100_text_moe.py` (4) — `Router` top_k 掩码精确性 /
+  `MoELayer` use_moe=False / `MoETransformerDecoder` aux_loss finite
+  / `generate` greedy + EOS 停止
+- `test_v100_text_rope.py` (4) — `rotate_half` / ntk-aware inv_freq
+  改变 / linear 缩放 / `get_cos_sin` 单位圆恒等
+- `test_v100_components_lora.py` (4) — `LoRALinear.enable/disable` /
+  `merge` 后与 base 等价 / `apply_lora` 按后缀注入 /
+  `mark_only_lora_as_trainable` 冻结 base
+
+**v0.9.5 音频链路补完** — `models/audio/*` 100% 未测:
+
+- `test_v095_tts_transformer.py` (4) — `TextEncoder.forward` shape
+  + 掩码 / `DurationPredictor` clamp / `TTSTransformer.forward` 训练
+  模式 mel 长度 / `TTSTransformer.generate` eval 模式
+- `test_v100_components_and_interfaces.py` (8) — SwiGLU 门控公式
+  + 维度校验 / RMSNorm 归一化方差 / `RMSNorm(0)` 报错 / LLM
+  dataclass `to_dict` / `EchoProvider.chat/stream/embed` /
+  `CallableProvider` / `LLMToolCall` / `MultimodalProvider` Protocol
+  isinstance / `EchoMultimodalProvider` dict 输入
+
+**v1.0.0 production hardening — `infrastructure/checkpoint_manager/` 100% 未测**:
+
+- `test_v100_checkpoint_manager.py` (5) — `save_checkpoint` +
+  `load_checkpoint` 整目录 metadata 往返 / `save_weights_only` /
+  `prune_checkpoints(save_total_limit=3)` 留 3 个最新 /
+  `capture_rng_states` + `restore_rng_states` 决定性 /
+  `LocalCheckpointBackend` write/read/exists + 缺失 key 报错
+
+`2507546` → 本提交:**1327 → 1401 tests (1392 pass, 5 skip, 4 pre-existing fail)**。
+
+**Pre-existing fail (4 个,与本节无关)**:
+
+- `test_placeholder_registry::test_project_root_scans_clean` — 扫描到 baseline
+  残留
+- `test_r17_cli::TestRequestIDMiddleware` × 3 — 缺 `httpx2` 依赖
+
+**累计 (从 v0.8.5 末)**:1204 → 1401 = **+197 tests**,v0.9.0 + v0.9.5 §5-§6
+全部验收目标均已达成(≥ 1300 ✅,≥ 1400 ✅)。
+
 ## v0.9.0 / v1.0.0 收尾 — Key-map 矩阵 + 拆分验证 + 监控桥接
 
 第 5-12 周目标(参 `docs/V0.8_UPGRADE_PLAN.md` §5-§6)。本节新增
