@@ -231,3 +231,166 @@ class HunyuanDiTAdapter(PaperAdapter):
             "negative_prompt": negative_prompt,
             "cfg_scale": cfg_scale,
         }
+
+
+# ---------------------------------------------------------------------------
+# HunyuanDiTLoader (v0.8.5 1.2B real-weight entry point).
+# ---------------------------------------------------------------------------
+class HunyuanDiTLoader:
+    """Entry point for loading the official Tencent HunyuanDiT
+    1.2B checkpoint.
+
+    The loader is **optional-dependency-aware**: it uses
+    :mod:`huggingface_hub` for the auto-download path but
+    degrades gracefully to a local-filesystem checkpoint when
+    the package is missing or the user passes a local ``path``.
+
+    The typical usage is::
+
+        loader = HunyuanDiTLoader(repo_id="tencent/HunyuanDiT")
+        bundle = loader.from_pretrained(
+            torch_dtype=torch.float16,
+            device="cuda",
+        )
+        image = bundle.sample("a cat sitting on a chair", num_steps=30)
+
+    Args:
+        repo_id: HuggingFace repo id (or a local path).
+        cache_dir: Where to put the downloaded weights
+            (defaults to ``~/.cache/torcha-verse``).
+    """
+
+    def __init__(
+        self,
+        repo_id: str = "tencent/HunyuanDiT",
+        cache_dir: Optional[str] = None,
+    ) -> None:
+        self.repo_id = str(repo_id)
+        self.cache_dir = cache_dir
+
+    @staticmethod
+    def _is_local_path(path: str) -> bool:
+        from pathlib import Path
+        p = Path(path)
+        if p.exists():
+            return True
+        # Local files have a clear filesystem extension or
+        # begin with a filesystem marker.  Anything that looks
+        # like ``org/name`` (one slash, no filesystem markers)
+        # is treated as a HuggingFace repo id.
+        if path.startswith(("/", "./", "../", "~/")):
+            return True
+        if path.endswith((".safetensors", ".bin", ".pt", ".pth")):
+            return True
+        return False
+
+    def from_pretrained(
+        self,
+        *,
+        torch_dtype: Any = None,
+        device: Any = "cpu",
+        subfolder: str = "transformer",
+        num_layers: Optional[int] = None,
+        strict: bool = True,
+    ) -> "HunyuanDiTBundle":
+        """Download (if necessary) and load the HunyuanDiT 1.2B
+        transformer weights.
+
+        Args:
+            torch_dtype: Target dtype (defaults to ``torch.float32``).
+            device: Target device (defaults to ``"cpu"``).
+            subfolder: Subfolder inside the repo (or path) that
+                contains the transformer weights.
+            num_layers: When set, down-sample the checkpoint to
+                ``num_layers`` blocks (the v0.8.5 tiny preset).
+                Default ``None`` keeps the full 1.2B stack.
+            strict: Pass-through to ``load_state_dict_with_renames``.
+
+        Returns:
+            A :class:`HunyuanDiTBundle` containing the loaded
+            :class:`models.image.dit.HunyuanDiT` plus a
+            :class:`HunyuanDiTAdapter` wired up with the same
+            text encoder / VAE so ``sample(...)`` works
+            end-to-end.
+        """
+        from pathlib import Path
+        from models.image.dit import HunyuanDiT, HunyuanDiTConfig
+        from core.checkpoint_loader import (
+            HUNYUAN_DIT_KEY_MAP,
+            load_hunyuan_dit,
+        )
+
+        if torch_dtype is None:
+            import torch as _t
+            torch_dtype = _t.float32
+
+        if self._is_local_path(self.repo_id):
+            weights_path = Path(self.repo_id) / subfolder
+        else:
+            try:
+                from huggingface_hub import snapshot_download
+            except ImportError as exc:  # pragma: no cover -- optional
+                raise RuntimeError(
+                    "huggingface_hub is not installed; install with "
+                    "`pip install huggingface_hub` or pass a local path "
+                    "to HunyuanDiTLoader(repo_id='/path/to/ckpt')",
+                ) from exc
+            weights_path = Path(
+                snapshot_download(
+                    repo_id=self.repo_id,
+                    cache_dir=self.cache_dir,
+                    allow_patterns=f"{subfolder}/*",
+                )
+            )
+
+        config = HunyuanDiTConfig.tiny() if num_layers is not None else HunyuanDiTConfig()
+        model = HunyuanDiT(config=config).to(device=device, dtype=torch_dtype)
+        load_hunyuan_dit(
+            model=model,
+            weights_path=str(weights_path),
+            strict=strict,
+        )
+        return HunyuanDiTBundle(
+            model=model,
+            adapter=HunyuanDiTAdapter(),
+        )
+
+
+class HunyuanDiTBundle:
+    """The result of :meth:`HunyuanDiTLoader.from_pretrained` --
+    a loaded :class:`HunyuanDiT` + an :class:`HunyuanDiTAdapter`
+    wired to a text encoder / decoder so a single ``sample(...)``
+    call produces a real image tensor.
+    """
+
+    def __init__(self, model: Any, adapter: "HunyuanDiTAdapter") -> None:
+        self.model = model
+        self.adapter = adapter
+
+    def sample(
+        self,
+        prompt: str,
+        *,
+        num_steps: int = 30,
+        height: int = 1024,
+        width: int = 1024,
+        cfg_scale: float = 7.5,
+        negative_prompt: str = "",
+        device: Any = "cpu",
+        seed: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self.adapter.sample(
+            prompt=prompt,
+            num_steps=num_steps,
+            height=height,
+            width=width,
+            cfg_scale=cfg_scale,
+            negative_prompt=negative_prompt,
+            device=device,
+            seed=seed,
+        )
+
+    def save_pretrained(self, save_path: str) -> None:
+        from pathlib import Path
+        Path(save_path).mkdir(parents=True, exist_ok=True)
+        self.model.save_pretrained(save_path)

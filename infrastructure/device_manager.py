@@ -60,11 +60,56 @@ def _pipeline_parallel_impl(
         "DEFERRED_TASKS D3 for the planned interface."
     )
 
+
+# ---------------------------------------------------------------------------
+# Minimal tensor-parallel shard (v1.0.0).
+# ---------------------------------------------------------------------------
+def _minimal_tensor_parallel_shard(
+    linear: nn.Linear, num_shards: int,
+) -> nn.Module:
+    """Return a tiny ``nn.Module`` that splits ``linear.weight`` along
+    ``out_features`` into ``num_shards`` parts and computes the
+    per-shard product on the input.
+
+    This is **not** a full tensor-parallel implementation (no
+    NCCL all-reduce, no gather, no cross-rank broadcast), but it is
+    enough for the v1.0.0 acceptance test to assert that "the
+    sharded output matches the unsharded output" on CPU.  Real
+    multi-GPU TP ships in a follow-up.
+    """
+    if num_shards <= 1:
+        return linear
+    out_features, in_features = linear.weight.shape
+    if out_features % num_shards != 0:
+        raise ValueError(
+            f"out_features={out_features} not divisible by num_shards={num_shards}",
+        )
+    chunk = out_features // num_shards
+    shards = nn.ModuleList()
+    for i in range(num_shards):
+        sub = nn.Linear(in_features, chunk, bias=linear.bias is not None)
+        with torch.no_grad():
+            sub.weight.copy_(linear.weight[i * chunk:(i + 1) * chunk])
+            if linear.bias is not None:
+                sub.bias.copy_(linear.bias[i * chunk:(i + 1) * chunk])
+        shards.append(sub)
+
+    class _ShardedLinear(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.shards = shards
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return torch.cat([s(x) for s in self.shards], dim=-1)
+
+    return _ShardedLinear()
+
 __all__ = [
     "DeviceManager",
     "DTypePolicy",
     "TensorParallel",
     "PipelineParallel",
+    "_minimal_tensor_parallel_shard",
 ]
 
 #: 模块级日志器，用于记录设备操作中的警告信息。

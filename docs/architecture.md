@@ -255,3 +255,83 @@ _safe_execute(ctx, **inputs)
 ```
 
 `validate_inputs` 检查必填输入(类型字符串未被 `Optional[...]` 包裹)是否存在且非 `None`;端口类型是 opaque string,不做 `isinstance` 检查;未知输入忽略(宽松策略)。
+
+## v0.9.0 / v1.0.0 范式转移(2026-06-26)
+
+v0.9.0 在原六层分层之上引入 4 个新的横切子系统,v1.0.0 在量化/并行/导出/可观测性上再次扩展。这些子系统**横切**全部六层,但都遵循"每层只依赖其下层"的旧规则。
+
+### 新增子系统 1:ComfyUI 范式 — DAG / 指纹缓存 / Patch
+
+**DAG 拓扑执行** — `pipeline/dag.py` (642 行) + `pipeline/composer.py` (761 行):
+
+- `DAGNode` / `DAGEdge` / `DAG` dataclass 描述任意有向无环图
+- `topological_sort` (Kahn 算法) + cycle detect (`ValueError` on cycle)
+- `parallel_groups` 层级划分(同层可 `ThreadPoolExecutor` 并发)
+- `validate` 检查 missing deps / dangling edges / duplicate edges
+- `to_mermaid` 序列化,可在 docs 直接 embed
+- `Pipeline._run` 走 `topological_sort` + `parallel_groups`,注入 edge 输出到下游
+
+**输入指纹 + LRU 增量重算** — `pipeline/cache.py` (新) + `infrastructure/cache_store.py` (基础 LRU):
+
+- `compute_fingerprint(node_id, args, kwargs, parent_fingerprints)` 返回 SHA-256 hexdigest
+- `HierarchicalCache` 双 LRU 桶(outputs + objects)+ 父 fingerprint 折叠 → 子自动失效
+- `Pipeline.execute(changed_nodes=set[str])` 接口预留,允许"只重算改动的节点 + 其下游"
+
+**运行时 Patch** — `core/offload.py` + `models/lora.py`:
+
+- `ModelPatcher` (ComfyUI 风格 hook 注册表) + `Patch` 描述符(name / op / strength / key_filter / metadata)
+- `LoRAInjector` / `LoRASpec` / `inject_lora` / `lora_state_dict` 走 `ModelPatcher`,**不复制** base weight(ComfyUI "non-destructive" 约定)
+- `enable_model_cpu_offload` (per-submodule) + `enable_sequential_cpu_offload` (stream 模式)
+
+### 新增子系统 2:权重格式互操作 — diffusers / safetensors / HuggingFace Hub
+
+- `models/base.py::ModelMixin.from_pretrained` 走 diffusers 完整 surface(subfolder / torch_dtype / device / device_map / variant / key_renames / strict)
+- `core/checkpoint_loader.py::HUNYUAN_DIT_KEY_MAP` 50+ 条规则,local layout ↔ upstream Tencent key 双向映射
+- `papers/adapters/hunyuan_dit.py::HunyuanDiTLoader` 接 `huggingface_hub.snapshot_download`(optional dep 优雅 fallback)
+- `core/quantization/gguf_loader.py` (607 行) 解析 GGUF v3 header / metadata / tensor data,支持 `Q4_0` / `Q4_1` / `Q5_0` / `Q5_1` / `Q8_0` / `F16` / `BF16` / `F32` 张量
+
+### 新增子系统 3:控制条件注入 — ControlNet / IP-Adapter
+
+- `papers/adapters/controlnet.py` (523 行) `ControlNetAdapter` + `CONTROLNET_KEY_MAP` 20 条 + `from_pretrained` / `save_pretrained` + 1×1 zero-conv + per-block 残差注入
+- `papers/adapters/ip_adapter.py` (702 行) `IPAdapter` + `IP_ADAPTER_KEY_MAP` 8 条 + `MockImageEncoder` 占位 + per-layer image projection
+- 二者都走 `core/offload.ModelPatcher` 集成,控制信号通过 `apply(conditioning, control_image, strength=1.0)` 高级 API 一站式注入
+
+### 新增子系统 4:可观测性 / 视频 / 量化 / 并行 / 导出
+
+| 子系统 | 文件 | 关键能力 |
+|--------|------|----------|
+| 视频 | `papers/adapters/hunyuan_video.py` (765 行) | `HunyuanVideoSampler` + `HunyuanVideoConfig.tiny()` + 3D VAE + `HUNYUAN_VIDEO_KEY_MAP` 51 条 |
+| 量化 | `core/quantization/gguf_loader.py` (607 行) + `performance/quantization.py` 接 `bitsandbytes` | FP16/BF16 真 + INT8/INT4/NF4 lazy + GGUF v3 |
+| 并行 | `infrastructure/device_manager.py::_minimal_tensor_parallel_shard` | 沿 out_dim 切 2 份,无 NCCL 单文件 minimal |
+| 导出 | `core/export/onnx.py` (318 行) | `OnnxExporter` 走 `torch.onnx.export` + `from_onnx` 占位 |
+| 可观测性 | `infrastructure/metrics.py` 自研 + `infrastructure/prometheus_bridge.py` (160 行) 可选 `prometheus_client` SDK 桥 | Counter / Gauge / Histogram / 文本 exposition / SDK 镜像 |
+| A/B 实验 | `experiments/framework.py` (328 行) | `Experiment` / `Variant` / `ExperimentRunner` / `bucket_assign` |
+| 资源预算 | `infrastructure/resource_budget/_tracker.py` (880 行) | `BudgetTracker.allocate(name, vram_gb=...)` + `AllocationHandle` |
+| 调度器 | `core/schedulers/{_base,euler,euler_ancestral,dpmpp_2m,dpm_solver,flow_match_euler}.py` (6 文件) | 6 个 Sampler × 3 个 Schedule = 18 配比,API 兼容 |
+
+### 跨子系统集成图
+
+```
+            ┌─────────────────────────────────────────────────────┐
+            │  v0.9.0/v1.0.0 横切子系统                              │
+            │                                                       │
+            │   ┌────────┐  ┌──────────────┐  ┌──────────────┐     │
+            │   │   DAG  │  │  ModelPatcher │  │  HunyuanDiT  │     │
+            │   │ Composer│ │ + LoRA /     │  │   Loader     │     │
+            │   │ + Cache │  │  ControlNet  │  │  + HF Hub    │     │
+            │   │        │  │  / IP-Adapter │  │              │     │
+            │   └───┬────┘  └──────┬───────┘  └──────┬───────┘     │
+            │       │              │                  │             │
+            │       └──────────────┴──────────────────┘             │
+            │                       │                                │
+            │                  ┌────┴────┐                           │
+            │                  │  Nodes  │  (L4, 39 capability)      │
+            │                  └────┬────┘                           │
+            └──────────────────────┬───────────────────────────────┘
+                                   ↓
+                              ┌─────────┐
+                              │  L3-L0  │  (Core / Assets / Infra)
+                              └─────────┘
+```
+
+每一层(右下方)依然是原六层分层的 L0 → L6;横切子系统通过**显式 import**接入(没有运行时依赖注入),保证静态可分析。
