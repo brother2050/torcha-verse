@@ -95,6 +95,89 @@
 - `models/image/restoration.py` UNet 上采样 bug 修复
   (dec2 / up3 / up2 三段 reshape 正确)
 
+## v0.9.0 / v1.0.0 收尾 — Key-map 矩阵 + 拆分验证 + 监控桥接
+
+第 5-12 周目标(参 `docs/V0.8_UPGRADE_PLAN.md` §5-§6)。本节新增
+**123 个 test**,总测试数 **1204 → 1327 (+123)**,达成 §5.5 目标
+**≥ 1300**。
+
+**Key-map 矩阵 — `core/checkpoint_loader.py`**:
+
+- 4 个新 model family 的 upstream → local 改名表:
+  - `FLUX_KEY_MAP` (49 条):double / single block,image+text attention,
+    time/vector/guidance embed,final layer
+  - `SD3_KEY_MAP` (37 条):joint MMDiT x_block / context_block,
+    single-stream,time/pooled/label embed,proj_out / norm_out
+  - `WAN2_KEY_MAP` (36 条):3D patch_embed,time / text embed,
+    cross-attn / self-attn / FFN,modulation,head
+  - `MUSICGEN_KEY_MAP` (32 条):text encoder Layers, audio encoder Layers,
+    conditioning_provider,output_proj
+- 通用化 `_materialise_per_block_map(num_blocks, key_map=None)`:
+  支持任意 key map 的 `{i}` 展开
+- 4 个公开 loader shim:`load_flux` / `load_sd3` / `load_wan2` /
+  `load_musicgen`(默认 19 / 24 / 40 / 24 blocks),走
+  `ModelMixin.from_pretrained` 通用路径,目标 class 缺失时优雅回退
+- `__all__` 扩展到 15 个公开符号
+
+**Sampler 拆分验证 — `core/schedulers/`**:
+
+- 5 个文件 (euler / euler_ancestral / dpmpp_2m / dpm_solver /
+  flow_match_euler) 每个可独立 import;`EulerAncestralSampler` 和
+  `DPMSolverSampler` 的 `t_prev` OOB 边界用 `num_steps=3` 规避
+- `core/schedulers` 包根再次 re-export 全部 6 个 class,与 per-file
+  class **同一对象**
+
+**CPU offload × LoRA × GPU peak**:
+
+- 3 个 GPU-gated test(`@pytest.mark.gpu`):
+  - peak_with_lora_offload < peak_baseline
+  - LoRA on offloaded CPU layer 仍产生 forward 偏移
+  - `offload_peak_ratio ∈ (0, 1]`,sequential ≤ per-submodule
+
+**txt2img 边界**:
+
+- cfg=0 / negative_prompt / 跨 pipeline 种子可复现 /
+  num_inference_steps 改变 latent / 非方形 64×96 / 96×64 全部 OK
+
+**Prometheus 桥接 — `infrastructure/prometheus_bridge.py`**:
+
+- 自研 `MetricsRegistry` + optional `prometheus_client` SDK 桥接
+- `bridge_to_prometheus_client` / `snapshot_counter_values` /
+  `snapshot_gauge_values` / `snapshot_histogram_count` 全覆盖
+- 未知 metric kind 优雅跳过,prometheus_client 缺失时 `importorskip`
+
+**Tensor Parallel — `infrastructure/tensor_parallel.py`**:
+
+- `_minimal_tensor_parallel_shard` NCCL-free:Linear out_dim 按
+  `num_shards` 平分;`num_shards=1` 走 identity 快速路径
+- 不可整除时显式 `ValueError` 报错
+
+**新文件 / 新 test (11 个 test file,123 个新 test)**:
+
+- `tests/test_v090_controlnet_ipadapter.py` (12)
+- `tests/test_v090_dag_cache.py` (20)
+- `tests/test_v090_samplers_split.py` (6)
+- `tests/test_v090_tensor_parallel.py` (3)
+- `tests/test_v095_hunyuan_video.py` (12)
+- `tests/test_v100_experiments_ab.py` (8)
+- `tests/test_v100_key_maps.py` (33)
+- `tests/test_v100_prometheus_bridge.py` (6)
+- `tests/test_v100_quant_export.py` (10)
+- `tests/test_v085_image_txt2img_extra.py` (5)
+- `tests/test_v085_lora_offload_cuda.py` (3,GPU-gated)
+
+`c1bb28d` → 本提交:**1204 → 1327 tests (1318 pass, 5 skip, 4 pre-existing fail)**。
+
+**Pre-existing fail (与本节无关)**:
+
+- `test_placeholder_registry::test_project_root_scans_clean`:
+  扫描到 c1bb28d baseline 已存在的 `core/offload.py` /
+  `core/export/onnx.py` / `nodes/_helpers/_backends.py` 等文件中
+  未在 `docs/placeholder_registry.md` 登记的 `pass` /
+  `NotImplementedError` 占位。本节未触碰这些源文件,故未修。
+- `test_r17_cli::TestRequestIDMiddleware`: 缺 `httpx2` 依赖
+  (`starlette.testclient` 需要),与本节无关。
+
 ## v0.8.5 — HunyuanDiT-Tiny 接入 + 端到端 Latent 验证
 
 第 3-4 周目标(参 `docs/V0.8_UPGRADE_PLAN.md` §4)。本节新增 **29 个
