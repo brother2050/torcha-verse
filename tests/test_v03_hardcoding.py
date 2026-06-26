@@ -1,8 +1,10 @@
-"""Tests for v0.3.0 check_hardcoding.py scanner.
+"""Tests for v0.3.0 hardcoding scanner (v0.6.x package layout).
 
 Verifies that the hardcoding scanner detects string literals, respects
 the whitelist mechanism, and returns the correct exit codes when invoked
-as a subprocess.
+as a subprocess.  In v0.6.x the scanner lives in
+:mod:`scripts.check.hardcoding`; the legacy
+``scripts/check_hardcoding.py`` shim was retired in R-19.
 """
 from __future__ import annotations
 
@@ -12,11 +14,7 @@ from pathlib import Path
 
 import pytest
 
-# Make the scripts directory importable.
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from check_hardcoding import (  # noqa: E402
+from scripts.check.hardcoding import (  # noqa: E402
     Exemption,
     Violation,
     scan_file,
@@ -24,7 +22,9 @@ from check_hardcoding import (  # noqa: E402
     main,
 )
 
-_SCRIPT_PATH = _SCRIPTS_DIR / "check_hardcoding.py"
+_SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "check" / "hardcoding" / "_cli.py"
+)
 
 
 # ---------------------------------------------------------------------------

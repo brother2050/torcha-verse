@@ -1,161 +1,146 @@
-# Hardcoding Convention
+# 硬编码约定 (Hardcoding Convention)
 
-> TorchaVerse 工程规约:源码中的常量如何分类、哪些走配置、哪些保留在源码。
->
-> **本文档是 D1 (Hardcoding 规约化) 的根规约**。所有 PR 引入新的"看起来像
-> 配置"的常量时,必须先读本文档确认分类。任何 scanner (见
-> `scripts/check_hardcoding.py`) 的豁免决策都基于本文档。
->
-> 最近一次更新:2026-06-25
+> **最近更新**: 2026-06-26 · 9 个可插拔规则 · 4 级严重性
 
----
+## 概述
 
-## 1. 三类常量边界
+硬编码扫描器 (`scripts/check/hardcoding/`) 静态分析 Python 源,
+找出应走配置 / 注入的"魔法值"——字符串字面量、数字字面量、路径、
+f-string 模板、Regex pattern、Dict literal、硬编码 switch 语句、
+API key 模式。所有命中以 violation 形式报告,可按严重性 / 路径
+/ 豁免规则过滤。
 
-源码里的字符串、数字、路径、列表字面量都归为以下三类之一。
+## 启动方式
 
-### 1.1 运行时配置 (RUNTIME_CONFIG) — `severity: critical`
-
-**定义**:会影响**生产推理行为**的、用户/运维**应当可调**的常量。
-**典型例子**:
-- 采样参数 `temperature=0.7`, `top_p=0.9`, `repetition_penalty=1.1`
-- 扩散参数 `num_inference_steps=30`, `guidance_scale=7.5`
-- 业务阈值 `chunk_size=512`, `max_concurrent_requests=8`
-- 路径前缀 `cache_dir="~/.cache/torcha-verse"`, `output_dir="/data/output"`
-
-**必须**走 `infrastructure/config_center.ConfigCenter` (读自
-`config/inference_config.yaml`) 或 `infrastructure/defaults.py` (范式参考)。
-
-**scanner 行为**:`severity=critical` 命中,CI 必过。
-**不允许**在函数体里直接写字面量(除了 `_defaults/` YAML 文件本身)。
-
-### 1.2 模型结构超参 (MODEL_STRUCTURAL) — `severity: info`
-
-**定义**:**改变会破坏模型**、**用户不应自行调节**、**仅作者层维护**的常量。
-**典型例子**:
-- Transformer 结构:`d_model=768`, `num_layers=12`, `num_heads=12`
-- 注意力窗口:`max_position_embeddings=2048`, `rope_theta=10000.0`
-- 离散化层:`vocab_size=50257`, `pad_token_id=0`
-- 卷积结构:`kernel_size=3`, `stride=2`, `groups=8`
-
-**保留**在源码里,作为模型定义的一部分。**不**走 ConfigCenter。
-
-**scanner 行为**:`severity=info`,不计入 CI 失败指标,但生成报告供审计。
-**豁免**:通过 `config/hardcoded_whitelist.yaml` 的 `structural_hyperparam: true`
-行级豁免;或文件级豁免(`file: "models/audio/audio_codec.py"` + `severity: info`)。
-
-### 1.3 协议/格式标识 (PROTOCOL_FORMAT) — `severity: info`
-
-**定义**:与**外部协议/格式**绑定的字面量,改了不工作。
-**典型例子**:
-- reAct prompt 的 `'Thought:\\s*(.*?)...'` 正则
-- 文件魔数 `'\\x89PNG'`, MIME `'image/png'`
-- 日志 tag `'[TEXT]', '[IMAGE]'`
-- HTTP 头 `'Content-Type: application/json'`
-- 错误信息 `'Unknown strategy: %s'`
-
-**保留**在源码里,绑定协议契约。**不**走 ConfigCenter。
-
-**scanner 行为**:`severity=info`,同上。
-**豁免**:文件级 `whitelist` 加 `protocol_format: true` 标记。
-
----
-
-## 2. severity 等级
-
-| 等级 | 含义 | CI 影响 | 适用类别 |
-|---|---|---|---|
-| `critical` | 必须修,生产风险 | 计入 `--severity critical` 失败 | 1.1 运行时配置 |
-| `warn` | 应当修,代码质量 | 默认报告但不 fail | 边界 case(目前未使用) |
-| `info` | 可豁免,留作审计 | 仅报告 | 1.2 / 1.3 模型结构 / 协议 |
-
-**CI 调用约定**:
 ```bash
-# 默认 — 输出全报告, exit code = (critical > 0)
-python scripts/check_hardcoding.py --path .
+# 子包路径(无 shim,v0.6.x 起)
+python scripts/check/hardcoding/_cli.py --path <PATH>
 
-# 只关心 critical — 用于 PR review 必过项
-python scripts/check_hardcoding.py --path . --severity critical
-
-# 审计 — 列所有 info
-python scripts/check_hardcoding.py --path . --severity info
+# 退出码: 0 = 无违规 / 1 = 有违规
 ```
 
----
+Python API:
+```python
+from scripts.check.hardcoding import scan_directory, filter_by_severity
+violations = scan_directory("/path/to/src")
+critical = filter_by_severity(violations, "CRITICAL")
+```
 
-## 3. 识别规则 (scanner 内置启发式)
+## 严重性
 
-scanner 在打 severity 标签前,会先按以下顺序判断是否**已经是合规的**:
-
-| 启发式 | 说明 | 影响类别 |
+| Level | 含义 | 例子 |
 |---|---|---|
-| `_HARDCODE_EXEMPT_MODULES` | 模块名出现在内置豁免集 | 全部 |
-| `imports_defaults` | `from infrastructure.defaults import X` 后续 `X` 引用 | string |
-| `imports_config_center` | `from infrastructure.config_center import get_config, ConfigCenter` 后续 `cfg.get(...)` 引用 | string |
-| `attribute_access` | `os.environ[...]`, `Path(...).expanduser()`, `sys.argv[...]` 表达式 | string / path |
-| `log_method_call` | 调用 `.info()`/`.warning()` 等 logger 方法的 string 实参 | string |
-| `is_structural_init` | 数值出现在 `__init__` 且**明显是结构超参**(值 ≥ 2 且 ≤ 10000 且位于 `models/` 路径) | numeric |
+| `CRITICAL` | 默认 fail CI | 硬编码 API key 模式 (`sk-...`) |
+| `WARN` | 默认 warn,可在 PR 中豁免 | 长字符串字面量 (>= 32 字符) |
+| `INFO` | 默认 info,常见 | 短字符串字面量 (< 32 字符) |
+| `DEBUG` | 仅 IDE 提示 | docstring 中的字符串 |
 
-**豁免优先级**:文件级 whitelist > 行级 whitelist > 启发式规则 > 默认 severity。
+## 9 个可插拔规则
 
----
+| Rule | 触发条件 | 严重性 |
+|---|---|---|
+| `StringLiteralRule` | 任意 Python string AST | `INFO`/`WARN` |
+| `NumericLiteralRule` | 任意 int/float literal | `INFO` |
+| `PathLiteralRule` | 像路径的字面量 (含 `/` / `\`) | `WARN` |
+| `ListLiteralRule` | list 字面量超阈值元素数 | `INFO` |
+| `FStringTemplateRule` | f-string 中含变量插值 | `WARN` |
+| `RegexPatternRule` | 形如 regex 的字符串 | `INFO` |
+| `DictLiteralRule` | dict literal 在业务路径 | `INFO` |
+| `HardcodedSwitchRule` | `if x == "literal":` 链 | `WARN` |
+| `ApiKeyPatternRule` | API key 模式 (`sk-...` 等) | `CRITICAL` |
 
-## 4. whitelist YAML 扩展
+每条规则都是一个独立 Python 类,定义在
+`scripts/check/hardcoding_rules/` 子包,可通过 YAML 豁免或
+命令行 `--disable-rule` 关闭单条。
 
-`config/hardcoded_whitelist.yaml` 现在支持 4 个新字段:
+## 豁免机制
 
-```yaml
-exemptions:
-  # 1) 老语法 — 行为不变
-  - file: "core/model_registry.py"
-    type: "string_literal"
+### 文件内 (in-line)
 
-  # 2) 行级 + severity 降级
-  - file: "models/audio/audio_codec.py"
-    line: 77
-    severity: "info"     # 不论原 severity 是什么,降为 info
-
-  # 3) 文件级 + 类别(批量落)
-  - file: "models/audio/audio_codec.py"
-    type: "numeric_literal"
-    reason: "audio codec structure"
-
-  # 4) 协议/格式豁免(显式标记)
-  - file: "agents/react_agent.py"
-    protocol_format: true
-    type: "string_literal"
-    reason: "reAct prompt template — protocol-defined"
+```python
+password = "sk-abc123"  # noqa:hardcoding-cryptic
 ```
 
-字段含义:
-- `severity`:把命中降级到指定级别(`info` / `warn` / `critical`)。
-- `protocol_format`:显式声明"这是协议绑定",scanner 标记为 `info`。
-- `reason`:人类可读理由,出现在报告中。
+支持的 `noqa` tag 列表(按严重性):
+- `# noqa:hardcoding-cryptic` — 加密 / API key 类
+- `# noqa:hardcoding-string` — 字符串字面量
+- `# noqa:hardcoding-path` — 路径类
+- `# noqa:hardcoding-numeric` — 数字类
+- `# noqa:hardcoding` — 全部
 
----
+### 配置文件
 
-## 5. 维护规则
+`hardcoding.yaml`:
+```yaml
+# 整个目录豁免
+- path_regex: "tests/.*"
+  reason: "测试夹具允许硬编码"
 
-1. **新增结构超参**(如新模型层)→ 不需改 whitelist,scanner 自动识别 `is_structural_init`。
-2. **新增运行时配置** → 必须改 `config/inference_config.yaml` + `infrastructure/defaults.py`。
-3. **新增协议标识** → 改 whitelist 加 `protocol_format: true`,不需改代码。
-4. **CI 必过项**:`--severity critical` 失败 = PR 必拒。
-5. **月度复审**:`--severity info` 报告扫一遍,新增 ≥ 50 条时考虑规约修订。
+# 单文件豁免某条规则
+- path_regex: "^models/.*\\.py$"
+  rules: ["StringLiteralRule"]
+  reason: "模型配置来自 YAML"
 
----
+# 整行豁免某条规则
+- pattern: '^\s*LOG_FORMAT = .*'
+  rules: ["StringLiteralRule"]
+  reason: "log format 是常量"
+```
 
-## 6. 与 D1 重启条件的关系
+CI: 优先级 **文件内 `noqa` > 项目级 `hardcoding.yaml` > 内置规则**。
 
-D1 再次启动条件之一是"`infrastructure/config_center.py` 与
-`infrastructure/defaults.py` 文档化"。本文档是规约侧文档;ConfigCenter /
-defaults API 文档作为衍生任务 **D1.4**,可独立排期,见
-`docs/DEFERRED_TASKS.md` D1 章节末。
+## 架构 (v0.6.x 拆分后)
 
----
+```
+scripts/check/
+├── ci_gates.py             # 5 段门禁
+├── degrade_logging.py      # 降级日志审计
+├── placeholders.py         # placeholder 行号扫描
+├── hardcoding/             # 扫描器主体
+│   ├── __init__.py         # facade
+│   ├── _cli.py             # argparse CLI
+│   ├── _constants.py       # 严重性 + 默认阈值
+│   ├── _ast_helpers.py     # runtime_attr / log_format / etc
+│   ├── _visitor.py         # AST visitor
+│   ├── _formatters.py      # text / json / 关键摘要
+│   ├── _scan.py            # scan_file / scan_directory
+│   ├── _whitelist.py       # 加载 + 过滤
+│   └── _test_bench.py      # 内置测试集
+└── hardcoding_rules/       # 9 个 Rule 类
+    ├── __init__.py         # DEFAULT_RULES 列表 + get_rule
+    ├── _protocol.py        # Rule protocol + RuleContext
+    ├── _constants.py       # STRING_MIN_LENGTH etc
+    ├── _string.py          # StringLiteralRule
+    ├── _numeric.py         # NumericLiteralRule
+    ├── _path.py            # PathLiteralRule
+    ├── _list.py            # ListLiteralRule
+    ├── _fstring.py         # FStringTemplateRule
+    ├── _regex.py           # RegexPatternRule
+    ├── _dict.py            # DictLiteralRule
+    ├── _switch.py          # HardcodedSwitchRule
+    └── _api_key.py         # ApiKeyPatternRule
+```
 
-## 7. 首批 critical 名单
+## 与 placeholder_registry 的差异
 
-见 `config/hardcoding_critical.yaml`(由 `python scripts/check_hardcoding.py
---severity critical --export config/hardcoding_critical.yaml` 生成,首批
-数据基于 2026-06-25 扫描)。critical 命中数应当**逐渐减少**,新代码引入
-critical 必须同时提供迁移到 ConfigCenter 的方案。
+| 工具 | 关注 |
+|---|---|
+| `hardcoding` | 业务代码中"应该是配置"的硬编码值 |
+| `placeholders` | `pass` / `NotImplementedError` 的静默路径 |
+
+两者扫描不同 AST 形态,缺一不可。
+
+## 常见豁免样例
+
+```python
+# 测试 fixture
+sample_text = "hello world test fixture"  # noqa:hardcoding-string
+
+# 编译期 regex
+_EMAIL_RE = re.compile(r"^[^@]+@[^@]+$")  # noqa:hardcoding-path
+
+# 已知 URL
+PUBLIC_CDN = "https://cdn.example.com"  # noqa:hardcoding-string
+```
+
+更多示例见 `tests/test_hardcoding_rules.py`。

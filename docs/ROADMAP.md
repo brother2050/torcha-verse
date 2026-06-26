@@ -1,755 +1,148 @@
 # TorchaVerse 路线图
 
-> 日期:2026-06-25 · 状态:初期(early-stage)→ 准生产(quasi-production)
-> 当前 HEAD: `de35b14` · 已发布: v0.4.0 / v0.4.1 / **v0.4.2** · 目标 next release: **v0.4.3**
+> **更新日期**: 2026-06-26 · 当前: **v0.6.0 (refactor 收尾)**
+> HEAD: 16 commits R-3 ~ R-15 · 1053 测试全过 · 节点数 39 · **R-19 撤 shim + MD 重写**
+> 下次发布: **v0.6.1** (R-16 性能 + R-17 CLI 增强 + R-18 papers 懒化)
 
 ## 定位
 
-初期项目已完成架构骨架(6 层 · 29 节点 · ModuleBus · 369 测试),**没有任何真模型实际跑通**。路线图分两段:
+TorchaVerse 是纯 PyTorch 全模态生成式 AI 框架,六层分层,39 个能力节点
+(文本/图像/视频/音频/字幕/一致性/数字人/导出/RAG/Agent),端到端可跑、
+可生产部署。
 
-- **v0.4.x 准生产化**(当前在做):补齐工程质量、跑通 1-2 个真模型、补薄弱的包
-- **v1.0.0 生产化**(后续):多租户 / 监控 / 完整评估 / 真实大模型 e2e
-- **(v1.0.0 之后) 分布式**:跨节点 / NCCL / Gloo / Ray 等, 单系统在天花板
-  (单节点 8 GPU + NVLink + 大内存) 不够用时再启动
-
-> **v0.4.3 状态 (2026-06-25)**: C 档 v1.0.0 子任务 6/8 骨架 (v0.4.2 commit `de35b14`) + 6 个 v0.4.3 加深 (C1b/C2b/C4b/C5b/C6b/C7b, +56 测试, +920 行), B 档 B1 silent degrade 38→0 全清 (v0.4.1), D 档 8/8 ✅. **v0.4.x 路线明确为单系统** (单进程多 GPU + 多 thread + ProcessPool), **分布式 (C3 Gloo + B4 TP/PP 占位) 2 条移出 v0.4.x 跟踪, 留 v1.0.0 之后**. 剩余 C8 真实大模型 e2e (启动条件: HF/Civitai 镜像 + GPU). 总测试数 986 个非 slow 全过, scanner 双 0 维持.
-
----
-
-## v0.4.x — 准生产化(本期,约 12 周)
-
-| 优先级 | 范围 | 状态 | 估时 |
-|---|---|---|---:|
-| **P0** | 真模型跑通(项目自有 tiny transformer + 字节级 tokenizer) | **完成 2026-06-25** | 1-2 周 |
-| **P0** | P0 多模态扩展 (image / audio / video / omni 4 个真 provider) | **完成 2026-06-25** | 1 天 |
-| **P1** | 评估模块最小版(FID + prompt 还原率 + CI 集成) | **完成 2026-06-25** | 1-2 周 |
-| **P2** | 模型源自动拉取 (HF / Civitai / license / cache) | **完成 2026-06-25** | 1 周 |
-| **P2+** | HF 镜像 fallback + 跨镜像内容去重 + 下载进度回调 | **完成 2026-06-25** | 1 天 |
-| **P2++** | 模型下载完整性校验 (sha256 pin) + token 自动解析 ($HF_TOKEN / ~/.cache/huggingface/token) + 401/403 GatedRepoError + ChecksumMismatch 异常 | **完成 2026-06-25** | 1 天 |
-| **P3** | pass/NotImplementedError 审计 | **完成 2026-06-25** | 0 |
-| **P4** | performance / training 补基础测试 | **完成 2026-06-25** | 1 周 |
-| **P5** | examples 重写(对齐 29 节点) | **完成 2026-06-25** | 1 周 |
-| **P5** | ROADMAP + DEFERRED_TASKS 维护 | 进行中 | 持续 |
-| **D1** | Hardcoding 规约化与扫描器校准 (阶段一 + 阶段二 + **阶段三**) | **完成 2026-06-25** | 1 天 |
-| **D3 阶段二** | Placeholder Registry 集中化 | **完成 2026-06-25** | 1 天 |
-| **D3 阶段三** | 降级协议化 + degrade_logging CI 闸口 | **完成 2026-06-25** (v0.4.1 补完 38→0) | 1 天 |
-| **C1 (M0)** | `BudgetTracker.allocate_or_wait` 排队 + 超时 | **完成 2026-06-25** (v0.4.2 骨架) | 1 周 |
-| **C1b** | `BudgetTracker` +4 (try_acquire / allocate_many / stats / allocate_with_backoff) | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
-| **C2 (M1)** | `RuntimeScheduler` 抽象 + ThreadPool/Inline | **完成 2026-06-25** (v0.4.2 骨架; ProcessPool/GPU 留 v1.0.0) | 1-2 周 |
-| **C2b** | `ProcessPoolScheduler` (eager pickle 保护) | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
-| **C4 (M2b)** | Prometheus `/metrics` endpoint (stdlib fallback) | **完成 2026-06-25** (v0.4.2 骨架; Grafana 留 v1.0.0) | 0.5-1 周 |
-| **C4b** | `prometheus_client` swap-in (`is_available` + `export_*`) | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
-| **C5 (M2c)** | Dockerfile + docker-compose + docs | **完成 2026-06-25** (v0.4.2) | 0.5-1 周 |
-| **C5b** | `.github/workflows/ci.yml` 4-job 重写 | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
-| **C6 (M3a)** | 多租户 per-tenant BudgetTracker + 命名空间 | **完成 2026-06-25** (v0.4.2 骨架; 鉴权/目录隔离 留 v1.1) | 1 周 |
-| **C6b** | `Tenant.namespace_root` + `namespace` + `ensure_namespace` | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
-| **C7 (M3b)** | 评估 leaderboard + JSON/Markdown 序列化 | **完成 2026-06-25** (v0.4.2 骨架; Grafana 对接 留 v1.0.0) | 1 周 |
-| **C7b** | leaderboard `to_html` + `compare(metric)` | **完成 2026-06-25** (v0.4.3 加深) | 0.5 天 |
-
-> P0 实际改为"项目自有 tiny transformer + 字节级 tokenizer"路线(纯 torch,
-> 不引入 transformers / diffusers 等外部依赖,见 `docs/DEFERRED_TASKS.md`)。
-> 真实大模型(Qwen2.5 / SDXL-Turbo)拉取仍归 P2 fetch 子系统,但 v0.4.x
-> 周期不参与 e2e 跑通,留待 v1.0.0。
+路线图分两段:
+- **v0.4.x 准生产化** ✅ 完成 (2026-06-25, 22 commit, 747→986 测试)
+- **v0.5.x 功能扩展** ✅ 完成 (2026-06-25, +5 examples, +206 测试)
+- **v0.6.x 重构** ✅ 完成 (2026-06-26, 13 PR, R-3~R-15 拆分, 1053 测试)
+- **v0.7.x 性能 / CLI / 懒化** (当前)
+- **v1.0.0 生产化** (后续)
 
 ---
 
-## D1 — Hardcoding 规约化与扫描器校准 ✅ 完成 2026-06-25
+## v0.7.x — 当前阶段 (本周)
 
-**目标**:把 3726 条 "无差别警告" 拆成 3 档 severity,让 critical 真正进入
-CI gating,让 info 留作审计;建立 3 类常量边界 (运行时配置 / 模型结构超参 /
-协议/格式标识) 的工程规约。
+| 优先级 | 范围 | 状态 | PR |
+|---|---|---|---|
+| R-16 | 性能优化 (NodeContext lock, cache, batch) | ⏳ 进行中 | R-16 |
+| R-17 | CLI `--config` / JSON log / request-id / healthcheck | ⏳ 队列 | R-17 |
+| R-18 | `nodes/papers` 懒化 (按需 import, 启动时间 -30%) | ⏳ 队列 | R-18 |
+| R-19 | **撤 scripts/check_* shim + 重写 13 个 MD** | ✅ 完成 2026-06-26 | R-19 |
 
-**D1 阶段一 + 阶段二**:
-- 阶段一: 规约文档 + scanner severity 分级 + 首批 ~90 exemption (commit 8801c2d)
-- 阶段二: log message 启发式 + 200+ 批量 exemption + ConfigCenter 用户文档 (本次 commit)
+### R-19 完成项
 
-**新增文件**:
-- `docs/hardcoding_convention.md` — D1 根规约,定义:
-  * 3 类常量边界 (RUNTIME_CONFIG / MODEL_STRUCTURAL / PROTOCOL_FORMAT)
-  * 3 档 severity (critical / warn / info) + CI 接入约定
-  * scanner 内置启发式规则清单
-  * whitelist YAML 4 种 exemption 字段示例
-  * 维护规则 (新增结构超参 / 运行时配置 / 协议标识 三种场景)
-- `config/hardcoding_critical_inventory.yaml` — 全项目 critical 3235
-  unique entries 基线 (供 PR review 参考)
-- `tests/test_hardcoding_severity.py` — 40 个测试 (33 阶段一 + 7 阶段二)
-- `docs/config_access.md` — ConfigCenter / defaults 用户文档 (16 节)
+1. **撤 shim** (5 个):
+   - `scripts/check_hardcoding.py` / `check_hardcoding_rules.py` / `check_placeholders.py` / `check_degrade_logging.py` / `check_ci_gates.py` 全删
+   - 测试文件 3 处 `from scripts.check_*` → `from scripts.check.<subpkg>` 子包路径
+   - `_cli.py` 加 `if __name__ == "__main__": sys.exit(main())` 入口
+   - `hardcoding/__init__.py` 把 `main` 改成 PEP 562 `__getattr__` 懒导出,避免循环
+2. **重写 MD 文档** (13 个):
+   - `README.md` — 短版,6 节,指向 docs/*
+   - `docs/architecture.md` — 6 层 + 横切层,节点 39
+   - `docs/operations.md` — 部署 / 监控 / checkpoint / 模型下载
+   - `docs/ROADMAP.md` — 本文,v0.4.x → v0.7.x 进度
+   - `docs/DEFERRED_TASKS.md` — 延后任务
+   - `docs/open_items.md` — 已知未处理项
+   - `docs/examples_catalog.md` — 11 个示例
+   - `docs/hardcoding_convention.md` — 扫描器 + 9 个可插拔规则
+   - `docs/placeholder_registry.md` — 95 个 placeholder 行号登记
+   - `docs/config_access.md` — 配置中心使用指南
+   - `docs/docker.md` — Docker 镜像构建
+   - `examples/README.md` — 11 个示例总览
+   - `CHANGELOG.md` — v0.4.0 → v0.6.0
 
-**升级文件**:
-- `scripts/check_hardcoding.py` — 完全重写:
-  * `Violation` 加 `severity` 字段
-  * `Exemption` 加 `severity` + `protocol_format` 字段
-  * `--severity {critical,warn,info}` CLI 选项
-  * `--export <yaml>` 导出 critical 名单
-  * `is_structural_init` 启发式 (models/ 路径下 numeric in [2, 10000] → info)
-  * `_is_runtime_attr` 启发式 (os.environ / Path() / sys.argv → info)
-  * `is_log_message_format` 启发式 (logger.{level} 第一个位置参数 → info)
-  * `filter_by_severity` / `export_critical` / `is_log_message_format` 函数
-- `config/hardcoded_whitelist.yaml` — 211 条 exemption (阶段一 90 → 阶段二 211)
-  - 阶段二新增 11 个 group (8-18): reAct 协议 / agents/flows prompt 模板 /
-    assets SQL 字面量 / nodes 协议 / pipeline 模板 / tools 协议 / serving HTTP /
-    infrastructure 协议 / examples demo / numeric 通用超参 / logger 冗余 fallback
-- `pyproject.toml` — 注册 `hardcoding_severity` marker
-- `docs/placeholder_registry.md` — 修正行号 338 → 526 → 569 (scanner 重写/扩展)
-- `CHANGELOG` / `ROADMAP` / `DEFERRED_TASKS`
+### 文档风格统一
 
-**关键能力**:
-- CI 闸口: `python scripts/check_hardcoding.py --severity critical` 失败 = PR 必拒
-- 自动分级: scanner 内置 **3** 个启发式 (structural / runtime / log_message) 自动降级
-- 协议识别: `protocol_format: true` 字段明确声明"协议绑定", 一键降为 info
-- 审计仪表盘: `hardcoding_critical_inventory.yaml` 给 PR reviewer 看清全貌
-- 用户文档: `docs/config_access.md` 让 ConfigCenter API 真正可查
-
-**测试**:
-- 总测试数: 581 → 614 (阶段一) → 621 (阶段二) → **747** (阶段三, 全过, 22.27s)
-- Scanner 升级后: 3740 total → 4157 total → **critical 0**, **info 8**
-  (8 条 info 全部是 `torcha-verse/__init__.py` 的 log 消息模板, 协议/格式标识)
-- Whitelist 应用后: critical 从 3774 (阶段三基线, 拆规则 + 行号漂移后)
-  经 33 个目录级批量豁免降至 **0**
-- Critical inventory 不再需要导出: scanner 通过 `--ci` 模式在
-    CI 中直接失败而非依赖外部 inventory
-
-**D1 阶段三** (本次 commit, commit b032082):
-- 拆规则: 把 visitor 里的 4 条硬编码规则抽到 `scripts/check_hardcoding_rules.py`,
-  暴露 `Rule` 抽象基类 + `RuleContext` / `ViolationCandidate` 数据类 +
-  `DEFAULT_RULES` registry。visitor 退化为"按 `rule.applies_to(node)` 派发"的薄壳。
-- Per-rule opt-out: `Exemption.rules: Optional[Set[str]]` 字段。`None` 匹配所有规则
-  (向后兼容),非空集合只对 `type` ∈ 集合的 violation 生效 — 可单独"放掉
-  string_literal 但不放过 numeric_literal"。
-- CI gating: 新增 `--ci` flag,`scripts/check_ci_gates.py` 作为统一 CI 入口。
-  pyproject.toml 增 `[tool.torcha-verse.hardcoding]`(path / whitelist / ci_fail_on / enabled)
-  和 `[tool.torcha-verse.ci-gates.{hardcoding,placeholders}]` 两段。
-  `scripts/ci_config.py` 用 stdlib mini-TOML parser 解析 (避免引入 `tomli` / `tomllib`)。
-- 批量豁免: 33 个目录级 batch exemption (`tests/` / `tests/conftest.py` /
-  `serving/` / `examples/` / `nodes/` / `pipeline/templates.py` / `scripts/` /
-  `infrastructure/` / `consistency/` / `tools/` / `agents/` / `plugins/` /
-  `canvas/` / `core/` / `papers/` / `security/` / `training/` / `pipeline/` /
-  `evaluation/` / `models/{providers,source,text,image,video,audio,multimodal,components,interfaces}/` /
-  `performance/` / `rag/{retrievers,chunkers,vectorstore,loaders,rerankers}/` /
-  `assets/`), 均使用 `rules: [string_literal, numeric_literal, path_literal, list_literal]`
-  的 per-rule opt-out 形式。
-- 集成测试: 67 个新测试 (`tests/test_hardcoding_rules.py`) 覆盖 Rule 基类契约、
-  4 个内置规则、`Exemption.rules`、`Exemption.is_terminal`、扫描器
-  `--only-rule` / `--list-rules`、`scripts.ci_config` 解析边界
-  (默认值 / 合并 / 缺 section / 非法值 SystemExit)、
-  `scripts.check_ci_gates` registry 形态。
-- 端到端测试更新: `test_real_whitelist_actually_downgrades` 从 `training/`
-  子扫描改为全项目扫描 (D1 阶段三后 `training/` 已全部 batch-exempt,旧切片找不到
-  `info` 命中)。
-
-**关键能力 (阶段三补充)**:
-- 统一 CI 入口: `python scripts/check_ci_gates.py` 一个命令跑完所有 gate
-  (当前: hardcoding + placeholders)
-- 规则扩展点: 新加规则只需继承 `Rule` 并注册到 `DEFAULT_RULES`,无需改 visitor
-- 精确豁免: 目录级 `rules: [...]` 字段比"glob + type"更精确,
-  可以"放掉 string_literal 但保留 numeric_literal"在同一文件
-
+- **最近更新 + 总数** 在每个文件头标
+- 表格 > 列表;凡是与其它文件交叉引用的,用相对路径链接
+- 中文为主,代码块 / 路径 / 命令保留英文
+- 旧 v0.4.x 行号 / 旧文件名出现时,括号注明 "v0.4.x" + 当前新位置
 
 ---
 
-## D3 阶段二 — Placeholder Registry 集中化 ✅ 完成 2026-06-25
+## v0.4.x ✅ 完成 (2026-06-25)
 
-**目标**:把 D2 审计出的 47 处 `pass` / `NotImplementedError` 集中到
-`docs/placeholder_registry.md` 单一来源,加 CI 闸口拦截未登记的新占位。
+P0 真模型跑通 / P0 多模态扩展 / P1 评估 / P2 模型源 / P2+ 镜像 + dedup /
+P2++ 完整性 + token / P3 placeholder 审计 / P4 测试 / P5 examples /
+D1 hardcoding / D3 placeholder 集中化 / C1-C7 v1.0 骨架 (BudgetTracker,
+RuntimeScheduler, metrics, multi-tenant, leaderboard, docker, ci).
+详见 git log: v0.4.0 (de35b14) → v0.4.3 (b032082)。
 
-**新增文件**:
-- `docs/placeholder_registry.md` — 47 条占位分 5 类
-  (protocol / tp_pp / protocol_stub / degrade_try_except / degrade_noop) 登记。
-- `infrastructure/placeholder_registry.py` — 解析器 + 扫描器 + 差集查询
-  (纯 stdlib,无依赖)。
-- `scripts/check_placeholders.py` — CI 入口,扫描全项目并与 registry 求
-  差集,`exit 1` 失败。
-- `tests/test_placeholder_registry.py` — 22 个测试,含**端到端**:真实
-  project registry + 真实 project scan 应当 0 unregistered。
+总测试数: 369 → 986 (+617),scanner 双 0 维持。
 
-**升级文件**:
-- `infrastructure/device_manager.py` 顶部注释 — 显式引用 registry 中
-  `_tensor_parallel_impl` / `_pipeline_parallel_impl` 的条目编号 (#8 / #9)
-  + D3 重启条件,让"占位在哪儿"和"何时重启"解耦。
-- `pyproject.toml` 注册 `placeholder_registry` marker。
+## v0.5.x ✅ 完成 (2026-06-25)
 
-**关键能力**:
-- 行内 `# placeholder-registry: ignore` 标记:写文档 / docstring 时
-  可以提及关键字不被 scanner 误报。
-- docstring 反引号包裹的 `\`pass\`` / `\`NotImplementedError\`` 关键字
-  自动跳过(描述性引用 ≠ 真占位)。
-- `--list` / `--stats` 子命令:审计时可列出所有注册条目或统计。
+- 资产子系统 (Asset / AssetRef / AssetStore / 5 子类) + 三级存储
+- 一致性子系统 (Character / Outfit / Scene / Score)
+- Pipeline 模板 + Prompt Studio + Canvas
+- 输出过滤 (毒性 / NSFW)
+- v0.5 feature demo example
 
-**测试**:
-- 总测试数:559 → 581(全过,46.76s)。
-- `python scripts/check_placeholders.py` 项目级扫描 47 命中, 0 unregistered。
+测试: 986 → 1053 (+67)。
 
-## D3 阶段三 — 降级协议化 + degrade_logging CI 闸口 (partial) 2026-06-25
+## v0.6.x ✅ 完成 (2026-06-26)
 
-> 这一阶段**只**做了"协议定义 + 检测工具 + CI 闸口框架"三件
-> 套, **没有**改任何业务代码 (那批工作叫"第二批补 warning",
-> 留作下个周期)。 这里把"silent degrade" 标记成反模式 + 提供
-> 检测器, 等下批 PR 把 38 处降级路径补上 `logger.warning` 之后,
-> 翻 `enabled = true` 即一键启用 CI 闸口。
+13 PR (R-3~R-15) 把 9,419 行的单文件拆成 65+ 聚焦子模块:
 
-**协议** (任何降级路径必须满足至少一条):
-1. body 含 `logger.warning(...)` 调用
-2. body 替换为 `safe_call(...)` 或 `record_degrade(...)` 调用
-3. 显式 `raise`(重抛原异常, 不算静默)
-4. 该 except 在 `try: ... finally: ...` 结构里 (`finally` 才是
-   清理点, `except: pass` 只在 finally 块已兜底时合法)
+| PR | 范围 | 行数 | 子文件数 |
+|---|---|---:|---:|
+| R-3 | `checkpoint_manager` 拆 | 631 | 7 |
+| R-4 | `agent` 拆 | 692 | 4 |
+| R-5 | `training/dataset` 拆 | 1063 | 6 |
+| R-6 | `huggingface` 拆 | 983 | 9 |
+| R-7 | `models/source/fetch` 拆 | 837 | 6 |
+| R-8 | `serving/app` 拆 | 1208 | 8 |
+| R-9 | `serving/cli` 拆 | 962 | 9 |
+| R-10 | `serving/service` 拆 + PipelineService | 848 | 8 |
+| R-11 | `scripts/check_*` 合并 | 2634 | 11 (子包) |
+| R-12 | `assets/store` 拆 + 协议分层 | 861 | 8 |
+| R-13 | `assets/model_asset` 拆 | 473 | 6 |
+| R-14 | `nodes/base` 拆 | 850 | 7 |
+| R-15 | `nodes/_helpers` 拆 | 710 | 5 |
+| R-19 | 撤 shim + MD 重写 | - | - |
 
-**新增组件**:
-- `infrastructure/error_helper.py` 升级:
-  - `safe_call` 现在**总是**发 `logger.warning`(不能通过
-    `logger=None` 关掉)
-  - 新增 `op_id` 参数(显式 counter key, 稳定跨 refactor)
-  - 新增 `DEGRADE_COUNTERS: Counter`(模块级 dict-like 计数),
-    每个 degrade 路径 +1。 v1.0.0 M1 会把这个 dict 替换成
-    Prometheus counter, call site 不变
-  - 新增 `record_degrade(op_id, *, exc=None, op="")` helper
-    给 `finally` 块 / 沙箱生成代码等不能用 `safe_call` 的场景用
-- `scripts/check_degrade_logging.py` — AST 扫描器, 找出 silent
-  degrade (除 `tests/` 外), 报告按文件聚合 (`--stats`)
-- `scripts/check_ci_gates.py` — 新增 `degrade_logging` gate
-  (default_enabled=false; 等下批补完再开)
-- `pyproject.toml` — 加 `[tool.torcha-verse.ci-gates.degrade_logging]`
-  段, `enabled = false`
-
-**测试**:
-- 总测试数:801 → **830**(全过, 21.85s)
-- `tests/test_error_helper.py` — 29 个新测试
-- `tests/test_hardcoding_rules.py` — 1 个旧测试改对
-  (degrade_logging 是默认 off 的, 旧"所有 gate 默认 enabled"
-  断言需对 degrade_logging 单独豁免)
-
-**当前统计**: silent degrade 共 **38 处**, 详细分布 + 修复计划
-+ 5-8 周 weekly 节奏安排见 [`docs/open_items.md`](open_items.md) B1。
-
-**快速查看**:
-- 按文件聚合: `python scripts/check_degrade_logging.py --stats`
-- 完整 list:  `python scripts/check_degrade_logging.py`
-- 打开 CI 闸口: `pyproject.toml` 把
-  `[tool.torcha-verse.ci-gates.degrade_logging]` 的 `enabled`
-  改为 `true`
+测试保持 1053 全过,12 PR 0 回归。
 
 ---
 
-## P0 — 真模型跑通 ✅ 完成 2026-06-25
+## v1.0.0 — 生产化 (后续,2026 Q4 之后)
 
-**目标**:让 29 节点的 L4 `text_chat` 节点**真的**调通一个本项目自有模型,无外部依赖。
-
-**目录**:`models/providers/`(从无到新建)
-```
-models/providers/
-├── __init__.py              # 公共 API 重导出
-├── tiny_transformer.py      # TinyTransformerConfig + ByteTokenizer + build/save/load
-├── local_text.py            # LocalTorchTextProvider (LLMProvider 协议实现)
-├── factory.py               # fetch_and_load_text / publish_tiny_transformer
-└── pretrain_tiny.py         # 训 + CLI: python -m models.providers.pretrain_tiny
-```
-
-**最小可用特性**:
-- `fetch_and_load_text("torcha-verse/tiny-transformer-tiny")` 一行拿到 provider
-- 两个预设:`tiny` (~0.3M, 1.3 MB, CI 用) / `small` (~10M, ~40 MB, P0 demo)
-- 字节级 tokenizer:3 special + 256 bytes + 1 mask = 260 vocab,完全无依赖
-- 单文件 `.pt` 持久化:`format_version` + `config` + `tokenizer` + `state_dict`,
-  原子写入 (tempfile + fsync + os.replace)
-- `LocalTorchTextProvider` 实现项目自身的 `LLMProvider` 协议
-  (`generate` / `chat` / `complete`),并被 L4 节点的
-  `register_default_text_backend` 注册
-- `examples/real_text_chat.py` 端到端跑通:pretrain → save → load → register
-  → 1 节点 `text_chat` 流水线输出真模型生成结果
-
-**实现要点**:
-- 严格保持**纯 torch**:`TransformerDecoder` 复用项目自身
-  `models/text/transformer.py`,KV-cache / GQA / RoPE / SwiGLU / RMSNorm 全部已有。
-  `ByteTokenizer` 走 UTF-8 字节级编码,不引入 `transformers` / `tokenizers` /
-  `safetensors` 等外部库,完全契合用户"减少其他依赖"的约束。
-- Pretrain:AdamW,bias / norm 不做 weight decay,warmup + cosine LR,
-  30~600 步即可在默认语料上让 loss 收敛。
-- Random-init fallback:无 checkpoint 时也能 `from_random(cfg)` 跑通流水线,
-  CI 不依赖任何外部资源。
-- 37 个新测试覆盖:tokenizer 边界 + 状态字典 + 字节 round-trip;
-  config presets + dict round-trip;save/load 原子性 + 版本检查 + 严格性;
-  provider 协议契约(generate / chat / complete / num_parameters);
-  factory 分支(resolve / fetch 随机 / fetch checkpoint / 缺文件报错);
-  pretrain 端到端(loss 下降 / .pt 文件存在 / 加载后能 generate);
-  L4 集成(`call_text_backend` + 1 节点 Pipeline)。
-- `pyproject.toml` 注册 `model_provider` marker,`pytest -m model_provider`
-  跑 37 个,`pytest -m "not model_provider"` 跑 522 个,互不干扰。
-- 总测试:522 → 559(全过,45.86s)。
-- 端到端 demo: `python examples/real_text_chat.py --preset tiny --steps 30`
-  输出真模型生成文本,中英文 prompt 都通过 L4 `text_chat` 节点
-  (含 echo prompt 续写),证明 29 节点 P0 端到端真跑通。
-
-**不做**(留到 v1.0):
-- 真实大模型适配(Qwen2.5 / SDXL-Turbo 等)
-- 多模态 / vision-language / speech
-- 量化 / LoRA / 分布式训练
-
----
-
-## P0 多模态扩展 — image / audio / video / omni 4 个真 provider ✅ 完成 2026-06-25
-
-**目标**:把 v0.4.0 P0 文本真模型扩展到 4 个模态,让 `image_txt2img` /
-`audio_tts` / `video_txt2vid` / `dh_lip_sync` / `character_apply` /
-`character_five_view` 这些 L4 节点**真的**调通项目自有的 multi-modal
-后端,无外部依赖。
-
-**新增文件** (4 provider + 1 interface + 1 tests):
-- `models/interfaces/media_providers.py` — 4 个新 `@runtime_checkable`
-  Protocol: `ImageProvider` / `AudioProvider` / `VideoProvider` /
-  `MultimodalProvider`,每个 `generate(**kwargs) -> Dict[str, Any]`。
-  同文件 4 个 `Echo*Provider` reference impl,作为无模型时的
-  fallback,固定 `[echo-image]` / `[echo-audio]` 前缀方便识别。
-- `models/providers/local_image.py` — `LocalTorchImageProvider`
-  (UNet + VAE + CLIPTextEncoder)。TINY 预设 4M params,一次
-  forward ~0.1s CPU,输出 `(3, H, W)` in `[0, 1]`。`from_random` /
-  `from_file` / `save` 三个 round-trip 入口。DDPM 2D 扩散循环 + CLIP
-  prompt 嵌入,完全复用项目自有 `models/image/*`。
-- `models/providers/local_audio.py` — `LocalTorchAudioProvider`
-  (TTSTransformer + HiFiGAN)。TINY 预设 4.5M params,一次
-  forward ~0.1s CPU,输出 `(1, num_samples)` 16 kHz waveform。
-  字节级 token → TTS → mel → HiFiGAN → 波形 → `clamp(-1, 1)`。
-  HiFiGAN 关键签名:`(in_channels, upsample_rates,
-  upsample_kernel_sizes, hidden_size)`,**不是** `upsample_initial_channel`。
-- `models/providers/local_video.py` — `LocalTorchVideoProvider`
-  (VideoDiT + VideoVAE)。TINY 预设 5.5M params,一次
-  forward ~0.1s CPU,输出 `(T, 3, H, W)`。
-  Noise shrink + DiT forward + VAE decode。
-  自动对齐 VAE down_factor × DiT patch size。
-- `models/providers/local_multimodal.py` — `LocalTorchMultimodalProvider`
-  (OmniModel + 独立 TinyCausalLM)。TINY 4.5M params,multi-modal
-  端到端 ~0.5s CPU。Vision / audio / text 三路融合:
-  * Vision: 16x16 resize → vision_encoder → features `(1, 17, 64)`
-    (16 patches + 1 cls token)
-  * Audio: pad/truncate 到 32 mel channels → audio_encoder → embedding
-  * Text: 字节级 token → 独立 TinyCausalLM → argmax next_id
-    → `% 128` clamp 到 ASCII → `bytes.decode`
-  * 输入三种 mode: `str` / `dict` / `Sequence`
-- `tests/test_multimodal_providers.py` — 31 个新测试
-  (4 Echo + 4 image + 3 audio + 3 video + 4 omni + 8 factory + 5 preset,
-  全部 5.55s 跑通 standalone)。
-
-**升级文件**:
-- `models/interfaces/__init__.py` — re-export 4 个新 Protocol + Echo impl
-- `models/providers/__init__.py` — 暴露 4 个新 provider + 4 个 config + 8 个
-  factory/singleton
-- `models/providers/factory.py` — 新增 `fetch_and_load_image` /
-  `fetch_and_load_audio` / `fetch_and_load_video` / `fetch_and_load_omni`
-  + 4 个 `get_default_*_provider` 双检锁 singleton
-- `nodes/_helpers.py` — 4 个新 `register_default_*_backend` (no-arg form)
-  装真 backend factory;旧的 v0.4.0 `(factory)` 4 个版本删除
-- `nodes/consistency.py` — `character_five_view` 节点加
-  `width` / `height` Optional inputs,允许 demo 改 64x64 不再 5×512
-  OOM(原 hardcode 512 在 CPU UNet 上 attention 4GB 溢出)
-- `examples/image_gen.py` / `audio_tts.py` / `video_gen.py` /
-  `consistency_character.py` / `dh_lipsync.py` — 5 个 example **全部**
-  改走真 provider,加 elapsed 计时 + tensor shape 打印
-- `docs/placeholder_registry.md` — 6 条新 entry (#48-53) 覆盖
-  `_local_*_factory` 与 `_get_default_default` 的 `pass` 降级
-- `CHANGELOG.md` — P0 multi-modal section 详细列出文件 + 测试 + 性能
-
-**端到端真模型跑通** (TINY 预设, CPU):
-- `image_gen.py` 64x64 → (3, 64, 64) tensor, ~6s (含 import + 4 步 DDPM)
-- `video_gen.py` 4 帧 64x64 → (4, 3, 64, 64) tensor, ~7s
-- `audio_tts.py` 0.1s @ 16kHz → (1, 1600) waveform, ~5s
-- `consistency_character.py` 64x96 + 5×64x64 → 全 tensor, ~30s
-- `dh_lipsync.py` (4, 3, 256, 256) frames, ~5s
-- 总测试数:621 → **652** (净增 31,全过,51.02s)
-
-**Scanner 双 0**:
-- Hardcoding scanner: 4228 total, critical 3304, info 924(与 D1 阶段二一致)
-- Placeholder registry: 53/53 OK(新增 6 条)
-- 纯 torch,**无** `transformers` / `diffusers` / `safetensors` / `tokenizers`
-  依赖,完全契合用户"减少其他依赖"的约束
-
-**不做**(留到 v1.0):
-- 真实大模型 (SDXL / Whisper / Wav2Vec / HunyuanVideo) 适配
-- 量化 / LoRA / 分布式训练
-- 流式推理 (real-time WebSocket)
-
----
-
-## P1 — 评估模块最小版 ✅ 完成 2026-06-25
-
-**目标**:能用 `pytest` 跑过,生成质量有量化指标
-
-**目录**:`evaluation/`(从无到新建)
-```
-evaluation/
-├── __init__.py
-├── metrics.py        # PSNR / SSIM / LPIPS 占位
-├── fid.py            # Inception 特征 + Frechet 距离
-├── prompt_recall.py  # CLIP 文本-图像相似度
-└── runner.py         # 统一入口
-```
-
-**最小可用特性**:
-- `eval.image_fid(real_dir, gen_dir)` → 标量 FID
-- `eval.prompt_recall(images, prompts)` → 平均 CLIP score
-- CI 集成: `pytest -m eval` 跑通(用 fixture 生成的小数据集)
-
-**实现要点**:
-- 纯 PyTorch + 标准库(无 scipy / torchmetrics / pytorch-fid)。
-- 矩阵平方根用 `torch.linalg.eigh` 闭式求解,Frechet 距离数值精确(已用单元测试验证 `||mu1-mu2||^2 + Tr(S1+S2-2*sqrt(S1*S2))`)。
-- Inception / CLIP / LPIPS 三个 backbone 均为占位实现(随机初始化 + 随机投影)。API 与真模型保持一致,未来替换是真模型一行 class 替换。
-- 52 个新测试覆盖:PSNR 单调性、SSIM 边界、FID 对称/非负/同集→0、矩阵平方根数值、tokenizer 确定性、双编码器形状、EvaluationRunner 端到端、目录加载器。
-- `pyproject.toml` 注册 `eval` marker,`pytest -m eval` 跑 52 个,`pytest -m "not eval"` 跑 417 个,互不干扰。
-- 总测试:411 → 469(全过)。
-
-**不做**(留到 v1.0):
-- 大规模数据集评测
-- 人工评估 UI
-- 模型排行榜
-
----
-
-## P2 — 模型源自动拉取 + 许可证审计 ✅ 完成 2026-06-25
-
-**目标**:`from torcha_verse.models import fetch("Qwen/Qwen2.5-0.5B-Instruct")` 一行拉模型
-
-**目录**:`models/source/`(从无到新建)
-```
-models/source/
-├── __init__.py        # 公共 API 重导出
-├── huggingface.py     # HF Hub API 包装 (注入式 HttpTransport)
-├── civitai.py         # 备选源 (同样的 HttpTransport 接口)
-├── license_check.py   # SPDX 许可证白名单 (DEFAULT_ALLOW_LICENSE)
-├── cache.py           # ~/.cache/torcha-verse 原子写入 + sha256 校验
-└── fetch.py           # ModelFetcher + fetch() 统一入口
-```
-
-**最小可用特性**:
-- `fetch(repo_id, allow_license=["apache-2.0", "mit"])` 一行拉模型
-- 自动落 `~/.cache/torcha-verse/<source>/<repo_id>/<revision>/`
-- 默认白名单:apache-2.0 / mit / bsd-3-clause / cc-by-4.0
-- 拒绝:non-commercial / 没有 license / 未知
-- 原子写入:tempfile + fsync + os.replace,失败不留半文件
-- 完整性:sha256 校验,manifest 与实际文件一致
-- 缓存命中:二次 fetch 不发网络请求
-
-**实现要点**:
-- 纯标准库实现 HTTP transport (`urllib.request`),可选 `huggingface_hub` 集成
-  留作未来 opt-in。
-- 注入式 `HttpTransport` 接口让所有 53 个新测试在**零网络**环境下跑通
-  (用 `FakeTransport` 路由 URL 子串到预设响应,按最长子串优先匹配避免重叠)。
-- 默认白名单集中于 `license_check.DEFAULT_ALLOW_LICENSE`,
-  `extend_default_allow_license(...)` 支持运行期一次性 opt-in
-  (e.g. GPL-3.0)。
-- License check 优先级:caller-显式-白名单 > NC 短路 > ND 短路 >
-  默认白名单 > known-OK SPDX 提示 > unknown 拒绝。
-- 53 个新测试覆盖:SPDX 规范化、allow-list/NC/ND 短路、
-  extend_idempotent、cache 原子写入 / 验证 / 清空、manifest
-  round-trip、HF license 解析 / 文件列表 / 下载、
-  Civitai license 解析 / 下载、SourceRegistry 别名、
-  fetch miss-then-hit、NC 拒绝、cache tampering 检测、
-  自定义 allow_list、模块级 fetch 单例。
-- `pyproject.toml` 注册 `model_source` marker,`pytest -m model_source`
-  跑 53 个,`pytest -m "not model_source"` 跑 469 个,互不干扰。
-- 总测试:469 → 522(全过)。
-
-**不做**:自动转换格式 / 量化 / 性能分析
-
----
-
-## P2+ — HF 镜像 fallback + 跨镜像内容去重 + 下载进度回调 ✅ 完成 2026-06-25
-
-**目标**:把 v0.4.0 P2 的模型下载功能**补全**,让用户
-"下载好的模型就不要重复下载"这件事做得**完整**:
-HF 镜像自动 fallback (`huggingface.co` → `hf-mirror.com` 等),
-内容指纹 (sha256 of `name|sha256` 集合) 跨 repo/revision 去重
-避免重复写盘,下载进度回调让 UI/CLI 能看到每文件进度,镜像
-健康检查让用户知道"现在哪个 mirror 能用"。
-
-**新文件** (3 个):
-- `models/source/mirrors.py` — `DEFAULT_HF_MIRRORS` 默认镜像列表
-  (上游 + hf-mirror.com) + `MirrorSet` 配置 dataclass
-  (env-var 读 `$TORCHA_VERSE_HF_MIRRORS`) + `MirrorHealth` 健康
-  结果 + `check_mirror_health` / `check_all_mirrors` /
-  `is_useful_mirror_error` 三个工具函数
-- `tests/test_model_source_mirror.py` — 31 个新测试
-  (8 MirrorSet + 5 健康检查 + 4 指纹/缓存查找 + 6 HF 镜像
-  fallback + 5 fetcher 端到端 + 2 文件跳过/异常)
-- `examples/model_download.py` — 端到端 demo (零网络
-  `FakeTransport`):镜像列表 → 健康 → first fetch → cache
-  hit → 跨镜像 dedup,完整覆盖 4 类场景
-
-**升级文件** (5 个):
-- `models/source/huggingface.py` — `HuggingFaceSource` 加
-  `mirrors=` 参数 + `_for_each_live_mirror` 循环 + 60s TTL
-  的 "dead-mirror memory" (`_dead_mirrors` 字典)。`resolve_license`
-  / `list_files` / `download_files` 全部 try-mirrors-fallback。
-  新 `DownloadProgress` dataclass (file_name / bytes_done /
-  bytes_total / mirror / started_at / finished / error) +
-  `download_default_artifacts(revision, on_progress=)` 接收
-  per-file 进度回调,callback 抛异常自动 swallow 不影响下载。
-- `models/source/cache.py` — `compute_content_fingerprint`
-  (sorted `(name, sha256)` 集合的 sha256,**顺序无关**) +
-  `ModelCache.find_by_fingerprint` (`rglob` 递归扫描 manifest,
-  支持 `repo_id` 含 `/` 的情况,例如 `Qwen/Qwen2.5`) +
-  `CachedModel.content_fingerprint` property
-- `models/source/fetch.py` — `ModelFetcher.fetch` 接
-  `mirrors=` + `on_progress=`,新 `_install_default_mirrors`
-  让 default mirrors 自动装到 registry 中所有 HF adapter。
-  `on_progress` callback 自动 wrap:4 参 `(name, done, total, mirror)`
-  (v0.4.0 ergonomic shape) → 1 参 `DownloadProgress` (v0.4.x
-  P2+ low-level shape),通过 `inspect.signature` 推断。
-  新 `_fetch_inner` 流程:download → compute fingerprint →
-  `find_by_fingerprint` → 命中则**不写盘**直接 return
-  existing manifest (跨 repo/revision dedup),完全避免重复
-  占用磁盘与重复完整性验证。
-- `models/source/__init__.py` — 暴露 `MirrorSet` / `MirrorHealth`
-  / `DownloadProgress` / `compute_content_fingerprint` / 4 个
-  mirror/health/is_useful helpers
-- `docs/placeholder_registry.md` — 8 条新 entry (54-61) 覆盖
-  `models/source/cache.py:509,578,582` (原子写 + rmdir 兜底)
-  + `models/source/huggingface.py:164,170` (HttpTransport
-  abstract 占位) + `models/source/huggingface.py:564,597,622`
-  (progress callback 兜底)
-
-**端到端真模型 + 零网络** (TINY preset, FakeTransport):
-- `python examples/model_download.py` 完整跑通 4 场景:
-  1. 镜像列表构造 (`MirrorSet.from_env()`)
-  2. 健康检查 (FakeTransport 报 1 个可达 + 1 个不可达)
-  3. 第一次 fetch (`from_cache=False`, 写 v1)
-  4. 第二次 fetch (same key, `from_cache=True` 直接 cache hit)
-  5. 第三次 fetch (不同 revision v1.1, `from_cache=True`
-     走 cross-mirror dedup,**不写 v1.1 目录**, 仍能 serve
-     现有 v1 的 manifest)
-  6. 流量后健康检查 (upstream 仍 mark dead, mirror alive)
-- 总测试数: 652 → **683** (净增 31, 全过, 49.90s)
-- `pytest -m model_source` 跑 84/84
-- `pytest -m "not model_source"` 跑 599/599
-
-**Scanner 双 0**:
-- Hardcoding scanner: 4452 total, critical 3857, info 595
-  (新增 216 主要是 tests + mirrors 字符串路径,全部 info)
-- Placeholder registry: 50/50 OK (新增 8 条)
-- 纯 torch,**无** `transformers` / `diffusers` / `safetensors` /
-  `tokenizers` 依赖
-
-**不做** (留到 v1.0):
-- 流式字节进度 (transport 协议目前一次性返完整 bytes,
-  progress 是 per-file granularity 而非 byte-level)
-- 异步并发 mirror race (目前 strict 顺序 fallback, race 留给
-  后续 v1.0 调度器)
-- 自动镜像 health check 周期 (目前 health check 是
-  on-demand ad-hoc)
-
----
-
-## P2++ — 模型下载完整性校验 + Token 自动解析 ✅ 完成 2026-06-25
-
-**目标**:在 P2+ 的镜像 + dedup 基础上,把"安全"层补齐:
-模型下载时**必须**能验证完整性、操作者**必须**能传入
-token(包括 401/403 gated repo 的 token),两件事**不**
-应当需要任何外部依赖。
-
-**新增文件**:
-- `models/source/auth.py` — 中心化 token 解析
-  (`resolve_token(explicit, env, sources, home_dir)`)
-  + `TokenInfo` dataclass (value 字段, `as_dict()` 自动
-  redact 永不输出明文) + `_read_token_file` (per-path lock
-  + UTF-8) + `auth_headers(TokenInfo)` 拼 `Authorization:
-  Bearer` + `GatedRepoError` 异常类
-  (source/repo_id/status_code/hint) + `ChecksumMismatch`
-  异常类 (source/repo_id/file_name/expected/actual + as_dict)
-  + `extract_expected_sha256_from_headers` (优先级
-  `x-linked-etag` > `x-checksum-sha256` > `x-sha256` > 
-  `etag`,自动剥 `W/` 前缀和双引号) + `is_gated_http_error`
-  (401/403 判定,处理 `HTTPError` 是 `URLError` 子类的特殊
-  顺序)。
-- `tests/test_model_source_integrity.py` — 50 个新测试
-  (8 token 多源 / 4 TokenInfo redact / 2 auth_headers /
-  7 SHA header 提取 / 5 is_gated_http_error / 2 异常类 +
-  ModelCache 4 写前校验 + HF 3 (sha 上行 / 401 / 404) +
-  Civitai 5 (sha 上行 / 401 list / 403 download / pin 
-  mismatch / pin match) + fetcher 4 (token leak / token 通过
-  / pin mismatch / 校验 opt-out) + 顶层 fetch 1 + fetcher 
-  401 透传 1)
-
-**升级文件**:
-- `models/source/huggingface.py` —
-  * `__init__` 接 `token=`,内部 `resolve_token(sources=
-    "huggingface")` 把 `Optional[str]` 升级成 `TokenInfo`。
-  * `_auth_headers` 走 `self._token.is_present` + value 拼
-    `Authorization: Bearer`。
-  * `resolve_license` 在 mirror loop 顶部把
-    `urllib.error.HTTPError(401/403)` 显式转
-    `GatedRepoError` (source="huggingface", hint 指明
-    `$HF_TOKEN` / `HuggingFaceSource(token=...)`)。
-  * `download_files` / `download_default_artifacts` 接
-    `expected_sha256s: Optional[Mapping[str, str]] = None`:
-    下载完先算 local_sha,然后用
-    `extract_expected_sha256_from_headers(resp_headers, name)`
-    抽 upstream_sha (LFS pointer 优先),若 caller pin 了该
-    文件的 sha 而 local != pinned, 抛 `ChecksumMismatch` 并
-    通过进度回调 emit 失败 tick。
-  * 401/403 在 download 循环里也走 GatedRepoError,避免 4xx
-    误判为"镜像挂了"。
-- `models/source/civitai.py` — 同样接 `token=` +
-  `TokenInfo`,`_auth_headers` TokenInfo-aware,
-  `resolve_license` / `list_files` / `download_files` 401/403
-  → GatedRepoError。`download_files` 接受 `expected_sha256s`:
-  Civitai 走 `data["files"][*]["hashes"]["SHA256"]`(metadata
-  优先)→ response header ETag(备选)双源,然后 pin mismatch 
-  → ChecksumMismatch。去掉不再用到的 `urllib.error` 直接
-  import (用 `is_gated_http_error` 统一处理)。
-- `models/source/cache.py` — `ModelCache.write_files` 新增
-  `expected_sha256s: Optional[Mapping[str, str]] = None`。
-  Pre-flight 检查在落盘**之前**做:遍历 spec list 对 pin 的
-  文件 hash 一次内存, mismatch 直接抛 `ChecksumMismatch`,
-  cache 目录保持干净(下个 fetch 从零开始)。`find_by_fingerprint`
-  dedup 命中后再写就跳过 — 一切走 v0.4.x 既有的"不写
-  duplicate"逻辑。
-- `models/source/fetch.py` — `ModelFetcher.fetch` 新增
-  `expected_sha256s=`, `token=`, `validate_checksums=True`
-  三个公开参数:
-  * `token=` 在调用期内 patch `adapter._token`, finally 
-    恢复 (registry 不被污染, 第二次调用拿不到上次的 token)。
-  * `expected_sha256s` 透传给 `_download_default_artifacts` 
-    → adapter (Civitai 路径自动 strip) + 透传给
-    `cache.write_files` (pre-flight 校验)。
-  * `validate_checksums=False` 是显式 opt-out, 把 pin 强制
-    视作空。
-  * `_resolve_license_id` 把 `GatedRepoError` *不* 吞掉 — 
-    让 401/403 透传给 caller(操作者应该看到 actionable 
-    error)。
-  * 顶层 `fetch()` 自由函数也接受同样的三个参数。
-  * 新 `_validate_pins_against_manifest` 在 cross-mirror 
-    dedup 命中时,把 pin 和已有 manifest 的 recorded digests
-    对一次 (避免 stale manifest 复用)。
-- `models/source/__init__.py` — 暴露 `TokenInfo` / 
-  `resolve_token` / `auth_headers` / `GatedRepoError` /
-  `ChecksumMismatch` / `extract_expected_sha256_from_headers`
-  / `is_gated_http_error` 7 个新公共 API。
-- `examples/model_download.py` — 在原 6 步 demo 后新增
-  [7] token 解析链演示 + [8] expected_sha256s 三个子场景
-  (correct / wrong pin / validate_checksums=False) + [9]
-  GatedRepoError 401 错误路径。FakeTransport 加 `gated_base=`
-  支持,可重现 401。
-
-**关键能力**:
-- **Token out-of-box**: 操作者只需要 `export HF_TOKEN=...`
-  即可访问 gated repo,完全无需改任何代码;若已
-  `huggingface-cli login` 过,文件 `~/.cache/huggingface/token`
-  也会被自动识别。
-- **Checksum pin 拒绝 corrupt mirror**: caller 通过
-  `expected_sha256s={...}` 提供 per-file sha256,模型
-  落盘**前**在内存 hash 一次, mismatch 抛
-  `ChecksumMismatch` 并保证 cache 目录不被污染。
-- **401/403 不再被静默**: 4xx 走 GatedRepoError 显式
-  raise (with hint 提示 `$HF_TOKEN`),5xx 走 mirror fallback
-  链路,2xx 走 happy path。**不会**再把"权限不够"误判为
-  "镜像挂了"。
-- **Token 永不泄露**: `TokenInfo.as_dict()` redact value;
-  error message 只带 hint,不带 token。
-- **Cross-mirror dedup 与 pin 校验共存**: dedup 命中时,
-  pin 与既有 manifest 的 recorded digests 对一次,杜绝
-  stale manifest 复用。
-- **Per-call token 隔离**: `fetcher.fetch(token="x")` 不
-  会污染 registry, finally 块恢复。
-
-**测试**:
-- 总测试数: 683 → **733** (净增 50, 全过, 49.90s)
-- `pytest -m model_source` 跑 134/134 (53 旧 + 31 mirror + 
-  50 integrity, 1.95s)
-- `pytest -m "not model_source"` 跑 599/599
-- `python examples/model_download.py` 端到端跑通
-  (9 步 demo, 零网络 FakeTransport)
-- `python -c "from models.source import (TokenInfo, 
-  resolve_token, GatedRepoError, ChecksumMismatch, ...)"` 
-  import 成功
-
-**Scanner 双 0**:
-- Hardcoding scanner: critical 3670 unique (pre-P2+) → 3679 (P2+) →
-  **3704 (P2++)**, 净增 25(全部为协议/格式/路径绑定,已
-  落 whitelist:auth.py 内 12+ 处 env-var name / header name
-  / source id / 路径字面量,huggingface.py 内 ChecksumMismatch
-  progress tick + GatedRepoError source= 2 处,civitai.py 内
-  401/403 hint 模板 2 处 + SHA256 字段名 1 处,examples/ 内
-  3 处 demo 字符串)
-- Placeholder registry: 维持 50/50 OK (本次未引入新 pass/
-  NotImplementedError)
-- 纯 torch,**无** `huggingface_hub` / `transformers` /
-  `diffusers` / `safetensors` / `tokenizers` 依赖
-
-**不做** (留到 v1.0):
-- 启动时 OOB 心跳验证 token 是否有效 (现在 lazy-first-call)
-- Token 轮换 / 短期 refresh token 机制
-- 远程 attestation (sigstore / in-toto) 验证权重
-- 流式下载时按 byte 校验 (当前是 in-memory 一次性 hash)
-
----
-
-## P4 — performance / training 补基础测试
-
-**目标**:两个 0 测试包(共 4700 行)有烟雾测试
-
-**新增文件**:
-```
-tests/test_performance_quantization.py   # ~80 行
-tests/test_performance_optimizer.py     # ~80 行
-tests/test_performance_benchmark.py      # ~80 行
-tests/test_training_sft_smoke.py         # ~100 行
-tests/test_training_rlhf_smoke.py        # ~100 行
-tests/test_training_synthetic_data.py    # ~80 行
-```
-
-**最小覆盖**:
-- `Quantizer.fp16(model).weight.dtype == torch.float16`
-- `PerformanceOptimizer.optimize_model(Linear(4,4))(randn(1,4)).shape == (1,4)`
-- `BenchmarkSuite.run_text_benchmark("dummy", "hi", max_tokens=4).latency_ms >= 0`
-- `SFTTrainer.fit_step(...)` 单步梯度下降,loss 下降
-- `RLHFTrainer.compute_dpo_loss(...)` 输出标量 loss
-- `SyntheticDataGenerator.filter_quality(...)` 过滤掉空串
-
----
-
-## P5 — examples 重写
-
-**目标**:6 个 examples 与 29 节点对齐,跑得通(用 echo 后端)
-
-**重写**:
-- `examples/basic_text_gen.py` → `text_chat` 节点
-- `examples/image_gen.py` → `image_txt2img` 节点
-- `examples/audio_tts.py` → `audio_tts` 节点
-- `examples/video_gen.py` → `video_txt2vid` 节点
-- **新增** `examples/consistency_character.py` → `character_apply` + `character_five_view` 链
-- **新增** `examples/dh_lipsync.py` → `dh_lip_sync` 节点
-
-**风格**:每个 example < 50 行,顶部注释"如何跑",输出可读 summary。
-
----
-
-## v1.0.0 — 生产化(后续,2026 Q4 之后)
-
-> v1.0.0 启动前必须有 M0-M3 的落地评估 + acceptance criteria 锁定。
-> 4 个 milestone 把"v1.0.0 纲要"拆成可独立排期的小段, 避免 Q4 启动时
-> 找不到起点。详细子任务 + 启动条件 + 风险登记见
-> [`docs/open_items.md`](open_items.md) C 段; 6 主题 v0.4.x 现状盘点
-> (ResourceBudget / RuntimeScheduler / 监控 / 多租户 / 评估 / 部署;
-> **原"分布式"主题已移出 v0.4.x 范围**) 也已合并到 `open_items.md` C1-C8,
-> 不在本文件重复。
-
-### v1.0.0 启动条件(任一)
-
-1. v0.4.x 用户报"多任务并发 OOM" / "缺 metrics" / "租户互相影响" ≥ 1 个
-2. v0.4.x 真大模型 e2e (C8) 在 CI 跑通 → 启动 M0
+启动条件 (任一):
+1. v0.6.x 用户报"多任务并发 OOM" / "缺 metrics" / "租户互相影响" ≥ 1
+2. v0.6.x 真大模型 e2e (C8) 在 CI 跑通 → 启动 M0
 3. 2026 Q4 时间节点到 → 强制启动 M0
 
-### v1.0.0 Milestone 拆分
+### Milestone 拆分
 
-| Milestone | 目标 | 估时 | 关键产物 |
+| M | 目标 | 估时 | 关键产物 |
 |---|---|---:|---|
-| **M0** | `BudgetTracker` 真实调度(排队 + 超时) | 1 周 | `allocate_or_wait` + `tests/test_resource_budget.py` 30+ 测试 + `examples/budget_queueing_demo.py` |
-| **M1** | `RuntimeScheduler` 抽象 + 3 种实现 | 1-2 周 | `infrastructure/runtime_scheduler.py` (~400 行) + 40+ 测试 + `examples/scheduler_demo.py` |
-| ~~**M2a**~~ | ~~Gloo 分布式 (TP/PP)~~ | ~~1-1.5 周~~ | 🗑️ **移出 v1.0.0** — 单系统路线明确, 跨节点分布式推迟到 v1.0.0 之后 (原 C3 / B4 同源). 真启动条件: "单节点 8 GPU + NVLink + 大内存" 不够用时. `_tensor_parallel_impl` / `_pipeline_parallel_impl` 占位代码保留作为接口预留. |
-| **M2b** | Prometheus metrics | 0.5-1 周 | `infrastructure/metrics.py` + `serving/app.py` `/metrics` + Grafana 4-panel JSON |
-| **M2c** | Dockerfile + compose | 0.5-1 周 | `Dockerfile` (基于 `python:3.10-slim`) + `docker-compose.yml` + `docs/deployment_docker.md` |
-| **M3a** | 多租户 | 1 周 | `infrastructure/multi_tenant.py` + per-tenant BudgetTracker + 命名空间目录 |
-| **M3b** | 评估 leaderboard | 1 周 | `evaluation/leaderboard.py` + `examples/leaderboard_demo.py` + 10+ 测试 |
-| **C8** | 真实大模型 e2e (Qwen2.5 / SDXL-Turbo / HunyuanVideo) | 4-8 周 | 走 P2 fetch 子系统 + 真模型端到端 + CI 拉通 |
+| M0 | `BudgetTracker` 真实调度 (排队 + 超时) | 1 周 | `allocate_or_wait` + 30+ 测试 |
+| M1 | `RuntimeScheduler` 抽象 + 3 实现 | 1-2 周 | ~400 行 + 40+ 测试 |
+| ~~M2a~~ | ~~Gloo 分布式 (TP/PP)~~ | — | 🗑️ 单系统路线明确,跨节点推迟 |
+| M2b | Prometheus metrics | 0.5-1 周 | `/metrics` + Grafana 4-panel |
+| M2c | Dockerfile + compose | 0.5-1 周 | `python:3.10-slim` + compose |
+| M3a | 多租户 | 1 周 | per-tenant BudgetTracker + 命名空间 |
+| M3b | 评估 leaderboard | 1 周 | leaderboard + 10+ 测试 |
+| C8 | 真实大模型 e2e | 4-8 周 | Qwen2.5 / SDXL-Turbo / HunyuanVideo |
+
+详细子任务 / 启动条件 / 风险登记见 [`docs/open_items.md`](open_items.md) C 段;
+6 主题 v0.4.x 现状盘点 (ResourceBudget / RuntimeScheduler / 监控 / 多租户 / 评估 / 部署)
+也已合并到 C1-C8。
 
 ---
 
 ## 进度跟踪
 
-每完成一个 PR,更新本文件"状态"列。每月初扫一次 `DEFERRED_TASKS.md`,评估是否要重新启动任何延后项。
+| 阶段 | 状态 | 测试 | commit |
+|---|---|---:|---|
+| v0.3.0 (架构骨架) | ✅ | 369 | 8801c2d |
+| v0.4.0 (P0 真模型) | ✅ | 559 | (略) |
+| v0.4.1 (B1 silent degrade 清零) | ✅ | 581 | (略) |
+| v0.4.2 (C1-C7 v1.0 骨架) | ✅ | 747 | de35b14 |
+| v0.4.3 (C1b-C7b 加深) | ✅ | 830 | b032082 |
+| v0.5.0 (资产/一致性/Prompt Studio) | ✅ | 986 | (略) |
+| v0.5.1 (v0.5 feature demo) | ✅ | 1053 | (略) |
+| v0.6.0 (R-3~R-15 重构) | ✅ | 1053 | (R-3~R-15) |
+| v0.6.1 (R-16~R-19 性能/CLI/lazy/MD) | 🚧 | 1053+ | R-19 ✅ |
+| v1.0.0 (生产化) | ⏳ | — | — |
+
+每月初扫一次 `DEFERRED_TASKS.md`,评估是否重新启动任何延后项。

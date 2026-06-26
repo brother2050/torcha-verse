@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_hardcoding import (
+from scripts.check.hardcoding import (
     SEVERITY_CRITICAL,
     SEVERITY_INFO,
     SEVERITY_WARN,

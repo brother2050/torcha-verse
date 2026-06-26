@@ -13,12 +13,26 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+# When the script is run directly via ``python scripts/check/hardcoding
+# /_cli.py`` (e.g. by a CI shell step or a subprocess test), the package
+# root is *not* on ``sys.path`` -- inject it.  Library callers that
+# already have the project on ``sys.path`` pay a one-time O(1) cost.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from scripts.check.hardcoding_rules import Rule, get_rule, list_rule_names
 
-from ._constants import SEVERITY_ORDER
-from ._formatters import export_critical, format_json, format_text
-from ._scan import scan_directory, scan_file
-from ._whitelist import filter_by_severity, load_whitelist
+from scripts.check.hardcoding import (
+    SEVERITY_ORDER,
+    export_critical,
+    format_json,
+    format_text,
+    scan_directory,
+    scan_file,
+    filter_by_severity,
+    load_whitelist,
+)
 
 __all__ = ["main"]
 
@@ -98,3 +112,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write(format_text(filtered) + "\n")
 
     return 1 if filtered else 0
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entry point
+    sys.exit(main())

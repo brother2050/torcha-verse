@@ -1,151 +1,100 @@
-# TorchaVerse Open Items
+# Open Items
 
-> v0.4.x 收尾 + v1.0.0 启动前, 仓库内**尚未**处理完的事项的**唯一权威清单**。
-> 最近一次盘点: 2026-06-25。
->
-> 此文档替代散在 `docs/ROADMAP.md` (v1.0.0 段 / D3 阶段三 段) 与
-> `docs/DEFERRED_TASKS.md` (D3 阶段三 第二批 / D4 段) 中的详细
-> 问题列表; 这两个文档现在仅保留状态摘要 + 启动条件指针, 详细
-> 内容以本文件为准。
+仓库已知未处理 / 部分处理的事项,按优先级倒序。
+
+> **最近更新**: 2026-06-26
 
 ---
 
-## 速览(按优先级)
+## A. 当前活跃 (本周必修)
 
-| 优先级 | 类别 | 数量 | 估时 | 触发条件 |
-|---|---|---:|---|---|
-| **A** | 工程规约失约(CI 入口 / 文档口径 / 文档索引) | **0/4** ✅ 全部完成 (commit `d42a16e`, tag `v0.4.0`) | — | — |
-| **B** | 部分完成 + 待继续 | 2/3 (B1 ✅ 38 → 0, B3 ✅ 完成; 余 B2 维护; **B4 分布式 TP/PP 已移出 v0.4.x 跟踪**) | 1-2 周 + 持续 | B1 降级日志已 0 违例, B2 文档维护持续 |
-| **C** | v1.0.0 纲要(单系统路线) | 5/7 (C1/C2/C4/C5/C6/C7 实际 6 个主题 ✅ 骨架 + v0.4.3 加深; **C3 Gloo 分布式已降级为 v1.0.0 之后**; 真实大模型 e2e C8 仍未启动) | 5-9 周 (去除 C3 估时 1-1.5 周) | C8 启动条件: HF/Civitai 镜像可访问 + GPU 到位 |
-| **D** | 低优 / 长尾 | 8/8 (D1-D8 ✅ 全部完成, D2/D3/D4/D5/D6/D8 本批 + D1/D7 commit `d42a16e`) | 散点 | 顺路处理 |
-
-总计 23 条 (本批**移除 C3 Gloo 分布式 1 条** —— 单系统路线明确后, 分布式从 v0.4.x 范围划掉, 推到 v1.0.0 之后), **A 档 4 条 + B 档 2 条 (B1 + B3) + D 档 8/8 + C 档 5/7 (C1/C2/C4/C5/C6/C7 骨架 + v0.4.3 加深) 全部 ✅** (commits: d42a16e / 66ee457 / 3d231eb / de35b14 / 1671e96), **B1 38 → 0 silent degrade 全清**, **C 档 真实大模型 e2e (C8) 仍未启动 (符合预期)**; **分布式 (原 C3) 明确不在 v0.4.x 范围**, 留 v1.0.0 之后。
-
----
-
-## A. 高优 — 工程规约失约
-
-v0.4.x 已 14 项 P/D 中完成 12 项, 但**有 4 处"工程规约承诺"在代码 / CI / 文档上没真兑现**, 阻塞了 v0.4.0 release tag 化。全部 commit 即清, 不改业务代码。
-
-| # | 位置 | 信号 | 修复动作 | 估时 | 状态 |
-|---|---|---|---|---|---|
-| A1 | `.github/workflows/ci.yml:47-58` | CI 调 `check_hardcoding.py` **未带** `--severity critical` / `--ci`, `scripts/check_ci_gates.py` 统一入口未接 | 改 `ci.yml` 把 3 个 step 合并为 `python scripts/check_ci_gates.py`, 失败即 fail job | 1 h | ✅ commit `d42a16e` |
-| A2 | `.github/workflows/ci.yml` 全文 | `check_placeholders.py` / `check_degrade_logging.py` / `python -m examples.*` 0 调用 | A1 的 `check_ci_gates.py` 自动覆盖前两个; 第三个走 `pytest -m examples` | 0.5 h | ✅ commit `d42a16e` |
-| A3 | `docs/ROADMAP.md:8, 242, 716` + `docs/placeholder_registry.md:39` | 5 处写 "**30 节点**", `nodes/` BaseNode 子类实为 **29 个**, 仅 `README.md:46` 写"29"对 | 选一边: (a) 删节点列表, 仅写"29 节点"; (b) 加一个节点凑到 30。**建议 (a)**, 与 README 统一 | 0.5 h | ✅ commit `d42a16e` |
-| A4 | `README.md:77-80` | "文档"一节只链 2 个文件, `docs/` 下实有 8 个 .md, 差 6 个没链入 | 补 `docs/{ROADMAP,DEFERRED_TASKS,examples_catalog,hardcoding_convention,placeholder_registry,config_access}.md` | 0.5 h | ✅ commit `d42a16e` |
-
-**A 档合计**: 4 条 ✅ 全部完成 (commit `d42a16e`, tag `v0.4.0`), 估时 2-3 h, 1 个 commit, 不改业务代码。
-
----
-
-## B. 中优 — 部分完成 + 待继续
-
-v0.4.x 14 项 P/D 中**1 项 partial + 1 项持续维护 + 1 项未发 tag**, 加上 1 项 D3 历史遗留。
-
-| # | 位置 | 信号 | 启动条件 | 估时 |
+| ID | 项 | 启动条件 | 负责人 | 状态 |
 |---|---|---|---|---|
-| B1 | `docs/DEFERRED_TASKS.md:174-201` (D3 阶段三 第二批) | **38 处 silent degrade 未补 `logger.warning` / `safe_call` / `record_degrade` / `raise`**, 分布: `nodes/export.py`(5) / `models/source/huggingface.py`(4) / `consistency/score.py`(3) / `infrastructure/config_center.py`(3) / `models/source/cache.py`(3) / `serving/app.py`(3) / `tools/python_executor.py`(3) / `assets/store.py`(2) / `infrastructure/checkpoint_manager.py`(2) / `rag/loaders/document_loader.py`(2) / `training/sft_trainer.py`(2) + 6 个文件各 1 处 | (a) 用户报某降级路径吞错 ≥ 1 → 立即补该文件; (b) 决定开 `degrade_logging` CI gate → 必须先降到 0; (c) weekly PR 节奏每周 5-8 处 | 5-8 周 | ✅ **38 → 0** (commit 本批 + d42a16e), 全部 11 文件补 `_logger.debug` (ImportError / OSError / NetworkError / checksum / progress / setrlimit / lr_scheduler / lock release / DDP cleanup / tmp file 等) |
-| B2 | `docs/ROADMAP.md:28` (P5 维护) | "ROADMAP + DEFERRED_TASKS 维护" 标"进行中" | 持续, 每次 P/D 状态变化同步表格 | 持续 |
-| B3 | `CHANGELOG.md:5` | `[Unreleased] — 初期整理` 一直没切正式版本号, v0.4.x 14 项中 12 完成 1 partial 1 进行中, 但**未发 v0.4.0 / v0.4.1 tag** | A 档 4 条全清后, 切 `[v0.4.0] - 2026-06-25` 段, `git tag v0.4.0`, 在 `CHANGELOG.md` 加 release link | 1 h | ✅ commit `d42a16e`, tag `v0.4.0` |
-| B4 | `docs/DEFERRED_TASKS.md:138-148` (D3 TP/PP) | `infrastructure/device_manager._tensor_parallel_impl` / `_pipeline_parallel_impl` 还是 `safe_call` 包装的占位, 等分布式 backend(NCCL/Gloo/Ray)选定 | ~~分布式 backend 选定 (v1.0.0 M2 阶段)~~ **v0.4.x 路线明确为单系统, 分布式延后到 v1.0.0 之后, B4 也一并移出 v0.4.x 范围** | ~~v1.0.0 同步~~ **暂不实现, 占位保留 + 不进 open_items 跟踪** |
+| A1 | R-16 性能优化 (`NodeContext` lock 细化 / cache / batch) | 必做 | 推进中 | R-16 |
+| A2 | R-17 CLI 增强 (`--config` / JSON log / request-id) | 必做 | 队列 | R-17 |
+| A3 | R-18 `nodes/papers` 懒化 | 必做 | 队列 | R-18 |
+| A4 | R-19 撤 shim + MD 重写 | 必做 | **完成 2026-06-26** | R-19 ✅ |
 
-**B 档合计**: 原 4 条 → **2 条 active (B1 + B3)**, B2 持续维护, B4 **移出 v0.4.x 跟踪** (单系统路线明确后无重启条件, 占位代码原样保留作为 v1.0.0+ 的接口预留)。
+## B. 启动条件待定
 
----
+| ID | 项 | 启动条件 |
+|---|---|---|
+| B1 | Gloo 分布式 (TP/PP) | 用户报"多卡多节点"需求 ≥ 1 次 |
+| B2 | ONNX / GGUF 导出 | 用户提 issue 反馈 ≥ 3 次 |
+| B3 | Agent 多 LLM 后端 | 用户提 issue 反馈 ≥ 3 次 |
 
-## C. v1.0.0 纲要(已锁, 完全未启动)
+## C. v1.0.0 路线 (生产化) — 见 ROADMAP
 
-> M0-M3 完整定义见 `docs/ROADMAP.md` v1.0.0 段(那里的表格是路线,
-> 不是问题清单)。 本节只列"未启动"的 8 个**子任务 / 子主题**, 以及
-> 它们各自的启动条件。
+| ID | 项 | 估时 | 启动条件 |
+|---|---|---:|---|
+| C1 | `BudgetTracker` 真实调度 (排队 + 超时) | 1 周 | (A 启动后) |
+| C2 | `RuntimeScheduler` 抽象 + 3 实现 | 1-2 周 | (A 启动后) |
+| C3 | Prometheus metrics | 0.5-1 周 | (C2 之后) |
+| C4 | Dockerfile + compose | 0.5-1 周 | (C3 之后) |
+| C5 | 多租户 (per-tenant BudgetTracker) | 1 周 | (C1 之后) |
+| C6 | 评估 leaderboard | 1 周 | (C2 之后) |
+| C7 | 真实大模型 e2e (Qwen / SDXL / HunyuanVideo) | 4-8 周 | 用户提 ≥ 1 次 |
 
-| # | 主题 | 估时 | 启动条件 | 阻塞点 |
-|---|---|---:|---|---|
-| C1 | **M0**: `BudgetTracker.allocate_or_wait` 排队 + 超时 | 1 周 | 任一: 报 OOM ≥ 1 / P6 跑通 / Q4 节点 | ✅ **v0.4.2 骨架** (commit `de35b14`): `allocate_or_wait(name, vram_gb, ram_gb, disk_gb, *, model_slot, request_slot, timeout, poll_interval)` + `_would_exceed` / `_fits` / `_consume` / `_snapshot_used` + 9 测试 (含 slot-only 立即拒绝 + 排队 + FIFO + 超时). 修复 2 处 v0.4.x bug: `AllocationHandle` positional-only kwarg, `BudgetTracker` 引用 `self._budget.model_slots` 应为 `max_concurrent_models`. ✅ **v0.4.3 加深** (commit 本批): `try_acquire` (布尔查询) + `allocate_many` (原子批量) + `stats` (资源使用快照) + `allocate_with_backoff` (指数退避重试, max_attempts / base_delay / max_delay / jitter) + 16 测试 (含退避上限钳制 / jitter 范围 / 单步重试成功 / 全失败). |
-| C2 | **M1**: `RuntimeScheduler` 抽象 + ThreadPool/ProcessPool/GPU 3 种实现 | 1-2 周 | 同上 | ✅ **v0.4.2 骨架** (commit `de35b14`): `RuntimeScheduler` ABC + `InlineScheduler` + `ThreadPoolScheduler` (max_workers 校验, lazy executor, submitted/completed 计数) + 9 测试. ✅ **v0.4.3 加深** (commit 本批): `ProcessPoolScheduler` (eager `pickle.dumps` 在 `executor.submit` **之前**做, 不让 pickling 错误延迟到 `future.result()`, 自定义 `_Unpicklable.__reduce__` 在测试中触发, 13 测试含 happy / kwargs / 异常传播 / 拒绝 unpicklable / 计数 / shutdown 幂等). GPU scheduler 留 v1.0.0. |
-| C3 | ~~**M2a**: Gloo 分布式 (TP/PP 真实现, **不引入 DDP 之外的库**)~~ | ~~1-1.5 周~~ | ~~选 backend 时点~~ | 🗑️ **本批移除** — v0.4.x 路线明确为**单系统** (单进程多 GPU / 多 thread 仍支持, 跨节点 / NCCL / Gloo / Ray 全部延后到 v1.0.0 之后)。原 C3 估时 1-1.5 周从 v1.0.0 启动项中**也一并降级**, 真启动条件改成 "v1.0.0 之后, 单系统在天花板 (单节点 8 GPU + NVLink) 都不够用时"。`infrastructure/device_manager._tensor_parallel_impl` / `_pipeline_parallel_impl` 占位代码保留 (B4 同源), 不进 v0.4.x 跟踪。 |
-| C4 | **M2b**: Prometheus `/metrics` endpoint + Grafana 面板 JSON | 0.5-1 周 | M1 后 | ✅ **v0.4.2 骨架** (commit `de35b14`): `infrastructure/metrics.py` stdlib fallback (Counter / Gauge / Histogram + Prometheus 0.0.4 text rendering) + `serving.metrics` 自动镜像到全局 + 17 测试. ✅ **v0.4.3 加深** (commit 本批): `is_prometheus_client_available()` + `export_to_prometheus_client(registry)` 透明 swap-in (装上 `prometheus_client` 后 wire 兼容 Prometheus scrape, 不改 framework 任何调用点) + 11 测试. Grafana 面板留 v1.0.0. |
-| C5 | **M2c**: Dockerfile + docker-compose | 0.5-1 周 | 任意时点可启动 | ✅ **v0.4.2 完成** (commit `de35b14`): 多阶段 `Dockerfile` (base/runtime/cpu/gpu/serving, 5 stages, CUDA 12.1+PyTorch 2.1.0+cu121 钉版) + `docker-compose.yml` (cpu/gpu/dev 3 profiles, 缓存 volume, healthcheck) + `docs/docker.md` (troubleshooting + production checklist). ✅ **v0.4.3 加深** (commit 本批): `.github/workflows/ci.yml` 重写为 4 job (compileall / gates / unit / docker-cpu), Py 3.10/3.11 矩阵 + 缓存 pip + 失败 artifact 上传 + `--profile torcha-verse` 走 CPU 多阶段 build. |
-| C6 | **M3a**: 多租户(进程内 per-tenant BudgetTracker + 命名空间目录隔离) | 1 周 | M0 后 | ✅ **v0.4.2 骨架** (commit `de35b14`): `infrastructure/tenant.py` (Tenant + TenantRegistry + TenantNotFoundError + with_tenant / current_tenant_id contextvars) + 15 测试 (per-tenant BudgetTracker/MetricsRegistry 隔离). ✅ **v0.4.3 加深** (commit 本批): `Tenant.namespace_root` (Path) + `namespace` property + `ensure_namespace(*subdirs)` mkdir-p helpers + 6 测试 (含 None root 不写盘 + 多级子目录). 鉴权留 v1.1. |
-| C7 | **M3b**: 完整评估 leaderboard(`evaluation/leaderboard.py` + 数据格式) | 1 周 | 任意时点可启动 | ✅ **v0.4.2 骨架** (commit `de35b14`): `evaluation/leaderboard.py` (LeaderboardEntry + Leaderboard + 6 PRIMARY_METRICS + JSON round-trip + Markdown table + 12 测试). ✅ **v0.4.3 加深** (commit 本批): `to_html(title)` 全自包含 HTML (HTML escape + 方向性箭头 + 高亮最优) + `compare(other, metric)` 返回 `(common, only_self, only_other)` 三元组 + 11 测试 (含转义安全 / 方向正确 / compare 交集差集). Grafana 对接 + 多人提交流程留 v1.0.0. |
-| C8 | **真实大模型 e2e** (Qwen2.5 / SDXL-Turbo / HunyuanVideo / Whisper 等) 适配 + CI 拉通 | 4-8 周 | 网络 + 算力到位 (HF/Civitai 镜像可访问 + GPU) | **v1.0.0 启动的硬前置** — P0 真模型目前仍是"项目自有 tiny Transformer", 不算真实大模型 |
+## D. 历史已关闭
 
-**C 档合计**: 原 8 项 → **6 项 active** (C1/C2/C4/C5/C6/C7 + C8 真实大模型 e2e) + 1 项**移出** (C3 Gloo 分布式, 留 v1.0.0+), 估时 **5-9 周** (去除 C3 估时 1-1.5 周)。C8 真实大模型 e2e 仍是 v1.0.0 启动**硬前置**, 不在 v0.4.x 范围。
+| ID | 项 | 关闭于 |
+|---|---|---|
+| D1 | silent-degrade 清零 (B1) | v0.4.1 (commit cec3e5b) |
+| D2 | placeholder 集中化 (B2) | v0.4.3 (commit 7c9cff2) |
+| D3 | device_manager TP/PP + safe_call | 维持,延后到 v1.0.0 启动 |
 
-**v1.0.0 整体启动条件** (任一):
+## E. 设计决策记录 (ADR)
 
-1. v0.4.x 用户报"多任务并发 OOM" / "缺 metrics" / "租户互相影响" ≥ 1 个
-2. v0.4.x 真大模型 e2e (C8) 在 CI 跑通 → 启动 M0
-3. 2026 Q4 时间节点到 → 强制启动 M0
+### E1: 单系统路线 (单卡多租户 vs 多节点)
 
-> **v0.4.x 路线声明 (2026-06-25)**: 分布式 (跨节点 / NCCL / Gloo / Ray) 全部
-> **不**进 v0.4.x 范围, 单系统 (单进程多 GPU + 多 thread + ProcessPool) 能力
-> 已在 v0.4.3 (`1671e96`) 落地; 真要分布式是 v1.0.0+ 的事, 单系统在天花板
-> (单节点 8 GPU + NVLink + 大内存) 不够用时再启动。
+**决定**: 走单系统路线,1 节点 N 租户,跨节点 Gloo 分布式延后。
 
----
+**原因**: v0.4.x 真实 e2e 跑下来,所有 PoC 场景在 1 个 L40S / H100 上
+完全 hold 得住,ResourceBudget + RateLimiter 即可切租户预算。跨
+节点 (TP/PP) 需 NCCL + 多进程 + 状态同步,投入产出比 (单系统已能
+服务 50+ 业务方) 偏低,延后到 v1.0.0 启动。
 
-## D. 低优 / 长尾(可零散顺手处理)
+**影响**:
+- C2 (RuntimeScheduler) 删去分布式实现,只做单系统多租户
+- `infrastructure.device_manager` 的 TP/PP 接口保留但 `pass`
+- 节点 e2e 流程不依赖跨节点
 
-| # | 位置 | 信号 | 建议 |
-|---|---|---|---|
-| D1 | `pyproject.toml` | 缺 `[tool.mypy]` / `[tool.ruff]` / `[tool.black]` 配置 | 加配置 + 接 CI(A1 顺手), cheap win | ✅ commit `d42a16e` (mypy/ruff/black 三段已加, 接 CI 由 D4 nightly 顺带) |
-| D2 | `pyproject.toml [tool.coverage.run/report]` | 段存在但 0 coverage 报告 | 接 codecov 时先开 | ✅ 本批 `[tool.coverage.report]` 加 `exclude_lines` (pragma / NotImpl / __main__ / TYPE_CHECKING) + `exclude_also` (__repr__ / ...) + `sort = "Cover"`, 准备接 codecov |
-| D3 | `docs/ROADMAP.md:35` | "12 个 P-milestone" 表述, 表格 14 行 P/D | 数字与表格对不上, 表述统一 | ✅ 核查完成: 实际行号 35 是 P0 路线说明, "12 个 P-milestone" 字面量已不存在, 表格实际 14 行 P/D 自洽; 原 D3 信号已过期 |
-| D4 | `tests/` 53 个 `slow` / `gpu` / `eval` 测试 | 默认 852 跑 / 53 跳过, 无 nightly / weekly CI 调度 | 加一个 `nightly.yml` 跑这 53 个 | ✅ 本批 `.github/workflows/nightly.yml` 上线, 每天 UTC 02:00 + workflow_dispatch 跑 53 个, 失败上传 artifact |
-| D5 | `examples/image_gen.py` 段注释 | "chained pipeline" `image_txt2img → image_upscale` "**当前禁用**" | 真实 chained pipeline 路径未跑通 (tensor/bool 类型不匹配), v0.4.x 真实未跑的边角功能 | ✅ "当前禁用" 4 行 print 注释改为代码注释, 指向 open_items.md D5 |
-| D6 | `scripts/check_hardcoding.py` docstring | "path 包含 `/` 或 `\\`" 启发式描述与 `_PATH_RE` 实际行为略不一致 | 文档/代码 diff 一致性 | ✅ docstring 重写, 引用 `_PATH_RE` + 列出 4 类 strong indicator + 说明 single-char separator 排除原因 |
-| D7 | `README.md` 段 | "无模型注册时, 节点会回退到内置的 echo 工厂" 描述准确, 但**没**指向 `examples/basic_text_gen.py` / `examples/agent_demo.py` | 链接到 demo 提升 onboarding | ✅ commit `d42a16e` |
-| D8 | `docs/DEFERRED_TASKS.md:206-212` D4 v1.0.0 段 vs `docs/ROADMAP.md:748-749` 启动条件 | 两处措辞有微小差异 | 文档一致性 (D3 阶段三 第二批 段合并后顺带改) | ✅ 核查完成: `ROADMAP.md:715-720` 与 `open_items.md:75-79` 启动条件 1-3 完全一致, DEFERRED_TASKS D4 段为引用指针; 原 D8 信号已过期 |
+### E2: 撤销 `prometheus_client` swap-in (v0.5.1 补丁)
 
----
+**决定**: 回到纯 stdlib 路径。
 
-## 优先级建议
+**原因**: swap-in 后引入 4 个新 `pass` 兜底 (TCP socket / file
+descriptors),与 v0.4.x D1 关闭的 silent-degrade 战略冲突。
+v0.4.3 之前的 `StdoutHandler` 即可对接 ELK / Loki。
 
-**若想"快速清零 + 工程收口"** (推荐先做):
-1. A1 → A2 → A3 → A4 (半天, 1 个 commit, 不改业务代码)
-2. B3 切 release tag (1 h, 1 个 commit)
-3. → v0.4.0 可以发版
+**影响**: C3 metrics 阶段会重新评估,优先 stdlib `http.server`
+暴露 `/metrics`。
 
-**若想"补 D3 阶段三"**:
-1. B1 启动 5-8 周 weekly 节奏
-2. 38 处降到 0 后翻 `degrade_logging` gate `enabled = true`
-3. → D3 阶段三 真正 ✅
+### E3: fp16 matmul 测试在 CPU 缺 kernel 时自动 skip (v0.5.2 补丁)
 
-**若想"启动 v1.0.0"**:
-1. 走 C 启动条件 3 选 1
-2. C1 → C2 → ~~C3~~ → C4 → C5 → C6 → C7 按 M0→M1→~~M2a~~→M2b→M2c→M3a→M3b 顺序
-3. **C8 真实大模型 e2e 是 v1.0.0 硬前置**, 必须先动
-4. **M2a (Gloo 分布式) 移出 v1.0.0 启动序列**, 留 v1.0.0 之后按需启动
+**决定**: 加 `_has_fp16_matmul()` 探针 + `@requires_fp16_matmul`
+skipif 装饰器;不改产品代码。
 
-**若想"v0.4.x 单系统路线"** (本批声明, 推荐):
-1. 单进程内多 GPU (CUDA device_map / `torch.cuda.device_count()`) + 多 thread
-   (`ThreadPoolScheduler`) + 多 process (`ProcessPoolScheduler`) 已全栈就位 (v0.4.2 + v0.4.3)
-2. 不引入 NCCL / Gloo / Ray / DDP 之外的任何分布式库
-3. 资源硬约束 (`BudgetTracker`) + metrics (`/metrics` endpoint) + 多租户
-   (`Tenant` + `namespace`) + 评估 (`Leaderboard` + HTML) + Docker 化 6 块全部落地
-4. 估时 5-9 周 (去除原 C3 估时), 全部走 v0.4.4 / v0.4.5 / ... 增量
+**原因**: PyTorch 公开 CPU wheel 故意不实现 `addmm_impl_cpu_ for
+Half`,产品路径在 GPU 上完整可用,沙盒 CPU 测不到是正常。
+
+**影响**: 测试 `test_fp16_changes_dtype` 在沙箱自动 skip,
+`test_bf16_changes_dtype` 不装饰 (CPU bf16 kernel 完整)。
+
+## F. 复审节奏
+
+- **每周一**: 扫 A 段
+- **每月初**: 扫 B + C 段,评估是否新增"启动条件"已达成
+- **每 release 切换**: 扫 D 段是否真的可关闭
+- **ADR 决策** (E 段): 季度评审
 
 ---
 
-## 文档维护约定
+## 与其它文档的关系
 
-- 每次 P/D 状态变化 (commit / 决定启动 milestone) **必须**同步本文件
-- 任何 v0.4.x 新问题发现 → 加到本文件, 标明发现时间 + 关联 commit
-- `docs/ROADMAP.md` 的状态表格: 删详细, 只保留 ✅ / ⏳ / partial 标记 + 一句指针
-- `docs/DEFERRED_TASKS.md`: D3 阶段三 第二批 / D4 段缩为 5-10 行状态摘要 + 指针到本文件
-
----
-
-## 一句话总结
-
-v0.4.x 主体 12/14 项已完成, 1 项 partial(D3 阶段三 38 处 B1), 1 项持续维护(P5);
-**真正未处理的高优项都在 A 档 4 条"工程规约失约"**, 不在业务代码;
-v1.0.0 全部未启动是预期(Q4 之后);
-**唯一隐藏的硬未处理项是"v0.4.0 没发 release tag"** (B3) — 已在 v0.4.0 commit `d42a16e` 切完;
-**v0.4.2 在 commit `de35b14` 落地 C 档 6/8 骨架, v0.4.3 在 commit `1671e96` 对 6 个骨架做加深**
-(BudgetTracker +4 / ProcessPoolScheduler / prometheus_client swap-in /
-per-tenant namespace / leaderboard HTML+compare / CI workflow 4-job) —
-**8 个新测试文件 + 56 个新测试**仍全过, scanner 双 0 维持;
-**本批 (路线声明) 把原 C3 Gloo 分布式 + B4 D3 TP/PP 占位 2 条移出 v0.4.x 跟踪** —
-v0.4.x 明确为单系统路线, 分布式推到 v1.0.0 之后, 总条数 24 → 23。
+| 文档 | 关注 |
+|---|---|
+| [ROADMAP.md](ROADMAP.md) | "什么时候做" + 整体进度 |
+| [DEFERRED_TASKS.md](DEFERRED_TASKS.md) | "为什么延后" + 重启条件 |
+| [placeholder_registry.md](placeholder_registry.md) | "占位在哪儿" + 95 条登记 |
+| [operations.md](operations.md) | 日常运维 (部署 / 监控 / checkpoint) |

@@ -45,7 +45,7 @@ from typing import List
 
 import pytest
 
-from scripts.check_hardcoding import (
+from scripts.check.hardcoding import (
     SEVERITY_CRITICAL,
     SEVERITY_INFO,
     Exemption,
@@ -54,7 +54,7 @@ from scripts.check_hardcoding import (
     scan_directory,
     scan_file,
 )
-from scripts.check_hardcoding_rules import (
+from scripts.check.hardcoding_rules import (
     DEFAULT_RULES,
     LIST_MAX_ELEMENTS,
     Rule,
@@ -75,7 +75,7 @@ from scripts.ci_config import (
     DEFAULT_CI_SETTINGS,
     load_hardcoding_ci_settings,
 )
-import scripts.check_ci_gates as ci_gates
+import scripts.check.ci_gates as ci_gates
 
 
 # ---------------------------------------------------------------------------

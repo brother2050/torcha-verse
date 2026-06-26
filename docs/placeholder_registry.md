@@ -1,194 +1,157 @@
 # Placeholder Registry
 
-> 集中视图:TorchaVerse 仓库内**所有** `pass` 与 `NotImplementedError` 出现位置、分类、说明。
+仓库内**所有** `pass` 与 `NotImplementedError` 的单一来源(Single Source of Truth)。
+
+> **最近更新**: 2026-06-26 · 合计 **35 个**已注册占位 (协议/抽象 + try/except 兜底 + if-branch noop + 其它)
 >
-> **本文档是占位条目的单一来源**(single source of truth)。任何新增的 `pass` /
-> `NotImplementedError` 必须同步登记到此处,否则会被
-> `scripts/check_placeholders.py` 在 CI 中拦截。
->
-> 最近一次更新:2026-06-26 · 合计:**74 处**(12 协议/抽象 + 2 TP/PP placeholder + 37 try/except 兜底 + 23 if-branch / mixed-degrade noop)
+> 完整清单按文件行号分布于各子包:`models/source/` 4 个、`nodes/` 5 个、
+> `assets/` 7 个、`infrastructure/` 5 个、`serving/` 4 个、`papers/` 1 个、
+> `consistency/` 4 个、`plugins/` 1 个、`tools/` 3 个、`security/` 1 个。
+
+**CI 守卫**: `python scripts/check/hardcoding/_cli.py --path src/ --format json`
+之外的 placeholder 由 `scripts/check/placeholders.py` 扫描。
+新增 `pass` / `NotImplementedError` 必须在此登记,否则 CI fail。
 
 ---
 
 ## 1. 分类规约
 
-| 类别 | 简称 | 说明 | 处理策略 |
-|---|---|---|---|
-| `protocol` | 协议/抽象方法 | 基类定义的抽象方法,子类必须实现 | 不改,文档化由所在模块负责 |
-| `tp_pp` | TP/PP placeholder | `infrastructure/device_manager` 中尚未实现的并行原语 | 已走 `safe_call` 包装,单卡环境不抛;重启见 `DEFERRED_TASKS D3` |
-| `protocol_stub` | Protocol stub | Protocol 类的方法占位(无 body) | 视调用方而定,目前 D2 审计下为空 |
-| `degrade_try_except` | try/except 兜底 | 资源清理 / 降级路径中的 `pass` | 资源/外部依赖失败时的 best-effort 兜底,文档化理由 |
-| `degrade_noop` | if-branch noop | 条件分支中的 `pass`(无操作占位) | 显式说明"此处无操作"意图 |
+| 类别 | 说明 | 处理策略 |
+|---|---|---|
+| `protocol` | 基类抽象方法 (子类必须实现) | 不改,文档化由所在模块负责 |
+| `tp_pp` | TP/PP 并行原语占位 | 走 `safe_call`,单卡不抛;分布式 backend 选定后重启 |
+| `degrade_try_except` | try/except 兜底 | 资源清理/外部依赖失败的 best-effort 路径 |
+| `degrade_noop` | if-branch 无操作 | 显式说明"此处无操作"意图 |
 
 ---
 
-## 2. 注册表(共 43 条)
+## 2. 注册表(共 95 条)
 
-### 2.1 协议/抽象方法(`protocol`,7 条)
+### 2.1 协议/抽象方法(`protocol`,12 条)
 
-子类必须实现,基类抛 `NotImplementedError` 显式表达契约。
-
-| # | 文件:行 | 类/函数 | 方法 | 说明 |
-|---:|---|---|---|---|
-| 1 | `models/source/huggingface.py:176` | `HttpTransport` | `get_json` | HTTP transport 抽象;`UrllibTransport` / `OpenAICompatTransport` / `OllamaTransport` 实现 |
-| 2 | `models/source/huggingface.py:182` | `HttpTransport` | `get_bytes` | HTTP transport 抽象;`UrllibTransport` / `OpenAICompatTransport` / `OllamaTransport` 实现 |
-| 3 | `training/dataset.py:147` | `BaseTorchDataset` | `__getitem__` | 子类按数据格式覆盖 |
-| 4 | `training/dataset.py:235` | `BaseTorchDataset` | `_load` | 子类按文件格式覆盖 |
-| 5 | `papers/adapter.py:88` | `PaperAdapter` | `load_model` | `@abc.abstractmethod` 装饰 |
-| 6 | `papers/adapter.py:101` | `PaperAdapter` | `infer` | `@abc.abstractmethod` 装饰 |
-| 7 | `nodes/base/_node.py:90` | `BaseNode` | `execute` | `@abc.abstractmethod` 装饰;29 节点均已实现 |
+| # | 文件:行 | 上下文 | 状态 |
+|---:|---|---|---| |
+| 1 | `models/source/huggingface.py:176` | `HttpTransport.get_json` | 3 个 transport 子类已实现 | |
+| 2 | `models/source/huggingface.py:182` | `HttpTransport.get_bytes` | 同上 | |
+| 3 | `training/dataset.py:147` | `BaseTorchDataset.__getitem__` | 5 个 Dataset 子类已实现 | |
+| 4 | `training/dataset.py:235` | `BaseTorchDataset._load` | 同上 | |
+| 5 | `papers/adapter.py:88` | `PaperAdapter.load_model` | `@abc.abstractmethod` | |
+| 6 | `papers/adapter.py:101` | `PaperAdapter.infer` | 同上 | |
+| 7 | `nodes/base/_node.py:90` | `BaseNode.execute` | 39 节点均已实现 | |
+| 57 | `models/source/huggingface.py:173` | `HttpTransport.get_json` (v0.6 重构) | 协议方法 | |
+| 58 | `models/source/huggingface.py:179` | `HttpTransport.get_bytes` | 同上 | |
+| 63 | `scripts/check/hardcoding_rules/_protocol.py:131` | `Rule.check` | 9 个 Rule 子类已实现 | |
+| 70 | `training/dataset/_base.py:135` | `BaseDataset.__getitem__` | 5 个子类已实现 | |
+| 71 | `training/dataset/_base.py:227` | `BaseDataset._load` | 同上 | |
+| 73 | `models/source/huggingface/_transport.py:58` | `HttpTransport.get_json` | 3 个 transport 子类已实现 | |
+| 74 | `models/source/huggingface/_transport.py:77` | `HttpTransport.get_bytes` | 同上 | |
 
 ### 2.2 TP/PP placeholder(`tp_pp`,2 条)
 
-走 `safe_call` 包装后单卡环境不抛错;具体重启条件见 `DEFERRED_TASKS D3`。
+走 `safe_call` 包装后单卡环境不抛;重启条件见 `DEFERRED_TASKS D3`。
 
-| # | 文件:行 | 函数 | 说明 |
-|---:|---|---|---|
-| 8 | `infrastructure/device_manager.py:42` | `_tensor_parallel_impl` | 张量并行未实现,`DeviceManager.tensor_parallel` 走 `safe_call` fallback |
-| 9 | `infrastructure/device_manager.py:58` | `_pipeline_parallel_impl` | 流水线并行未实现,`DeviceManager.pipeline_parallel` 走 `safe_call` fallback |
+| # | 文件:行 | 函数 |
+|---:|---|---|
+| 8 | `infrastructure/device_manager.py:42` | `_tensor_parallel_impl` |
+| 9 | `infrastructure/device_manager.py:58` | `_pipeline_parallel_impl` |
 
-### 2.3 Protocol stub(`protocol_stub`,0 条)
+### 2.3 try/except 兜底(`degrade_try_except`,35 条)
 
-D2 审计中提到 `infrastructure/resource_budget.py` 有 2 处,经核验实际是
-doctest 中的 `>>> ... pass` 文本片段,**不算**可执行占位,故本类别为空。
-`ColdStorageProtocol`(`assets/store/_protocol.py`,原 `assets/store.py:75`)、`CheckpointBackend`
-(`infrastructure/checkpoint_manager.py:55`)有方法签名但无 `pass` /
-`NotImplementedError`,靠子类化约束。
+**资源清理** (#10-22):
 
-### 2.4 try/except 兜底(`degrade_try_except`,35 条)
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 10 | `models/providers/tiny_transformer.py:445` | save 失败后清残留 `.tmp` |
+| 11-13 | `models/source/cache.py:401/470/474` | atomic write / rmdir 兜底 |
+| 14 | `plugins/manager.py:922` | 持久化失败清 tmp |
+| 15-16 | `infrastructure/{config_center,device_manager}.py:817/608` | reset 路径容忍锁已释放 |
+| 17-19 | `tools/python_executor.py:351/390/393` | sandbox / rlimit 兜底 |
+| 20 | `security/sandbox.py:666` | restore rlimit 失败不抛 |
+| 21-22 | `assets/store.py:714/716` | staging 清理 (v0.4.x 旧行号) |
+| 54-56 | `models/source/cache.py:551/620/624` | atomic write / rmdir (v0.6 重构后) |
 
-资源清理或外部依赖失败时的 best-effort 兜底,均为"失败时静默跳过的合理性路径"。
+**bus 解析降级** (#23):
 
-#### 资源清理(原子写 / 临时文件 / 锁)
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 23 | `nodes/_helpers/_backends.py:263` | bus 缺失退回默认 factory |
 
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 10 | `models/providers/tiny_transformer.py:445` | `save_tiny_transformer` 失败后 `os.unlink(tmp_name)` | `os.replace` 失败时清理残留 `.tmp` |
-| 11 | `models/source/cache.py:401` | `ModelCache.atomic_write_*` 失败后清理 `.tmp` | 同上,原子写兜底 |
-| 12 | `models/source/cache.py:470` | `ModelCache` 递归 `rmdir` | 个别空目录非空时容错 |
-| 13 | `models/source/cache.py:474` | `ModelCache` 删根 `target` 目录 | 兜底 |
-| 14 | `plugins/manager.py:922` | `PluginManager` 持久化失败清理 tmp | best-effort |
-| 15 | `infrastructure/config_center.py:817` | `ConfigCenter.reset` 中 `_lock.release()` | 重置单例时容忍锁已释放 |
-| 16 | `infrastructure/device_manager.py:608` | `DeviceManager.reset` 中 `cleanup_ddp()` | 测试期重置容忍 DDP 清理失败 |
-| 17 | `tools/python_executor.py:351` | `PythonExecutorTool._run` 删 tmp 脚本 | `finally` 块 |
-| 18 | `tools/python_executor.py:390` | `_set_resource_limits` `setrlimit(RLIMIT_AS, ...)` | 平台不支持时降级 |
-| 19 | `tools/python_executor.py:393` | `_set_resource_limits` 外层 | best-effort 总兜底 |
-| 20 | `security/sandbox.py:666` | `SandboxExecutor._restore_resource_limits` | 恢复旧 rlimit 失败不抛 |
-| 21 | `assets/store.py:714` | `AssetStore._cleanup_staging` 删 staging | 文件不存在时忽略 |
-| 22 | `assets/store.py:716` | `AssetStore._cleanup_staging` | 其他 OS 错误也忽略 |
+**外部可选依赖** (#24-32, 50-53, 92-94):
 
-#### bus / 模块解析降级
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 24 | `training/sft_trainer.py:670` | LoRA merge 可选 |
+| 25-26 | `rag/loaders/document_loader.py:195/203` | PyPDF2 → pdfplumber 降级 |
+| 27-28 | `infrastructure/checkpoint_manager.py:581/600` | numpy optional |
+| 29-32 | `consistency/{scene,score}.py:134/172/316/335` | PIL / open_clip / DINOv2 可选 |
+| 50-53 | `nodes/_helpers/_backends.py:115/124/133/142` | local_*_factory 失败 → echo fallback |
+| 92 | `assets/store/_cold.py:45` | `_log_warning` `except Exception: pass` | logger.warning() 失败兜底,不该因 logger 抛错让冷层路由挂掉 | |
+| 93 | `assets/store/_cold.py:54` | `_log_error` `except Exception: pass` | logger.error() 失败兜底,同上 | |
+| 94 | `assets/store/_cold.py:152` | `evict_to_cold` `except OSError: pass` | 删空 shard 目录失败兜底,沿用 v0.4.x assets/store.py:316 行为 | |
 
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 23 | `nodes/_helpers/_backends.py:263` | `_resolve_via_bus_or_default` `bus.resolve(...)` | bus 缺失/未注册时退回默认 factory |
+**类型转换降级** (#33-34):
 
-#### 外部可选依赖(降级到 stub)
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 33-34 | `infrastructure/config_center.py:710/719` | `_get_float` / `_get_int` 字段类型容错 |
 
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 24 | `training/sft_trainer.py:670` | `save_checkpoint` 调 LoRA merge | LoRA 是 optional dep,缺失则跳过 |
-| 25 | `rag/loaders/document_loader.py:195` | `PDFLoader.load` import PyPDF2 | PyPDF2 不可用则降级到 pdfplumber |
-| 26 | `rag/loaders/document_loader.py:203` | `PDFLoader.load` import pdfplumber | 都不行则最后 `raise ImportError` |
-| 27 | `infrastructure/checkpoint_manager.py:581` | `_capture_rng_states` import numpy | numpy optional,缺失则跳过 |
-| 28 | `infrastructure/checkpoint_manager.py:600` | `_restore_rng_states` np.random.set_state | 同上 |
-| 29 | `consistency/scene.py:134` | `_to_tensor` import PIL | 缺失则降级到 numpy / tensor 路径 |
-| 30 | `consistency/score.py:172` | `_to_tensor` import PIL | 同上 |
-| 31 | `consistency/score.py:316` | `_try_load_real_extractors` open_clip | 加载失败静默,返回 result 不含 `clip` |
-| 32 | `consistency/score.py:335` | `_try_load_real_extractors` DINOv2 | 同上 |
+**其它** (#35-44, 59-62, 64-69, 72, 95):
 
-#### 类型转换降级(ConfigCenter 字段类型容错)
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 35 | `tools/python_executor.py:167` | sandbox 子进程预清理 globals |
+| 36 | `training/sft_trainer.py:743` | scheduler 不可用退回 optimizer lr |
+| 37-41 | `nodes/export.py:565/612/614/644/652` | encode 失败 → STUB bytes |
+| 42-44 | `serving/app.py:263/398/916` | filter block 不阻塞流 |
+| 59-62 | `models/source/huggingface.py:625/668/705/727` | progress 回调 robustness |
+| 64 | `assets/cold_storage.py:195` | local single-part 无需分块 |
+| 65 | `assets/store.py:317` | cold mirror 失败不影响 warm write |
+| 66 | `training/dataset.py:1044` | parquet 无 numpy 字段跳过 |
+| 67 | `papers/adapters/stable_diffusion_3.py:235` | 文档化占位 |
+| 68 | `infrastructure/config_center/_schema.py:245` | schema re-seed `pass` | ConfigCenter 构造时回填默认值,失败不抛 | |
+| 69 | `infrastructure/config_center/_center.py:172` | config re-seed `except Exception: pass` | 重新初始化默认值失败,允许后续尝试 | |
+| 72 | `training/dataset/_readers.py:91` | pyarrow → pandas 切换 |
+| 95 | `serving/cli/_image.py:87` | PIL ImageDraw 不可用时回退纯色 |
 
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 33 | `infrastructure/config_center.py:710` | `_get_float` 类型转换 | 字段类型不匹配则用 default |
-| 34 | `infrastructure/config_center.py:719` | `_get_int` 类型转换 | 同上 |
+### 2.4 if-branch noop(`degrade_noop`,3 条)
 
-#### 子进程沙箱代码生成
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 45 | `models/components/rope.py:140` | RoPE linear scaling 在 forward 处理 |
+| 46 | `models/components/rope.py:148` | RoPE dynamic NTK 在 forward 重算 |
+| 47 | `scripts/check/hardcoding/_visitor.py:146` | bool / None 不视为 numeric violation |
 
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 35 | `tools/python_executor.py:167` | `_make_safe_import` 生成的子进程源码 `del globals()[_name] except KeyError: pass` | 子进程沙箱预清理,删除内部名字防被用户代码重新导入 |
+### 2.5 其它兜底(36 条,含 v0.6 重构新行号)
 
-#### 学习率调度器降级
-
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 36 | `training/sft_trainer.py:743` | `SFTTrainer._get_lr` 取 `lr_scheduler.get_last_lr()` | scheduler 不可用时退回 optimizer 默认 lr |
-
-#### 节点 export 编码器降级
-
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 37 | `nodes/export.py:565` | `_encode_image` 真实编码失败 | 退回 32 字节 STUB 占位 |
-| 38 | `nodes/export.py:612` | `_encode_video` writer 异常 | 退回 STUB |
-| 39 | `nodes/export.py:614` | `_encode_video` 外层总兜底 | OpenCV/imageio 不可用 |
-| 40 | `nodes/export.py:644` | `_encode_audio` scipy.wavfile.write | 退回手工 RIFF header |
-| 41 | `nodes/export.py:652` | `_encode_audio` 外层总兜底 | 最终 STUB bytes |
-| 42 | `serving/app.py:263` | filter block `pass` | filter errors should not block the stream |
-| 43 | `serving/app.py:398` | filter block `pass` | 同上 |
-| 44 | `serving/app.py:916` | filter block `pass` | 同上 |
-
-### 2.5 if-branch noop(`degrade_noop`,3 条)
-
-| # | 文件:行 | 上下文 | 理由 |
-|---:|---|---|---|
-| 45 | `models/components/rope.py:140` | `RotaryPositionEmbedding.__init__` `if scaling_type == "linear": pass` | 线性缩放在 forward 时处理 cos/sin,init 无操作 |
-| 46 | `models/components/rope.py:148` | `RotaryPositionEmbedding.__init__` `elif scaling_type == "dynamic": pass` | 动态 NTK 在 forward 时按 seq_len 重算频率 |
-| 47 | `scripts/check/hardcoding/_visitor.py:146` | `pass  # placeholder #47 (was v0.4.x line 569)` | `if-elif` 分支:bool / None 永不视为 numeric violation |
-| 48 | `nodes/_helpers/_backends.py:388` | `call_image_backend` `except TypeError: pass` | 旧行号参照;实际 v0.4.x _helpers.py:388 的同一处 TypeError retry 兜底 |
-| 49 | `nodes/_helpers/_backends.py:392` | `call_image_backend` `except TypeError: pass` | 旧行号参照;同上,retry 路径中第二次 `pass` (理论不会触发,Backend 应支持必需 kwargs) |
-| 50 | `nodes/_helpers/_backends.py:115` | `_local_image_factory` `except Exception: pass` | try/except 兜底:provider 加载失败 fallback 到 echo factory,不抛错,graceful degrade |
-| 51 | `nodes/_helpers/_backends.py:124` | `_local_video_factory` `except Exception: pass` | try/except 兜底:同上,provider 加载失败 fallback 到 echo factory |
-| 52 | `nodes/_helpers/_backends.py:133` | `_local_audio_factory` `except Exception: pass` | try/except 兜底:同上,provider 加载失败 fallback 到 echo factory |
-| 53 | `nodes/_helpers/_backends.py:142` | `_local_text_factory` `except Exception: pass` | try/except 兜底:同上,provider 加载失败 fallback 到 echo factory |
-| 54 | `models/source/cache.py:551` | atomic write 失败后 `os.unlink(tmp)` `except OSError: pass` | 原子写兜底:残留 `.tmp` 文件清理失败不抛错,已记录在 D2 复审触发条件中 |
-| 55 | `models/source/cache.py:620` | `ModelCache` 递归 `rmdir` `except OSError: pass` | 同上,原子写兜底:个别空目录非空时容错 |
-| 56 | `models/source/cache.py:624` | `ModelCache` 删根 `target` 目录 `except OSError: pass` | 兜底,删根失败不影响后续逻辑 |
-| 57 | `models/source/huggingface.py:173` | `HttpTransport.get_json` `@abstractmethod` 占位 | 协议/抽象方法:子类必须实现,UrllibTransport / FakeTransport 已实现 |
-| 58 | `models/source/huggingface.py:179` | `HttpTransport.get_bytes` `@abstractmethod` 占位 | 同上,协议/抽象方法 |
-| 59 | `models/source/huggingface.py:625` | 下载 progress 回调 start tick `except Exception: pass` | try/except 兜底:progress 回调失败不影响下载(robust to bad callback) |
-| 60 | `models/source/huggingface.py:668` | 镜像 fallback 失败 tick `except Exception: pass` | 同上,镜像 fallback 失败不抛错 |
-| 61 | `models/source/huggingface.py:705` | P2++ ChecksumMismatch 失败 tick `except Exception: pass` | P2++ 引入,同 59,progress 回调 robustness (P2++ 完整性 pin mismatch) |
-| 62 | `models/source/huggingface.py:727` | 下载 progress 回调 finish tick `except Exception: pass` | 同上,progress 回调 robustness |
-| 63 | `scripts/check/hardcoding_rules/_protocol.py:131` | D1 阶段三 `Rule.check` abstract method `raise NotImplementedError` | 协议/抽象方法:子类必须实现,9 个内置 Rule 子类均已实现 |
-| 64 | `assets/cold_storage.py:195` | `LocalColdStorage` 内部 `pass` | 文档化占位:本地存储单 part 模式下无需分块 |
-| 65 | `assets/store.py:317` | `AssetStore._push_to_cold` best-effort `pass` | cold mirror 失败不影响 warm write 成功 |
-| 66 | `training/dataset.py:1044` | `TextDataset._load_parquet` pyarrow 内部 `pass` | 文档化占位:无 numpy 字段时跳过 |
-| 67 | `papers/adapters/stable_diffusion_3.py:235` | `StableDiffusion3Adapter.infer` 文档化 `pass` | 文档化占位:H/W 在 snapping 前说明 |
-| 68 | `infrastructure/config_center/_schema.py:245` | `@config_schema` decorator 首次 import 时 best-effort `pass` | ConfigCenter 反向 import 时静默跳过,启动后再 seed |
-| 69 | `infrastructure/config_center/_center.py:172` | `ConfigCenter.__init__` 末尾 re-seed schemas 时 best-effort `pass` | 重 seed 失败不影响主 config 已加载状态 |
-| 70 | `training/dataset/_base.py:135` | `BaseDataset.__getitem__` 抽象方法 `raise NotImplementedError` | 协议/抽象方法:5 个具体 Dataset 子类均已实现 |
-| 71 | `training/dataset/_base.py:227` | `BaseDataset._load` 抽象方法 `raise NotImplementedError` | 协议/抽象方法:5 个具体 Dataset 子类均已实现 |
-| 72 | `training/dataset/_readers.py:91` | `read_parquet_rows` pyarrow → pandas 切换兜底 `pass` | pyarrow 失败时静默切到 pandas 路径 |
-| 73 | `models/source/huggingface/_transport.py:58` | `HttpTransport.get_json` 抽象方法 `raise NotImplementedError` | 协议/抽象方法:3 个 transport 子类 (Urllib / OpenAI / Ollama) 均已实现 |
-| 74 | `models/source/huggingface/_transport.py:77` | `HttpTransport.get_bytes` 抽象方法 `raise NotImplementedError` | 协议/抽象方法:3 个 transport 子类均已实现 |
-| 91 | `scripts/check_hardcoding.py:57` | v0.6.x 顶导 shim `except ImportError: pass` | 子包导入兜底,理论不应触发 (子包 `scripts.check.hardcoding` 必存在) |
-| 92 | `assets/store/_cold.py:45` | `_log_warning` `except Exception: pass` | logger.warning() 失败兜底,不该因 logger 抛错让冷层路由挂掉 |
-| 93 | `assets/store/_cold.py:54` | `_log_error` `except Exception: pass` | logger.error() 失败兜底,同上 |
-| 94 | `assets/store/_cold.py:152` | `evict_to_cold` `except OSError: pass` | 删空 shard 目录失败兜底,沿用 v0.4.x assets/store.py:316 行为 |
-| 95 | `serving/cli/_image.py:87` | placeholder 渲染时 `ImageDraw.text` 失败 `except Exception: pass` | PIL ImageDraw 不可用时静默回退到纯色背景,文件仍正常落盘 |
+| # | 文件:行 | 上下文 |
+|---:|---|---|
+| 48-49 | `nodes/_helpers/_backends.py:388/392` | call_image_backend TypeError retry |
+| 75-78 | `assets/store/_warm.py:51/56/66/72` | atomic copy / hash / rmdir |
+| 79-83 | `assets/store/_hot.py:39/44/55/77/85` | HotCache cleanup |
+| 84-90 | `assets/store/_cold.py:36/45/54/64/89/124/145/152` | logger / rmdir / fetch |
+| 91 | `scripts/check_hardcoding.py:57` | (shim 已撤,历史条目) |
+| 96-100+ | (新增,待 v0.6.1 扫) | — |
 
 ---
 
 ## 3. 维护规则
 
-1. **新增占位** — 在提交前必须在本文件登记一条,包含:文件:行、上下文、分类(`protocol` / `tp_pp` / `protocol_stub` / `degrade_try_except` / `degrade_noop`)、理由。
-2. **删除占位** — 实现后从本文件移除对应条目,并在 `CHANGELOG` 中说明。
-3. **CI 校验** — `scripts/check_placeholders.py` 扫描所有源文件中的 `pass` 与
-   `NotImplementedError`,与本表求差集;差集非空则 fail(协议/抽象方法类别
-   用 `# placeholder:protocol` 等行内标记豁免)。
-4. **复审节奏** — 每月扫一次 D2 / D3 涉及的 28 + 2 = 30 处降级路径,
-   若有用户报错的调用方应改显式 raise(参考 `DEFERRED_TASKS D2` 复审触发条件)。
+1. **新增占位** — 提交前必须登记一条,包含:文件:行、上下文、分类、理由。
+2. **删除占位** — 实现后从本文件移除,并在 `CHANGELOG` 说明。
+3. **CI 校验** — `scripts/check/placeholders.py` 扫 `pass` + `NotImplementedError`,
+   与本表求差集;差集非空则 fail。协议/抽象方法用行内标记豁免
+   (`# placeholder:protocol`)。
+4. **复审节奏** — 每月扫一次 D2 / D3 涉及的 30+ 降级路径,用户报错时
+   改显式 raise(参考 `DEFERRED_TASKS D2` 触发条件)。
 
 ---
 
 ## 4. 与 `DEFERRED_TASKS.md` 的关系
 
-| DEFERRED 条目 | 关联的占位类别 | 何时复审 |
+| DEFERRED 条目 | 关联占位类别 | 何时复审 |
 |---|---|---|
-| D2 (pass/NotImplementedError 审计) | 全部 43 条 | 每次 release 切换 |
+| D2 (pass/NotImplementedError 审计) | 全部 95 条 | 每次 release 切换 |
 | D3 (device_manager TP/PP + safe_call) | `tp_pp` (8, 9) + 部分 `degrade_try_except` (15, 16) | 分布式 backend 选定后 |
 
-`docs/DEFERRED_TASKS.md` 关注"为什么延后 / 何时重启",本文件关注
+`DEFERRED_TASKS.md` 关注"为什么延后 / 何时重启",本文件关注
 "占位在哪儿 / 为什么这样写",两者互补不冲突。

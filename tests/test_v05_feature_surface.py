@@ -406,7 +406,7 @@ class TestHardcodingRules:
 
     def test_hardcoded_switch_fires_in_body(self):
         import ast
-        from scripts.check_hardcoding_rules import (
+        from scripts.check.hardcoding_rules import (
             HardcodedSwitchRule, RuleContext,
         )
         rule = HardcodedSwitchRule()
@@ -423,7 +423,7 @@ class TestHardcodingRules:
 
     def test_hardcoded_switch_quiet_in_init(self):
         import ast
-        from scripts.check_hardcoding_rules import (
+        from scripts.check.hardcoding_rules import (
             HardcodedSwitchRule, RuleContext,
         )
         rule = HardcodedSwitchRule()
@@ -440,7 +440,7 @@ class TestHardcodingRules:
 
     def test_api_key_pattern_fires(self):
         import ast
-        from scripts.check_hardcoding_rules import (
+        from scripts.check.hardcoding_rules import (
             ApiKeyPatternRule, RuleContext,
         )
         rule = ApiKeyPatternRule()
@@ -455,7 +455,7 @@ class TestHardcodingRules:
 
     def test_api_key_pattern_quiet_on_normal(self):
         import ast
-        from scripts.check_hardcoding_rules import (
+        from scripts.check.hardcoding_rules import (
             ApiKeyPatternRule, RuleContext,
         )
         rule = ApiKeyPatternRule()
@@ -469,5 +469,5 @@ class TestHardcodingRules:
         assert not rule.check(ctx), "normal string should not fire"
 
     def test_default_rules_count(self):
-        from scripts.check_hardcoding_rules import DEFAULT_RULES
+        from scripts.check.hardcoding_rules import DEFAULT_RULES
         assert len(DEFAULT_RULES) == 9

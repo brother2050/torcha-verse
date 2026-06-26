@@ -89,7 +89,11 @@ from ._ast_helpers import (
     is_structural_init,
     looks_like_path,
 )
-from ._cli import main
+# Note: ``main`` is imported lazily at module bottom to avoid a
+# circular import -- ``_cli.main`` itself imports from
+# ``scripts.check.hardcoding``, so importing it eagerly would
+# deadlock the initialisation of this package.  Callers should
+# still use ``from scripts.check.hardcoding import main``.
 from ._constants import (
     SEVERITY_CRITICAL,
     SEVERITY_INFO,
@@ -143,3 +147,19 @@ __all__ = [
     "ViolationCandidate",
     "get_rule",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lazy ``main`` import -- see the note near the top of the file.
+# We expose ``main`` at the package level so callers can keep
+# using ``from scripts.check.hardcoding import main`` while the
+# implementation lives in :mod:`._cli` and imports the public
+# surface from this very module.  A module-level ``__getattr__``
+# resolves the symbol on first access without re-triggering the
+# circular import during package initialisation.
+# ---------------------------------------------------------------------------
+def __getattr__(name):  # pragma: no cover - PEP 562 lazy import
+    if name == "main":
+        from . import _cli as _cli_mod
+        return _cli_mod.main
+    raise AttributeError(f"module 'scripts.check.hardcoding' has no attribute {name!r}")
