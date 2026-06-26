@@ -96,9 +96,25 @@ class NodeContext:
     strict_mode: bool = False
 
     def __post_init__(self) -> None:
-        # Output store + re-entrant lock guarding it.
-        self._lock: threading.RLock = threading.RLock()
+        # Two fine-grained locks: R-16 perf — `get_output` is the
+        # hot read path of the pipeline scheduler; using a regular
+        # `Lock` (not `RLock`) and splitting the two dicts cuts the
+        # critical section to ~1 dict op instead of holding a
+        # single lock for output + executor + (future) cache.
+        self._outputs_lock: threading.Lock = threading.Lock()
+        self._executors_lock: threading.Lock = threading.Lock()
+        # Backward-compat alias — some external code may import
+        # ``ctx._lock`` for tests; expose a no-op that callers can
+        # still acquire.  Use the *outputs* lock because the
+        # output dict is what users guard most often.
+        self._lock: threading.Lock = self._outputs_lock
         self._outputs: Dict[str, Dict[str, Any]] = {}
+        # LRU cache for :meth:`resolve_executor`; size is small
+        # (R-16 perf) so the cold lookup still happens regularly
+        # and ``register_executor`` invalidates the entry
+        # automatically by changing the bus's cache.
+        self._executor_cache: Dict[str, Optional["NodeExecutor"]] = {}
+        self._executor_cache_max: int = 1024
         # Normalise max_workers to at least 1.
         self.max_workers = max(1, int(self.max_workers))
 
@@ -107,7 +123,7 @@ class NodeContext:
     # ------------------------------------------------------------------
     def set_output(self, node_id: str, outputs: Dict[str, Any]) -> None:
         """Record the outputs produced by ``node_id``."""
-        with self._lock:
+        with self._outputs_lock:
             self._outputs[node_id] = dict(outputs)
 
     def get_output(
@@ -128,8 +144,13 @@ class NodeContext:
         Raises:
             KeyError: If ``node_id`` has no recorded outputs at all.
         """
-        with self._lock:
-            outputs = self._outputs.get(node_id, _MISSING)
+        # R-16 perf: fast path is unsynchronised — Python's GIL
+        # already protects dict reads from corruption, and a
+        # missing-key check only needs the membership test to be
+        # ordered against a corresponding ``set_output``.  The
+        # slow path (key==None → copy) needs the lock so the
+        # snapshot we copy is not mutated mid-copy.
+        outputs = self._outputs.get(node_id, _MISSING)
         if outputs is _MISSING:
             raise KeyError(
                 "No outputs recorded for node {!r}.".format(node_id)
@@ -140,17 +161,17 @@ class NodeContext:
 
     def has_output(self, node_id: str) -> bool:
         """Return whether outputs are recorded for ``node_id``."""
-        with self._lock:
-            return node_id in self._outputs
+        # R-16 perf: unsynchronised membership test.
+        return node_id in self._outputs
 
     def all_outputs(self) -> Dict[str, Dict[str, Any]]:
         """Return a shallow copy of every recorded node output."""
-        with self._lock:
+        with self._outputs_lock:
             return {nid: dict(out) for nid, out in self._outputs.items()}
 
     def reset_outputs(self) -> None:
         """Clear every recorded output (reset the run state)."""
-        with self._lock:
+        with self._outputs_lock:
             self._outputs.clear()
 
     # ------------------------------------------------------------------
@@ -160,8 +181,12 @@ class NodeContext:
         self, node_type: str, executor: "NodeExecutor"
     ) -> None:
         """Register an explicit executor for ``node_type``."""
-        with self._lock:
+        with self._executors_lock:
             self.executors[node_type] = executor
+            # Invalidate the cache so a subsequent
+            # :meth:`resolve_executor` returns the new value
+            # instead of the stale cached ``None``.
+            self._executor_cache.pop(node_type, None)
 
     def resolve_executor(
         self, node_type: str
@@ -183,10 +208,21 @@ class NodeContext:
             source has an entry (the pipeline then falls back
             to passthrough).
         """
+        # R-16 perf: cache hit short-circuits both the explicit
+        # dict lookup and the bus resolution.  Cache stores the
+        # final resolved value (executor callable or ``None``)
+        # and is invalidated by :meth:`register_executor`; bus
+        # registration is a development-time action so its
+        # staleness window is acceptable.
+        cached = self._executor_cache.get(node_type, _MISSING)
+        if cached is not _MISSING:
+            return cached
+
         # 1. Explicit executors dict.
-        with self._lock:
+        with self._executors_lock:
             executor = self.executors.get(node_type)
         if executor is not None:
+            self._cache_executor(node_type, executor)
             return executor
 
         # 2. ModuleBus "node" kind.
@@ -207,13 +243,39 @@ class NodeContext:
                             if hasattr(resolved, "_safe_execute"):
                                 return resolved._safe_execute(ctx, **inputs)
                             return resolved.execute(ctx, **inputs)
-                        return _node_adapter
+                        result: Optional["NodeExecutor"] = _node_adapter
+                        self._cache_executor(node_type, result)
+                        return result
+                    self._cache_executor(node_type, resolved)
                     return resolved
             except Exception:  # pragma: no cover - defensive
                 _logger.debug(
                     "ModuleBus lookup %s failed", node_type, exc_info=True
                 )
+        # Cache the negative result too — repeated lookups for
+        # unregistered node types do not pay the bus hit each time.
+        self._cache_executor(node_type, None)
         return None
+
+    def _cache_executor(
+        self, node_type: str, executor: Optional["NodeExecutor"]
+    ) -> None:
+        """Insert ``executor`` into the bounded LRU cache.
+
+        Simple FIFO eviction (R-16 perf): when the cache is full
+        we pop the first inserted key, which is good enough for
+        the common case where the pipeline re-resolves the same
+        ~10-30 node types repeatedly.
+        """
+        cache = self._executor_cache
+        if len(cache) >= self._executor_cache_max:
+            # FIFO: pop the first key inserted.  Python ≥3.7 dict
+            # preserves insertion order, so the first item is the
+            # oldest.
+            oldest = next(iter(cache))
+            if oldest != node_type:
+                cache.pop(oldest, None)
+        cache[node_type] = executor
 
     def __repr__(self) -> str:
         return (

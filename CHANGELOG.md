@@ -27,6 +27,25 @@
 | R-15 | `nodes/_helpers` 拆 | 710 | 5 |
 | R-19 | 撤 shim + MD 重写 | - | - |
 
+## [v0.6.1] - 2026-06-26
+
+### R-16 — 性能优化
+
+优化 `NodeContext` / `NodeRegistry` hot path,微基准:
+- `get_output` (100k): **85 → 66 ms (-23%)** — 拆 fast path 无锁
+- `resolve_executor` cache hit (100k): **255 → 22 ms (-91%)** — LRU 1024
+- `resolve_executor` mixed 5 types (100k): **255 → 66 ms (-74%)**
+- `registry.list` (1k): **39 → 0.4 ms (-99%)** — 缓存到 register/unregister
+- `set_output` (100k): **87 → 84 ms** — `RLock` 改 `Lock`
+
+变更:
+- `nodes/base/_context.py` — `RLock` 改双 `Lock` (`_outputs_lock` / `_executors_lock`),
+  保留 `_lock` 兼容 alias,`get_output` / `has_output` 走 GIL 保护无锁 fast path,
+  `resolve_executor` 加 FIFO 1024 LRU,`register_executor` 失效缓存,
+  负结果也缓存 (unregistered type 不再每次打 bus)
+- `nodes/base/_registry.py` — `list()` 缓存到 `register` / `unregister`
+- `tests/test_r16_perf.py` — 11 个新测试 (并发不破 + 缓存 + 失效 + 负缓存 + 驱逐)
+
 ### R-19 — 撤 shim + MD 重写
 
 **撤 shim** (5 个):

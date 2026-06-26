@@ -47,6 +47,14 @@ class NodeRegistry:
 
     def __init__(self, bus: Optional[ModuleBus] = None) -> None:
         self._bus: ModuleBus = bus if bus is not None else ModuleBus()
+        # R-16 perf — `list()` walks both the bus and the
+        # ``_NODE_CLASSES`` index every call; pipeline
+        # `torcha models` / `__repr__` / healthcheck call it
+        # frequently, so cache until any register/unregister
+        # invalidates the snapshot.  Negative lookup (cache miss)
+        # also goes through ``list`` because callers that
+        # re-implement discovery use it as a primitive.
+        self._list_cache: Optional[List[NodeSpec]] = None
 
     @property
     def bus(self) -> ModuleBus:
@@ -57,6 +65,8 @@ class NodeRegistry:
     def register(self, node_class: type[BaseNode]) -> None:
         """Register a node class with this registry's bus."""
         _register_node_class(node_class, bus=self._bus)
+        # R-16 perf: invalidate the cached spec snapshot.
+        self._list_cache = None
 
     # ------------------------------------------------------------------
     def unregister(self, node_type: str) -> bool:
@@ -68,7 +78,10 @@ class NodeRegistry:
         Returns:
             ``True`` if a node was removed, ``False`` otherwise.
         """
-        return _unregister_node_class(node_type, bus=self._bus)
+        removed = _unregister_node_class(node_type, bus=self._bus)
+        if removed:
+            self._list_cache = None
+        return removed
 
     # ------------------------------------------------------------------
     def get(self, node_type: str) -> BaseNode:
@@ -113,9 +126,15 @@ class NodeRegistry:
         instantiating the node, and as a defensive fallback for
         nodes registered in-memory only.
 
+        The result is cached (R-16 perf) until the next
+        :meth:`register` or :meth:`unregister` invalidates it.
+
         Returns:
             A list of :class:`NodeSpec` sorted by ``type``.
         """
+        if self._list_cache is not None:
+            return list(self._list_cache)
+
         specs: List[NodeSpec] = []
         seen: set[str] = set()
 
@@ -138,7 +157,10 @@ class NodeRegistry:
                 seen.add(node_type)
 
         specs.sort(key=lambda s: s.type)
-        return specs
+        # R-16 perf: cache the immutable list (callers must not
+        # mutate it).  Returning a *copy* keeps the cache clean.
+        self._list_cache = specs
+        return list(specs)
 
     # ------------------------------------------------------------------
     def search(self, query: str) -> List[NodeSpec]:
