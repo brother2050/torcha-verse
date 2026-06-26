@@ -15,6 +15,15 @@ Shared state (the rich console, the lazy ``PipelineService``
 singleton, the artefact-savers) lives in
 :mod:`._runtime`.
 
+R-17 — global flags on the root group:
+
+* ``--config PATH``  — project-layer config dir override, applied
+  to :class:`ConfigCenter` before any sub-command runs.
+* ``--log-format {text,json}``  — flip the console log format
+  (rich / plain) to JSON.  Affects all loggers created *after*
+  the flag is processed.
+* ``--log-level LEVEL``  — shortcut for ``configure(console_level=...)``.
+
 Public surface (preserved from v0.4.x / v0.5.x):
 
 * :func:`main` -- CLI entry point (``torcha`` from the shell).
@@ -26,16 +35,18 @@ from __future__ import annotations
 
 import click
 
+from infrastructure.logger import configure as _configure_logging
+
 from ._agent import agent
 from ._audio import audio
 from ._image import image
 from ._info import info, models
 from ._rag import rag
-from ._runtime import _get_service, console, logger
+from ._runtime import _cli_overrides, _get_service, console, logger
 from ._text import text
 from ._video import video
 
-__all__ = ["main", "cli", "console", "logger", "_get_service"]
+__all__ = ["main", "cli", "console", "logger", "_get_service", "_cli_overrides"]
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +54,75 @@ __all__ = ["main", "cli", "console", "logger", "_get_service"]
 # ---------------------------------------------------------------------------
 @click.group()
 @click.version_option(package_name="torcha-verse")
-def cli() -> None:
-    """TorchaVerse -- unified multimodal inference toolkit."""
+@click.option(
+    "--config",
+    "config_dir",
+    type=click.Path(file_okay=False, dir_okay=True),
+    default=None,
+    envvar="TORCHA_CONFIG_DIR",
+    help=(
+        "Override the project-layer config directory.  Equivalent to "
+        "setting the TORCHA_CONFIG_DIR environment variable.  The path "
+        "is validated by ConfigCenter and falls back to the bundled "
+        "defaults when the directory does not exist."
+    ),
+)
+@click.option(
+    "--log-format",
+    "log_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    envvar="TORCHA_LOG_FORMAT",
+    show_default=True,
+    help=(
+        "Console log format.  'json' emits one JSON object per line "
+        "for ELK / Loki / CloudWatch ingestion.  'text' uses the "
+        "default rich / plain format."
+    ),
+)
+@click.option(
+    "--log-level",
+    "log_level",
+    type=click.Choice(
+        ["DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"],
+        case_sensitive=False,
+    ),
+    default=None,
+    envvar="TORCHA_LOG_LEVEL",
+    help=(
+        "Console log level.  Defaults to INFO.  Equivalent to "
+        "configure(console_level=...) on the logger module."
+    ),
+)
+def cli(
+    config_dir: str | None,
+    log_format: str,
+    log_level: str | None,
+) -> None:
+    """TorchaVerse -- unified multimodal inference toolkit.
+
+    R-17: process the global flags here so every sub-command
+    inherits the same config dir and log format.  Sub-commands
+    that need the config dir can call
+    :func:`infrastructure.config_center.ConfigCenter(config_dir=...)`
+    directly, but the central place to read it is this group.
+    """
+    # 1. Logger setup.  Done before any other handler can grab a
+    #    logger so the JSON / text choice sticks.
+    _configure_logging(
+        console_level=log_level or "INFO",
+        json=(log_format.lower() == "json"),
+    )
+
+    # 2. ConfigCenter override.  We do not eagerly instantiate the
+    #    singleton here because some sub-commands (e.g. ``info``)
+    #    never touch configuration; the override is recorded in
+    #    the :data:`_cli_overrides` module dict so ConfigCenter
+    #    picks it up on first access.
+    if config_dir is not None:
+        from pathlib import Path
+        from ._runtime import _cli_overrides
+        _cli_overrides["config_dir"] = Path(config_dir).expanduser().resolve()
 
 
 # Register the sub-groups.

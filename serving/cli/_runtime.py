@@ -22,7 +22,8 @@ These helpers are used by every sub-command in
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from infrastructure.device_manager import DeviceManager
 from infrastructure.logger import get_logger
@@ -40,7 +41,18 @@ __all__ = [
     "_save_audio",
     "_save_video",
     "_print_step",
+    "_cli_overrides",
 ]
+
+
+# ---------------------------------------------------------------------------
+# R-17 — global flag overrides set by the root ``cli`` group.
+# Populated when ``torcha --config <DIR>`` runs, consumed by
+# anything that needs the user-selected config dir (e.g.
+# ``ConfigCenter``).  Kept at module level so any sub-command
+# can read it without touching private state on the group.
+# ---------------------------------------------------------------------------
+_cli_overrides: Dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +68,40 @@ _service: Optional[PipelineService] = None
 
 
 def _get_service() -> PipelineService:
-    """Return a lazily-created :class:`PipelineService` singleton."""
+    """Return a lazily-created :class:`PipelineService` singleton.
+
+    R-17: when the user passed ``--config DIR`` on the root
+    group, the override is stashed in :data:`_cli_overrides` and
+    forwarded to the :class:`ConfigCenter` on first construction.
+    The service is cached for the lifetime of the CLI process so
+    the override applies consistently across sub-commands.
+    """
     global _service
     if _service is None:
+        # Resolve the config-dir override, if any.  We do not
+        # re-read it on every call because the user can only
+        # pass it once on the command line.
+        config_dir = _cli_overrides.get("config_dir")
+        # ``PipelineService`` does not expose a ``config_dir``
+        # constructor argument directly; it constructs
+        # ``ConfigCenter`` itself.  To honour the override we
+        # *pre-create* a ConfigCenter here with the override
+        # applied -- the singleton short-circuits any later
+        # ``ConfigCenter()`` calls.  This is the cleanest way to
+        # keep the existing ``PipelineService`` constructor
+        # signature stable.
+        if config_dir is not None:
+            try:
+                from infrastructure.config_center import ConfigCenter
+                # Touch the singleton with the override.  Subsequent
+                # accesses (including the one inside
+                # ``PipelineService.__init__``) get the same instance.
+                ConfigCenter(config_dir=config_dir)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning(
+                    "Could not honour --config %s; falling back to defaults.",
+                    config_dir,
+                )
         _service = PipelineService()
     return _service
 

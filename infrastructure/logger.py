@@ -17,7 +17,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-__all__ = ["Logger", "get_logger", "set_log_level"]
+__all__ = [
+    "Logger",
+    "get_logger",
+    "set_log_level",
+    "JsonFormatter",
+    "configure",
+]
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -45,17 +52,37 @@ _default_file_level: int = logging.DEBUG
 _default_console_level: int = logging.INFO
 _default_max_bytes: int = 10 * 1024 * 1024  # 10 MB
 _default_backup_count: int = 5
+#: R-17 — when ``True`` the console handler emits one JSON object per
+#: line instead of the rich / plain text format.  Off by default
+#: because humans usually read the console; production services flip
+#: it on with ``configure(json=True)`` or ``--log-format json`` on
+#: the CLI.
+_default_console_json: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Rich console handler (optional dependency)
 # ---------------------------------------------------------------------------
 def _make_console_handler(level: int) -> logging.Handler:
-    """Create a console handler, preferring :mod:`rich` when available."""
+    """Create a console handler, preferring :mod:`rich` when available.
+
+    R-17: when the module-level ``_default_console_json`` flag is
+    set, a :class:`JsonFormatter` is used instead of the rich
+    output.  RichHandler is still preferred in the default
+    (text) mode because it is the prettier human format.
+    """
+    if _default_console_json:
+        # Plain stream handler -- JSON is structured text and
+        # ``rich`` markup would mangle the quoted fields.
+        handler: logging.Handler = logging.StreamHandler(stream=sys.stderr)
+        handler.setLevel(level)
+        handler.setFormatter(JsonFormatter())
+        return handler
+
     try:
         from rich.logging import RichHandler
 
-        handler: logging.Handler = RichHandler(
+        handler = RichHandler(
             level=level,
             show_time=True,
             show_level=True,
@@ -72,6 +99,74 @@ def _make_console_handler(level: int) -> logging.Handler:
             logging.Formatter(_FILE_FORMAT, datefmt=_DATE_FORMAT)
         )
     return handler
+
+
+# ---------------------------------------------------------------------------
+# JSON formatter (R-17)
+# ---------------------------------------------------------------------------
+class JsonFormatter(logging.Formatter):
+    """Render :class:`logging.LogRecord` objects as one JSON line.
+
+    Used by ``configure(json=True)`` and the ``--log-format json``
+    CLI flag so the project's logs are easy to ship to ELK / Loki
+    / CloudWatch without a custom parser.
+
+    Emitted fields (always present):
+        ``ts`` (ISO 8601 UTC), ``level``, ``logger``, ``msg``.
+
+    Conditional fields:
+        ``exc_info`` (textual traceback when ``exc_info`` is set),
+        ``module`` / ``func`` (caller location), ``request_id``
+        (when the record carries an ``extra={"request_id": ...}``
+        keyword -- the FastAPI request-id middleware does this in
+        v0.6.1).
+    """
+
+    # Standard :mod:`logging` attributes that we **don't** want to
+    # leak into the JSON dict.  Anything else in ``record.__dict__``
+    # is treated as caller-provided structured data.
+    _RESERVED = {
+        "name", "msg", "args", "levelname", "levelno", "pathname",
+        "filename", "module", "exc_info", "exc_text", "stack_info",
+        "lineno", "funcName", "created", "msecs", "relativeCreated",
+        "thread", "threadName", "processName", "process", "message",
+        "asctime", "taskName",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Serialise ``record`` to a JSON string."""
+        from datetime import datetime, timezone
+
+        payload: Dict[str, Any] = {
+            "ts": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        if record.module:
+            payload["module"] = record.module
+        if record.funcName:
+            payload["func"] = record.funcName
+        # Caller-supplied structured fields (excluding reserved ones).
+        for key, value in record.__dict__.items():
+            if key in self._RESERVED or key.startswith("_"):
+                continue
+            if key in payload:
+                # Don't overwrite the canonical fields if a caller
+                # accidentally uses the same name.
+                continue
+            payload[key] = value
+        try:
+            return json.dumps(payload, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return json.dumps(
+                {"ts": payload["ts"], "level": payload["level"],
+                 "logger": payload["logger"], "msg": repr(record.msg)}
+            )
 
 
 def _make_file_handler(
@@ -99,6 +194,7 @@ def configure(
     file_level: Union[str, int] = "DEBUG",
     max_bytes: int = _default_max_bytes,
     backup_count: int = _default_backup_count,
+    json: bool = False,
 ) -> None:
     """Configure global logging defaults.
 
@@ -109,14 +205,43 @@ def configure(
         file_level: Minimum level for file output.
         max_bytes: Maximum size of a log file before rotation.
         backup_count: Number of rotated backup files to keep.
+        json: R-17 -- when ``True`` the console handler emits one
+            JSON object per line.  Rich output is disabled in this
+            mode because markup would mangle the quoted fields.
     """
     global _default_log_dir, _default_console_level, _default_file_level
     global _default_max_bytes, _default_backup_count
+    global _default_console_json
     _default_log_dir = Path(log_dir).expanduser().resolve() if log_dir else None
     _default_console_level = _coerce_level(console_level)
     _default_file_level = _coerce_level(file_level)
     _default_max_bytes = max_bytes
     _default_backup_count = backup_count
+    _default_console_json = bool(json)
+    # R-17: when the JSON flag toggles, the *existing* console
+    # handlers (attached to previously configured loggers) need to
+    # be reformatted in place.  The simpler approach is to flush
+    # the cache so the next ``get_logger`` call picks up the new
+    # setting -- but that would break running code that already
+    # holds a reference to the old logger.  The compromise is to
+    # mutate the formatter on each existing console handler in
+    # place; rotating file handlers are left alone because the
+    # text format is friendlier for ``tail -f``.
+    if _configured_loggers:
+        for logger in _configured_loggers.values():
+            for handler in logger.handlers:
+                if isinstance(handler, RotatingFileHandler):
+                    continue
+                if _default_console_json:
+                    handler.setFormatter(JsonFormatter())
+                else:
+                    # Restore the rich / plain text formatter that
+                    # ``_make_console_handler`` would have picked.
+                    handler.setFormatter(
+                        logging.Formatter(
+                            "%(message)s", datefmt=_DATE_FORMAT
+                        )
+                    )
 
 
 def _coerce_level(level: Union[str, int]) -> int:
