@@ -30,11 +30,28 @@ class FileDownload:
     Attributes:
         name: Filename (e.g. ``"config.json"``).
         data: File contents as bytes.
-        sha256: Optional hex-encoded SHA-256 of ``data``.  When the
-            source provides one (HF ``x-linked-etag`` / ``x-repo-commit``
-            / ``ETag``), it is preferred; otherwise the adapter hashes
-            locally.  Defaults to ``""`` for backward compatibility
-            with the v0.4.x on-disk cache format.
+        sha256: Hex-encoded SHA-256 digest **of ``data``** --
+            always computed locally via ``hashlib.sha256(data)``
+            by the adapter.  This is the *content* sha, NOT a
+            header-extracted value:
+
+            * HTTP headers like HF's ``x-linked-etag`` or
+              ``ETag`` are **not** content digests for
+              LFS-tracked files -- ``x-linked-etag`` is the
+              LFS *pointer* git blob oid, and a few CDNs
+              return the storage backend's blob oid.  Trusting
+              them produced a non-deterministic cache
+              fingerprint that broke cross-mirror dedup.
+            * The cache manifest's ``CachedFile.sha256`` is
+              keyed off this field, so the value must be the
+              *content* sha to make ``ModelCache.verify()``
+              succeed and to make the
+              ``compute_content_fingerprint`` stable across
+              mirrors.
+            Defaults to ``""`` for backward compatibility with
+            the v0.4.x on-disk cache format (older manifests
+            may have empty sha, in which case ``verify()``
+            will recompute the digest from the file bytes).
     """
 
     name: str

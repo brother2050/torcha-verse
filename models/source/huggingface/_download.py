@@ -158,14 +158,33 @@ def download_one_with_fallback(
                 except Exception as exc:  # noqa: BLE001
                     _logger.debug("progress update (retry) suppressed: %s", exc)
             continue
-        # HF exposes the blob sha256 via x-linked-etag (the
-        # Git LFS pointer) and the git blob sha via the
-        # x-repo-commit + ETag combination.  Use the shared
-        # helper to normalise the various header shapes.
-        upstream_sha = extract_expected_sha256_from_headers(
+        # HF exposes the *LFS pointer* oid via ``x-linked-etag``
+        # and the *git blob* sha via ``x-repo-commit`` + ``ETag``.
+        # **Neither is guaranteed to equal the content sha256**:
+        # LFS-tracked files (.safetensors, .bin, .gguf, ...) are
+        # served as a 100-ish-byte pointer file whose own sha is
+        # useless; the real sha is ``sha256(body)`` of the resolved
+        # bytes.  We use the header value only as a *debug hint* --
+        # if it disagrees with the locally-computed sha we log a
+        # warning so the operator can spot a misconfigured mirror,
+        # but we never let it override the authoritative local
+        # digest.  The previous behaviour of using
+        # ``upstream_sha or local_sha`` made the cache fingerprint
+        # non-deterministic across mirrors, because two mirrors
+        # resolving the same LFS file could legitimately return
+        # different ``x-linked-etag`` values.
+        upstream_hint = extract_expected_sha256_from_headers(
             resp_headers, file_name=name,
         )
         local_sha = hashlib.sha256(body).hexdigest()
+        if upstream_hint and upstream_hint != local_sha:
+            _logger.debug(
+                "HF header sha hint for %s/%s from %s "
+                "(hint=%s) differs from content sha %s; "
+                "using local sha as authoritative (LFS pointer "
+                "oid is not a content digest).",
+                repo_id, name, base, upstream_hint, local_sha,
+            )
         if expected_sha256 and local_sha != expected_sha256:
             _logger.error(
                 "Checksum mismatch on %s/%s from %s: expected=%s actual=%s",
@@ -211,7 +230,7 @@ def download_one_with_fallback(
         return FileDownload(
             name=name,
             data=body,
-            sha256=upstream_sha or local_sha,
+            sha256=local_sha,
         )
     _logger.warning(
         "HF download exhausted all mirrors for %s@%s/%s (last error: %s)",

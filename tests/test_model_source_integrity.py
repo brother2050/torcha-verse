@@ -509,6 +509,151 @@ class TestHuggingFaceIntegrity:
 
 
 # ===========================================================================
+# v0.9.6 regression: HF LFS-pointer header sha must NOT be used as the
+# FileDownload content sha.  The previous behaviour of
+# ``sha256=upstream_sha or local_sha`` made the cache fingerprint
+# non-deterministic across mirrors (x-linked-etag is the LFS pointer
+# git blob oid, NOT the content sha) and broke cross-mirror dedup.
+# ===========================================================================
+class TestLfsHeaderShaRegression:
+    """Header-extracted sha values are *hints*, not content digests."""
+
+    def test_x_linked_etag_lfs_pointer_does_not_override_local_sha(
+        self, tmp_path: Path,
+    ) -> None:
+        """When the HF response sets ``x-linked-etag`` to a value
+        that does NOT equal ``sha256(body)`` (the LFS-pointer
+        case), the FileDownload sha must still be the local
+        content sha.
+        """
+        config_bytes = b'{"hidden_size": 64}'
+        # Intentionally stamp a *different* sha in the header to
+        # simulate the LFS-pointer case.
+        lfs_pointer_sha = (
+            "0" * 64  # not equal to sha256(config_bytes)
+        )
+        transport = FakeTransport()
+        transport.route(
+            "/api/models/example/repo",
+            json_body={"cardData": {"license": "apache-2.0"}},
+        )
+        transport.route(
+            "/example/repo/resolve/main/config.json",
+            bytes_body=config_bytes,
+            bytes_headers={
+                "x-linked-etag": '"{}"'.format(lfs_pointer_sha),
+            },
+        )
+        src = HuggingFaceSource(transport=transport)
+        downloads = src.download_files(
+            "example/repo", "main", names=["config.json"],
+        )
+        assert len(downloads) == 1
+        dl = downloads[0]
+        # The bug: dl.sha256 was equal to the LFS pointer sha
+        # (0*64).  The fix: dl.sha256 must be the content sha.
+        assert dl.sha256 == _sha256(config_bytes)
+        assert dl.sha256 != lfs_pointer_sha
+
+    def test_no_header_sha_still_computes_local(
+        self, tmp_path: Path,
+    ) -> None:
+        """When the response has no sha header at all, the
+        FileDownload sha must still be the locally-computed
+        content sha.
+        """
+        weights = b"\x00\x01\x02\x03payload"
+        transport = FakeTransport()
+        transport.route(
+            "/example/repo/resolve/main/model.safetensors",
+            bytes_body=weights,
+            bytes_headers={},  # no x-linked-etag, no etag
+        )
+        src = HuggingFaceSource(transport=transport)
+        downloads = src.download_files(
+            "example/repo", "main", names=["model.safetensors"],
+        )
+        assert len(downloads) == 1
+        assert downloads[0].sha256 == _sha256(weights)
+
+    def test_matching_header_sha_still_equals_local(
+        self, tmp_path: Path,
+    ) -> None:
+        """Sanity check: when the header sha happens to equal
+        the content sha (the friendly case for non-LFS files
+        like ``config.json``), the FileDownload sha is correct
+        either way -- and our change must not break this.
+        """
+        config = b'{"hidden_size": 64}'
+        real_sha = _sha256(config)
+        transport = FakeTransport()
+        transport.route(
+            "/example/repo/resolve/main/config.json",
+            bytes_body=config,
+            bytes_headers={"etag": '"{}"'.format(real_sha)},
+        )
+        src = HuggingFaceSource(transport=transport)
+        downloads = src.download_files(
+            "example/repo", "main", names=["config.json"],
+        )
+        assert len(downloads) == 1
+        # Both the header and the local content sha agree, so
+        # the FileDownload sha is the content sha.
+        assert downloads[0].sha256 == real_sha
+
+    def test_cache_fingerprint_stable_across_lfs_and_etag_only_mirrors(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two mirrors returning the same body but different
+        header shas (one LFS pointer, one not) must produce
+        the same cache fingerprint, because the manifest is
+        keyed on the *content* sha, not the header hint.
+        """
+        weights = b"\x10\x20\x30\x40weights-payload"
+        real_sha = _sha256(weights)
+
+        # Mirror A: stamps the LFS pointer sha in x-linked-etag.
+        transport_a = FakeTransport()
+        transport_a.route(
+            "/example/repo/resolve/main/model.safetensors",
+            bytes_body=weights,
+            bytes_headers={
+                "x-linked-etag": '"{}"'.format("a" * 64),
+            },
+        )
+        src_a = HuggingFaceSource(transport=transport_a)
+        dl_a = src_a.download_files(
+            "example/repo", "main", names=["model.safetensors"],
+        )[0]
+
+        # Mirror B: stamps an unrelated etag.
+        transport_b = FakeTransport()
+        transport_b.route(
+            "/example/repo/resolve/main/model.safetensors",
+            bytes_body=weights,
+            bytes_headers={"etag": '"{}"'.format("b" * 64)},
+        )
+        src_b = HuggingFaceSource(transport=transport_b)
+        dl_b = src_b.download_files(
+            "example/repo", "main", names=["model.safetensors"],
+        )[0]
+
+        # Both FileDownload.sha256 must equal the content sha,
+        # so the cache fingerprint is identical.
+        assert dl_a.sha256 == real_sha
+        assert dl_b.sha256 == real_sha
+        # And the fingerprints match.
+        from models.source.cache import compute_content_fingerprint
+        fp_a = compute_content_fingerprint(
+            [{"name": dl_a.name, "sha256": dl_a.sha256}],
+        )
+        fp_b = compute_content_fingerprint(
+            [{"name": dl_b.name, "sha256": dl_b.sha256}],
+        )
+        assert fp_a == fp_b
+
+
+# ===========================================================================
 # Civitai adapter: header-based SHA + 401/403 → GatedRepoError
 # ===========================================================================
 class TestCivitaiIntegrity:

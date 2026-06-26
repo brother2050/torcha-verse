@@ -331,17 +331,33 @@ def extract_expected_sha256_from_headers(
     headers: Mapping[str, str],
     file_name: str = "",
 ) -> str:
-    """Pull a content SHA256 from a download response, when present.
+    """Pull a SHA256 *hint* from a download response headers.
+
+    **This function returns a debug hint, NOT an authoritative
+    content digest.**  Callers MUST recompute the content sha
+    via ``hashlib.sha256(body).hexdigest()`` and use that for
+    the cache manifest.  The hint is useful for:
+
+    * operator-facing logs ("mirror X is serving a different
+      sha than mirror Y -- check your mirror config");
+    * quick sanity checks in tests (mocked HTTP responses can
+      stamp an expected sha without writing the full body to
+      disk);
+    * documentation of the HTTP header layout.
 
     We look at:
 
-    * ``x-linked-etag`` -- HF LFS pointer hash, the *actual*
-      payload SHA for files served via Git LFS.  This is the
-      most common case for ``.safetensors`` / ``.bin`` weights.
+    * ``x-linked-etag`` -- HF LFS pointer git blob oid.  This
+      is **NOT** a content sha for LFS-tracked files
+      (``.safetensors`` / ``.bin`` / ``.gguf``), because the
+      server first returns the 100-byte pointer file and the
+      CDN resolves it to a *different* LFS object whose sha
+      is only computable after the resolved body is fetched.
+      We accept the value as a hint, but the adapter will
+      override it with ``sha256(body)``.
     * ``x-repo-commit`` -- the git commit SHA.  This is the
-      *blob* hash, not the content hash, but the model card
-      documentation often refers to it; we use it as a
-      secondary signal only.
+      *blob* hash, not the content hash.  Used as a secondary
+      signal only.
     * ``etag`` -- the standard HTTP ETag header, which HF
       populates with the blob SHA for non-LFS files
       (``config.json`` etc.).  We strip the surrounding
@@ -350,7 +366,8 @@ def extract_expected_sha256_from_headers(
 
     The result is the first non-empty value found, lower-cased
     and stripped.  Empty string when nothing useful is in the
-    response.
+    response.  An empty result is the *expected* outcome in
+    many real-world mirrors; do not treat it as an error.
     """
     if not headers:
         return ""

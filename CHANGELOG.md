@@ -95,6 +95,51 @@
 - `models/image/restoration.py` UNet 上采样 bug 修复
   (dec2 / up3 / up2 三段 reshape 正确)
 
+## v0.9.6 — 模型下载 sha 逻辑整理
+
+`models/source/huggingface/_download.py` + `models/source/civitai.py`
+长期混淆两种 sha 造成 cache fingerprint 在镜像间不稳定:
+
+- `upstream_sha` (从 HTTP header 提取) — 对 LFS 跟踪文件 (`.safetensors` /
+  `.bin` / `.gguf`) 来说,`x-linked-etag` 是 **LFS pointer 的 git blob oid**,
+  **不是**文件内容 sha
+- `local_sha = sha256(body)` — 权威内容 digest
+
+**Bug 现象**:旧代码 `sha256=upstream_sha or local_sha` 在
+`x-linked-etag` 给出错误的"内容 sha"时,会把
+`FileDownload.sha256` 写成 LFS pointer oid。后续 `cache.py::write_files`
+把错值固化进 manifest,`compute_content_fingerprint` 因此在不同镜像
+间产生不同值,跨镜像去重失效,`verify()` 会假报 mismatch。
+
+**修复**(`file_changes` 4 处):
+
+- `models/source/huggingface/_download.py:165-237` — `FileDownload.sha256`
+  改为只用 `local_sha`;`upstream_sha` 改名为 `upstream_hint`,仅作
+  debug log(不一致时记 `_logger.debug`)
+- `models/source/civitai.py:296-373` — 同样修复;额外把
+  `data["files"][i]["hashes"]["SHA256"]` (来自 Civitai metadata API
+  的可信内容 sha) 独立为 `metadata_sha`,作为**交叉校验**:当
+  caller 没 pin 但 local ≠ metadata 时主动抛 `ChecksumMismatch`
+  (防止镜面服务陈旧 / 损坏字节)
+- `models/source/huggingface/_types.py` — `FileDownload.sha256` 注释
+  明确为"内容 sha,adapters 用 hashlib.sha256(data) 计算"
+- `models/source/auth.py::extract_expected_sha256_from_headers` — 注释
+  明确为"debug hint,不是权威 digest",警告 LFS pointer 陷阱
+
+**新增 4 个 regression test** (`tests/test_model_source_integrity.py::TestLfsHeaderShaRegression`):
+
+1. `test_x_linked_etag_lfs_pointer_does_not_override_local_sha` — header
+   sha ≠ local sha 时,`FileDownload.sha256` 必须是 local
+2. `test_no_header_sha_still_computes_local` — header 完全没 sha 时,
+   仍然正确计算 local
+3. `test_matching_header_sha_still_equals_local` — 友好情形 (header sha
+   恰巧等于 content sha) 不被破坏
+4. `test_cache_fingerprint_stable_across_lfs_and_etag_only_mirrors` —
+   两个 mirror 返回同 body 但不同 header sha,fingerprint 必须一致
+
+**测试数**:1401 → **1405 (+4)**,1396 passed / 5 skip / 1 pre-existing fail / 3 pre-existing errors
+(失败和错误均为 c1bb28d baseline 已存在,本节无关)。
+
 ## v0.9.5 / v1.0.0 深度收尾 — 视频 / 文本 / 多模态 / 训练 / 组件
 
 紧接 v0.9.0 key-map 矩阵之后的第二波深度覆盖。新增 **74 个 test**,

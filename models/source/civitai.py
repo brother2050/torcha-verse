@@ -294,11 +294,30 @@ class CivitaiSource:
                 )
                 continue
             local_sha = hashlib.sha256(body).hexdigest()
-            upstream_sha = extract_expected_sha256_from_headers(
+            # Civitai exposes TWO different sha256 values that we
+            # have to be careful to distinguish:
+            #
+            # 1. ``x-checksum-sha256`` / similar HTTP header -- this
+            #    is *usually* the content sha, but mirrors do not
+            #    always set it, and a few CDNs set it to the blob
+            #    storage oid (an LFS-style pitfall).  Treat it as a
+            #    debug hint only.
+            #
+            # 2. The version metadata API ``data["files"][i]
+            #    ["hashes"]["SHA256"]`` -- this is the *content*
+            #    sha reported by Civitai's own content-addressable
+            #    storage, and is the only header-shaped value we
+            #    trust as an authoritative content digest.
+            #
+            # We compute the *content* sha locally (``local_sha``)
+            # and use it for the manifest.  The metadata API sha
+            # is only used as a *cross-check* -- if the operator
+            # pinned one via ``expected_sha256s``, we trust that
+            # pin; otherwise we use local_sha unconditionally.
+            header_hint = extract_expected_sha256_from_headers(
                 resp_headers, file_name=name,
             )
-            # Civitai also exposes hashes via the version
-            # metadata; prefer that one when available.
+            metadata_sha = ""
             for entry in data.get("files", []) or []:
                 if not isinstance(entry, dict):
                     continue
@@ -307,8 +326,17 @@ class CivitaiSource:
                     if isinstance(hashes, dict):
                         sha = hashes.get("SHA256")
                         if isinstance(sha, str) and sha:
-                            upstream_sha = sha
+                            metadata_sha = sha
                     break
+            if header_hint and header_hint != local_sha and (
+                not metadata_sha or header_hint != metadata_sha
+            ):
+                _logger.debug(
+                    "Civitai header sha hint for %s/%s "
+                    "(hint=%s) differs from content sha %s; "
+                    "using local sha as authoritative.",
+                    version_id, name, header_hint, local_sha,
+                )
             pinned = ""
             if expected_sha256s is not None:
                 pinned = str(expected_sha256s.get(name, "") or "")
@@ -320,11 +348,27 @@ class CivitaiSource:
                     expected_sha256=pinned,
                     actual_sha256=local_sha,
                 )
+            # Sanity-check the cross-check when we have a trusted
+            # metadata sha and no explicit pin -- if local and
+            # metadata disagree, the mirror is serving stale /
+            # corrupted bytes and we must not cache them.
+            if (
+                metadata_sha
+                and not pinned
+                and local_sha != metadata_sha
+            ):
+                raise ChecksumMismatch(
+                    source="civitai",
+                    repo_id=version_id,
+                    file_name=name,
+                    expected_sha256=metadata_sha,
+                    actual_sha256=local_sha,
+                )
             results.append(
                 FileDownload(
                     name=name,
                     data=body,
-                    sha256=upstream_sha or local_sha,
+                    sha256=local_sha,
                 )
             )
         return results
