@@ -1419,6 +1419,8 @@ def call_diffusion_loop_backend(
     guidance_scale: float = 7.5,
     sampler: str = "euler",
     shift: float = 1.0,
+    latent_validator: Any = None,
+    validate_latent: bool = True,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Run a real denoising loop (v0.8.0).
@@ -1437,12 +1439,28 @@ def call_diffusion_loop_backend(
         sampler: One of the keys in
             :data:`core.schedulers.SAMPLER_REGISTRY`.
         shift: Time-shift factor for the schedule.
+        latent_validator: Optional :class:`LatentValidator`
+            instance.  When ``None`` and ``validate_latent`` is
+            ``True`` a default validator is constructed from the
+            initial ``latents.shape`` / ``latents.dtype``.
+        validate_latent: When ``True`` (default) the final latent
+            is run through :class:`LatentValidator` and the
+            report is attached to the response under the
+            ``latent_validation`` key.
 
     Returns:
         A dict with ``latents`` (the denoised tensor), ``timesteps``
         (the visited timesteps), ``num_inference_steps``,
-        ``sampler`` and ``backend``.
+        ``sampler``, ``backend`` and (when validation ran)
+        ``latent_validation`` (a structured report).  The
+        v0.8.5 contract adds the ``latent_valid`` /
+        ``latent_stats`` / ``latent_validation`` keys so that
+        callers can gate downstream rendering on a single
+        boolean without re-implementing the checks.
     """
+    # Local import keeps the module import-time graph tight.
+    from ._latent import LatentValidator
+
     if model is None or latents is None:
         return {
             "latents": latents,
@@ -1450,6 +1468,14 @@ def call_diffusion_loop_backend(
             "sampler": sampler,
             "backend": "placeholder",
             "reason": "model_or_latents_missing",
+            "latent_valid": False,
+            "latent_stats": None,
+            "latent_validation": {
+                "valid": False,
+                "reason": "model_or_latents_missing",
+                "stats": None,
+                "checks": None,
+            },
         }
     try:
         import torch
@@ -1501,7 +1527,7 @@ def call_diffusion_loop_backend(
                 if isinstance(model_out, dict):
                     model_out = model_out.get("sample", model_out)
             x = sampler_obj.step(model_out, t_batch, x)
-        return {
+        response: Dict[str, Any] = {
             "latents": x,
             "timesteps": [int(t) for t in timesteps.tolist()],
             "num_inference_steps": int(num_inference_steps),
@@ -1510,6 +1536,22 @@ def call_diffusion_loop_backend(
             "guidance_scale": float(guidance_scale),
             "backend": "diffusion_loop",
         }
+        # v0.8.5 Latent validation gate.  We default to a validator
+        # built from the *initial* latents shape / dtype, so the
+        # final latent must match the planned resolution.  Callers
+        # can override the validator or disable the check
+        # entirely via ``validate_latent=False``.
+        if validate_latent:
+            if latent_validator is None:
+                latent_validator = LatentValidator(
+                    expected_shape=tuple(latents.shape),
+                    expected_dtype=latents.dtype,
+                )
+            report = latent_validator.validate(x)
+            response["latent_validation"] = report
+            response["latent_valid"] = bool(report["valid"])
+            response["latent_stats"] = report["stats"]
+        return response
     except Exception as exc:  # noqa: BLE001
         return {
             "latents": latents,
@@ -1517,6 +1559,14 @@ def call_diffusion_loop_backend(
             "sampler": sampler,
             "backend": "placeholder",
             "reason": str(exc),
+            "latent_valid": False,
+            "latent_stats": None,
+            "latent_validation": {
+                "valid": False,
+                "reason": f"loop_error: {exc}",
+                "stats": None,
+                "checks": None,
+            },
         }
 
 

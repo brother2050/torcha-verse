@@ -61,6 +61,14 @@ from ._coerce import (
     coerce_int,
     ref_id,
 )
+from ._latent import (
+    LatentStats,
+    LatentValidationError,
+    LatentValidator,
+    quick_validate,
+    validate_range,
+    validate_shape,
+)
 from ._rag import (
     _RAG_DEFAULT_BACKEND,
     _RAG_DEFAULT_CHUNK_OVERLAP,
@@ -113,4 +121,11 @@ __all__ = [
     "_RAG_DEFAULT_CHUNK_OVERLAP",
     "_RAG_DEFAULT_BACKEND",
     "_normalise_rag_documents",
+    # Latent validation (v0.8.5)
+    "LatentStats",
+    "LatentValidationError",
+    "LatentValidator",
+    "quick_validate",
+    "validate_range",
+    "validate_shape",
 ]

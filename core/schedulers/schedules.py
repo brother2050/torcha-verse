@@ -62,6 +62,17 @@ class NormalSchedule(_BaseSchedule):
         )
 
 
+# v0.8.5 fix-up: ``LinearSchedule`` is referenced in
+# :mod:`core.schedulers.__init__` but the class was never actually
+# defined in this file.  The historical name in this codebase is
+# :class:`NormalSchedule` (a plain linear ``beta`` schedule), so
+# we re-export it under the canonical ``LinearSchedule`` name to
+# keep the registry import path working.  This is intentionally a
+# *thin alias* -- any future divergence (e.g. a true linear
+# *sigma* schedule) should fork into a new class.
+LinearSchedule = NormalSchedule
+
+
 # ---------------------------------------------------------------------------
 # Karras schedule
 # ---------------------------------------------------------------------------

@@ -95,6 +95,70 @@
 - `models/image/restoration.py` UNet 上采样 bug 修复
   (dec2 / up3 / up2 三段 reshape 正确)
 
+## v0.8.5 — HunyuanDiT-Tiny 接入 + 端到端 Latent 验证
+
+第 3-4 周目标(参 `docs/V0.8_UPGRADE_PLAN.md` §4)。本节新增 **29 个
+test**,总测试数 **1128 → 1157 (+29)**,第一次达到 ≥ 1150 目标。
+
+**模型侧**:
+
+- 新 `models/image.dit.HunyuanDiT` (tiny preset,96-dim / 2-block / GQA):
+  - 完整的 adaLN-Zero 调制 + 联合 QKV self-attention + 交叉 attention
+  - 上采样 patch 化 → 12 个 patch(8x8 → 2x2) → unpatch
+  - `time_embed.{0,2}` / `pooled_embed.proj` / `style_embed` / `size_embed` /
+    `rope_freqs` 完整暴露
+  - **local layout** 参数命名与
+    `core.checkpoint_loader.HUNYUAN_DIT_KEY_MAP` target values 一一对应,
+    `load_hunyuan_dit()` 可直接重写 Tencent 上游 checkpoint
+- `HunyuanDiTConfig.tiny()` 工厂方法 + dict config 自动 coerce
+
+**端到端 Latent 验证 (LatentValidator)**:
+
+- 新 `nodes._helpers._latent` 子模块(纯 Python,无额外依赖):
+  - `LatentStats` dataclass(JSON 可序列化)+ `LatentValidationError`
+  - `LatentValidator` 9 项检查:shape / dtype / finite / NaN 计数 / Inf 计数
+    / std band (default `0.05 <= std <= 10.0`) / `abs_max` band / `allow_nan` /
+    `allow_inf`
+  - `quick_validate` / `validate_range` / `validate_shape` 一行封装
+- 集成到 `call_diffusion_loop_backend`:
+  - 新增 `latent_validator` / `validate_latent` kwarg
+  - 响应新增 `latent_valid` (bool) / `latent_stats` (dict) /
+    `latent_validation` (完整 report)三个键
+  - `model=None` 与循环异常路径也返回结构化 `latent_valid=False` 报告
+
+**修复与改进**:
+
+- 修 `core.checkpoint_loader`:
+  `load_state_dict_with_renames` 现在同时处理参数与 persistent buffer
+  (`rope_freqs` 等)
+- 修 `core.schedulers.schedules`:
+  补 `LinearSchedule = NormalSchedule` alias(原 import 路径在
+  `__init__` 中引用但类未定义,导致每个 e2e diffusion loop 静默回落到
+  `placeholder` 分支)
+- `models/base.py` 加载器增强:buffer 与 parameter 走同一条 copy_ 路径,
+  dtype / device 自动匹配
+
+**测试**:
+
+- 新 `tests/test_v085_hunyuan_dit.py` (29 个 test, 4 个 Section):
+  1. **HunyuanDiTConfig**:tiny preset / 默认构造 / 显式 config / dict config
+  2. **Forward + Sample**:shape / dtype / text context / CFG 开关
+  3. **save_pretrained / from_pretrained round-trip**:
+     - local layout round-trip
+     - config sidecar 写入
+     - subfolder 加载
+     - variant=fp16 加载
+     - `load_hunyuan_dit` local helper
+     - `load_hunyuan_dit` upstream-style checkpoint(模拟 Tencent 上游 ckpt)
+  4. **LatentValidator** (12 个):default pass / zero / flat / NaN / Inf /
+     shape mismatch / strict 抛错 / strict 返回 / Stats dataclass /
+     allow_nan override / validate_range helper
+  5. **E2E Latent 验证** (4 个):HunyuanDiT-Tiny 走 `call_diffusion_loop_backend` 完整
+     流程,验证 `latent_valid=True` / `latent_stats` 合理 / 缺失 model 报错 /
+     `validate_latent=False` 禁用 / 自定义 validator
+- 4 个 pre-existing `rich` ModuleNotFoundError 与 3 个 pre-existing
+  warnings test 不计入本节新增,均与本节无关
+
 ## [v0.6.0] - 2026-06-26
 
 ### R-* 重构 (R-3 ~ R-15 + R-19) — 65+ 聚焦子模块

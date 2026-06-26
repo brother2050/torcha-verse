@@ -190,12 +190,27 @@ def load_state_dict_with_renames(
     own_state = model.state_dict()
     missing: list[str] = []
     unexpected: list[str] = []
+    # The ``named_buffers`` / ``named_parameters`` namespaces are
+    # *both* part of ``state_dict()``; PyTorch combines them
+    # automatically.  We look the source tensor up by full name
+    # (works for both parameters and persistent buffers such as
+    # ``rope_freqs`` / running mean / batch-norm stats) and
+    # fall back to ``setattr`` on the module if the entry is a
+    # *non-persistent* buffer or any other attribute the
+    # ``state_dict()`` did not include.
+    named_buffers = dict(model.named_buffers())
     for k in own_state:
         if k in state_dict:
-            param = model.get_parameter(k)
-            with torch.no_grad():
-                src = state_dict[k].to(device=param.device, dtype=param.dtype)
-                param.copy_(src)
+            src = state_dict[k]
+            if k in named_buffers:
+                target = named_buffers[k]
+                with torch.no_grad():
+                    target.copy_(src.to(device=target.device, dtype=target.dtype))
+            else:
+                param = model.get_parameter(k)
+                with torch.no_grad():
+                    src = src.to(device=param.device, dtype=param.dtype)
+                    param.copy_(src)
         else:
             missing.append(k)
     for k in state_dict:
