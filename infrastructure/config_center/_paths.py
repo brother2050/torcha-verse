@@ -57,10 +57,15 @@ def resolve_config_dir(
     Resolution order:
 
     1. ``config_dir`` argument (caller-supplied override).
-    2. ``./config/`` in the current working directory.
+    2. ``./config/`` in the current working directory, but only
+       when the directory actually contains a known config file
+       (otherwise an unrelated empty ``./config/`` shadows the
+       shipped defaults).
     3. The directory of the script (when running a ``python script.py``
-       style entry point).
-    4. The package root (when imported as a library).
+       style entry point) -- same validation.
+    4. The package root (when imported as a library), resolved by
+       walking up the ``__file__`` of this module until a ``config``
+       directory is found that contains the default config files.
 
     Returns:
         A :class:`Path` that exists or can be created.
@@ -68,8 +73,20 @@ def resolve_config_dir(
     if config_dir is not None:
         return Path(config_dir).expanduser().resolve()
 
+    # The shipped config files that *must* exist for a directory
+    # to count as a valid project config dir.  Used to defend
+    # against an empty ``./config/`` shadowing the package defaults
+    # (e.g. when a CWD happens to contain an unrelated ``config/``
+    # subdir).
+    _SENTINEL_FILES = ("model_config.yaml", "inference_config.yaml")
+
+    def _is_valid(d: Path) -> bool:
+        if not d.is_dir():
+            return False
+        return any((d / name).is_file() for name in _SENTINEL_FILES)
+
     cwd = Path.cwd() / "config"
-    if cwd.is_dir():
+    if _is_valid(cwd):
         return cwd.resolve()
 
     if getattr(sys, "argv", None) and sys.argv and sys.argv[0]:
@@ -78,10 +95,20 @@ def resolve_config_dir(
             script_dir = argv0.resolve().parent / "config"
         except OSError:
             script_dir = None
-        if script_dir is not None and script_dir.is_dir():
+        if script_dir is not None and _is_valid(script_dir):
             return script_dir
 
-    return (Path(__file__).resolve().parents[2] / "config").resolve()
+    # Walk up from this file's location until we find a `config/`
+    # that contains the default files.  ``infrastructure/config_center
+    # /_paths.py`` is 4 levels deep, so parents[3] is the package
+    # root.
+    here = Path(__file__).resolve().parent
+    for ancestor in (here, *here.parents):
+        candidate = ancestor / "config"
+        if _is_valid(candidate):
+            return candidate.resolve()
+    # Final fallback: the 4-ancestor heuristic that v0.4.x relied on.
+    return (here.parents[3] / "config").resolve()
 
 
 def system_defaults_dir() -> Path:
