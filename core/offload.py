@@ -154,19 +154,18 @@ class ModelPatcher:
             return
         # Pop the most-recent occurrence from the stack (if any)
         # so that restore order matches apply order.  The
-        # module that was patched is stored in the patch
-        # metadata so we can pass it to the undo callable.
-        target_module = None
+        # module that was patched is stashed on the patch at
+        # apply time (see :meth:`apply`).
+        target_module = getattr(patch, "_runtime_module", self.model)
         for i in range(len(self._stack) - 1, -1, -1):
             if self._stack[i] is patch:
-                meta = self._stack[i].metadata or {}
-                target_module = meta.get("module", self.model)
                 del self._stack[i]
                 break
         undo = getattr(patch, "_undo", None)
         if callable(undo):
             undo(target_module)
         patch._undo = None  # type: ignore[attr-defined]
+        patch._runtime_module = None  # type: ignore[attr-defined]
 
     def clear(self) -> None:
         """Remove every patch (in reverse apply order)."""
@@ -196,6 +195,12 @@ class ModelPatcher:
             if any(p is patch for p in self._stack):
                 # Already applied; skip.
                 continue
+            # Stash the patched module on the patch's
+            # metadata so :meth:`remove` can pass it to the
+            # undo callable.  We do not mutate the user's
+            # metadata dict -- we wrap it in a fresh dict
+            # that the undo can fall back on.
+            patch._runtime_module = module  # type: ignore[attr-defined]
             undo = patch.op(module, patch.strength)
             patch._undo = undo  # type: ignore[attr-defined]
             self._stack.append(patch)

@@ -204,6 +204,12 @@ class LoRAInjector:
         for full_name, module in self._iter_named_modules():
             if not any(_glob_match(p, full_name) for p in patterns):
                 continue
+            # The patch name is ``f"{spec.name}::{full_name}"``;
+            # ``apply`` is idempotent -- if the patch is
+            # already in the patcher we skip it.
+            patch_name = f"{spec.name}::{full_name}"
+            if patch_name in self.patcher._names:  # type: ignore[attr-defined]
+                continue
             # Build / fetch the delta pair for this module.
             if full_name not in self._deltas:
                 a, b = _make_lora_params(module, spec)
@@ -215,7 +221,7 @@ class LoRAInjector:
             # ComfyUI "non-destructive" LoRA convention.
             op = _make_lora_op(a, b, spec.scale)
             patch = Patch(
-                name=f"{spec.name}::{full_name}",
+                name=patch_name,
                 op=op,
                 strength=1.0,
                 key_filter=None,
@@ -353,15 +359,18 @@ def load_lora_state_dict(
 # Internals
 # ---------------------------------------------------------------------------
 def _glob_match(pattern: str, name: str) -> bool:
-    """A tiny subset of ``fnmatch`` that supports ``*`` only."""
+    """Glob match supporting ``*`` wildcards.
+
+    Implemented on top of :func:`fnmatch.fnmatchcase` so
+    the LoRA target semantics match :class:`Patch`'s
+    ``key_filter`` (which also uses ``fnmatch``).  When
+    the pattern is a literal name, equality is used
+    directly so non-glob lookups are O(1).
+    """
     if "*" not in pattern:
         return pattern == name
-    # Convert "blocks.*.attn.qkv" -> prefix / suffix match.
-    parts = pattern.split("*", 1)
-    if len(parts) == 2:
-        pre, suf = parts
-        return name.startswith(pre) and (suf == "" or name.endswith(suf))
-    return pattern == name
+    import fnmatch
+    return fnmatch.fnmatchcase(name, pattern)
 
 
 def _make_lora_params(
@@ -429,22 +438,38 @@ def _make_lora_op(
             af = a.to(torch.float32)
             bf = b.to(torch.float32)
             # (B @ A) @ x.T -> (out, in) @ (in, batch) etc.
-            # For Linear / Conv1d / Conv2d the input ``x`` is
-            # at least 2-D; for Linear it's ``(N, in)``, for
-            # ConvNd it's ``(N, C, ...)``.  We use a *shared*
-            # matmul across the trailing dims via the
-            # standard "low-rank ΔW" trick:
+            # For Linear the input ``x`` is 2-D ``(N, in)``.
+            # For ConvNd ``x`` is ``(N, C, ...)``; we flatten
+            # the spatial / channel-leading axes so the
+            # matmul is well defined.
             #
             #   extra = ((x @ A.T) @ B.T) * scale * strength
             #
-            # which is the LoRA paper's Equation 1 with the
-            # 2-D input reshape folded.
-            extra = (xf @ af.transpose(0, 1)) @ bf.transpose(0, 1)
+            # is the LoRA paper's Equation 1 with the 2-D
+            # input reshape folded.
+            if xf.dim() == 2:
+                xf2 = xf
+            else:
+                # The matmul ``xf @ A.T`` requires ``xf`` to
+                # be 2-D ``(M, in_features)``.  For ``nn.Linear``
+                # the trailing dim is the feature dim so we
+                # flatten all leading dims; for ``nn.ConvNd`` the
+                # channel dim is in dim 1 so we move it to the
+                # end and flatten the rest.
+                if xf.shape[1] == a.shape[1]:
+                    # ``(N, C, ...)`` for ConvNd.
+                    xf2 = xf.permute(0, *range(2, xf.dim()), 1).reshape(-1, a.shape[1])
+                else:
+                    # ``(*, in_features)`` for Linear with a
+                    # leading batch / seq dim.
+                    xf2 = xf.reshape(-1, a.shape[1])
+            extra = (xf2 @ af.transpose(0, 1)) @ bf.transpose(0, 1)
             extra = extra * (scale * strength)
             extra = extra.to(dtype)
             if out.shape == extra.shape:
                 return out + extra
-            # The ConvNd case: flatten the spatial dims.
+            # The ConvNd case: restore the original layout.
+            extra = extra.reshape(xf.shape[0], -1, *xf.shape[2:])
             return out + extra.reshape(out.shape)
 
         module.forward = patched_forward  # type: ignore[assignment]

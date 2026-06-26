@@ -237,7 +237,66 @@ test**,总测试数 **1128 → 1157 (+29)**,第一次达到 ≥ 1150 目标。
 
 - v0.8.0 起点: 1128
 - v0.8.5 第一波 (HunyuanDiT-Tiny + LatentValidator): +29 → 1157
-- v0.8.5 第二波 (ModelPatcher + LoRA + CPU offload): +25 → **1182**
+- v0.8.5 第二波 (ModelPatcher + LoRA + CPU offload): +25 → 1182
+- v0.8.5 第三波 (LoRA / offload edges + Conv + multi-LoRA): +22 → **1204** (§4.4 接受目标 ≥ 1200 达成)
+
+### v0.8.5 — 第三波:LoRA / offload 边界用例 + 集成 (22 个新 test)
+
+接续 §4.1.1 第三轮 (LoRA / offload 边界 + 集成)。本节新增 **22 个 test**,
+总测试数 **1182 → 1204 (+22)**, **§4.4 测试数 ≥ 1200 接受目标达成**。
+本节是 v0.8.5 HunyuanDiT 集成工作的收尾;后续工作进入 v0.8.6 计划。
+
+**新测试 — `tests/test_v085_lora_offload_edges.py` (22 个, 7 个 Section)**:
+
+1. **ModelPatcher 边界** (5):
+   - 深层嵌套模块名匹配 (`0.0` 匹配 `nn.Sequential` 的 2-层 Linear)
+   - 同一模块多 patch 的 restore-on-remove 语义
+   - `apply()` 幂等(第二次 apply 跳过)
+   - `Patch.metadata` 在 patcher stack 中保留
+   - 上下文管理器 `__exit__` 在异常下也还原
+2. **Conv2d / Conv1d LoRA** (4):
+   - Conv2d LoRA 前向 delta 非零
+   - Conv1d LoRA 前向 delta 非零
+   - Conv2d LoRA remove 还原 base 输出
+   - `rank` 自动 cap 到 `min(in_channels, out_channels)` (in=3 → cap 3)
+3. **多 LoRA 堆叠** (3):
+   - 两个 LoRA 在同一模块上 deltas 累加
+   - 移除一个保留另一个
+   - 全部移除还原 base 输出
+4. **LoRA spec 边界** (4):
+   - `alpha=2 * rank` → `scale=2.0`
+   - `init_seed` 复现 (同 seed 同 Kaiming B)
+   - `rank=0` 静默 no-op
+   - 重复 `name` 抛 `ValueError`
+5. **LoRA × save_pretrained** (2):
+   - LoRA 不污染 `state_dict()` 键
+   - LoRA active 时 save / from_pretrained 往返 base 权重一致
+6. **offload × LoRA 互操作** (2):
+   - offload → LoRA 顺序工作
+   - LoRA → offload 顺序工作(CPU-only 都为 no-op)
+7. **HunyuanDiT 集成边界** (2):
+   - 显式 `target_modules` 覆盖默认 glob 集
+   - `lora_clear` 二次调用安全
+
+**修复**:
+
+- `models.lora._make_lora_op`:
+  - 现在正确处理 `nn.Linear` 3-D 输入 `(B, N, in)` (e.g. HunyuanDiT 的
+    attn.qkv 接收 `(B=1, N=16, in=96)`) 与 `nn.ConvNd` 4-D / 3-D 输入
+  - 通过 permute / reshape 把输入折成 `(M, in_features)`,正确应用
+    `(B @ A) @ x` 低秩 delta
+- `models.lora.LoRAInjector._apply_spec`:
+  - `apply()` 现在真正幂等;重复调用同一 spec 跳过已注册 patch name
+    (修复 `lora_apply("a"); lora_apply("b")` 时第二次 `apply()` 试图
+    重新添加 'a::...' 的 bug)
+- `core.offload._glob_match` → `fnmatch.fnmatchcase` (与 `Patch.key_filter` 语义一致)
+
+**测试数累计**:
+
+- v0.8.0 起点: 1128
+- v0.8.5 第一波: +29 → 1157
+- v0.8.5 第二波: +25 → 1182
+- v0.8.5 第三波: +22 → **1204**
 
 ## [v0.6.0] - 2026-06-26
 
