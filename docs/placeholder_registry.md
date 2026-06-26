@@ -126,13 +126,15 @@
 | 112 | `nodes/_helpers/_backends.py:1658` | call_diffusion_loop_backend fall-through 标记 (双 except) |
 | 113 | `nodes/image.py:343` | image_txt2img 真实循环失败后回退 F-10 路径 |
 
-### 2.4 if-branch noop(`degrade_noop`,3 条)
+### 2.4 if-branch noop(`degrade_noop`,5 条)
 
 | # | 文件:行 | 上下文 |
 |---:|---|---|
 | 45 | `models/components/rope.py:140` | RoPE linear scaling 在 forward 处理 |
 | 46 | `models/components/rope.py:148` | RoPE dynamic NTK 在 forward 重算 |
 | 47 | `scripts/check/hardcoding/_visitor.py:146` | bool / None 不视为 numeric violation |
+| 114 | `models/runtime/device_planner.py:113` | pick_default_device CUDA 探测异常 → 继续尝试 MPS |
+| 115 | `models/runtime/device_planner.py:118` | pick_default_device MPS 探测异常 → 继续回退 CPU |
 
 ### 2.5 其它兜底(36 条,含 v0.6 重构新行号)
 
