@@ -121,6 +121,10 @@
 | 107 | `nodes/_helpers/_backends.py:1456` | call_depth_backend bus 路径失败后回退 SceneEngine |
 | 108 | `nodes/_helpers/_backends.py:1476` | call_depth_backend SceneEngine 路径失败后回退元数据字典 |
 | 109 | `nodes/_helpers/_backends.py:1536` | call_consistency_score_backend bus 路径失败后回退 ScoreCalculator |
+| 110 | `nodes/_helpers/_backends.py:1578` | call_diffusion_loop_backend bus 路径失败后回退 torch 循环 |
+| 111 | `nodes/_helpers/_backends.py:1598` | call_diffusion_loop_backend torch 循环失败后回退元数据字典 |
+| 112 | `nodes/_helpers/_backends.py:1658` | call_diffusion_loop_backend fall-through 标记 (双 except) |
+| 113 | `nodes/image.py:343` | image_txt2img 真实循环失败后回退 F-10 路径 |
 
 ### 2.4 if-branch noop(`degrade_noop`,3 条)
 

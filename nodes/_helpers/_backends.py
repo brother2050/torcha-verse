@@ -1376,7 +1376,9 @@ def call_diffusion_scheduler_backend(
     try:
         from core.diffusion_scheduler import DiffusionScheduler
         pipeline = DiffusionScheduler(sampler_name=scheduler)
-        pipeline.set_timesteps(int(num_inference_steps))
+        pipeline.set_timesteps(
+            int(num_inference_steps), shift=float(kwargs.get("shift", 1.0)),
+        )
         timesteps = [int(t) for t in pipeline.timesteps.tolist()]
         out = {
             "prompt": prompt,
@@ -1388,11 +1390,131 @@ def call_diffusion_scheduler_backend(
         }
         return out
     except Exception as exc:  # noqa: BLE001
+        # Even on the failure path we surface an empty ``timesteps``
+        # list so callers can introspect the schedule without
+        # crashing on ``KeyError`` (matches the v0.8.0 test
+        # contract).
         return {
             "prompt": prompt,
             "scheduler": scheduler,
             "num_inference_steps": int(num_inference_steps),
             "guidance_scale": float(guidance_scale),
+            "timesteps": [],
+            "backend": "placeholder",
+            "reason": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Diffusion loop backend (v0.8.0) — real 30-step sampling loop
+# ---------------------------------------------------------------------------
+def call_diffusion_loop_backend(
+    bus: Any,
+    name: Optional[str],
+    *,
+    model: Any,
+    latents: Any,
+    text_embeds: Any = None,
+    num_inference_steps: int = 30,
+    guidance_scale: float = 7.5,
+    sampler: str = "euler",
+    shift: float = 1.0,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Run a real denoising loop (v0.8.0).
+
+    Args:
+        bus: The :class:`ModuleBus` (may be ``None``).
+        name: Adapter name on the bus (may be ``None``).
+        model: A torch module with a ``forward(latents, t, **kw)``
+            signature.  When ``None`` the helper returns the
+            ``{"timesteps": [...]}`` metadata-only descriptor.
+        latents: A ``[B, C, H, W]`` float tensor; the initial noise
+            (or partially denoised latents) to start from.
+        text_embeds: Optional ``[B, T, D]`` conditioning tensor.
+        num_inference_steps: Number of denoising steps.
+        guidance_scale: CFG scale (1.0 disables CFG).
+        sampler: One of the keys in
+            :data:`core.schedulers.SAMPLER_REGISTRY`.
+        shift: Time-shift factor for the schedule.
+
+    Returns:
+        A dict with ``latents`` (the denoised tensor), ``timesteps``
+        (the visited timesteps), ``num_inference_steps``,
+        ``sampler`` and ``backend``.
+    """
+    if model is None or latents is None:
+        return {
+            "latents": latents,
+            "num_inference_steps": int(num_inference_steps),
+            "sampler": sampler,
+            "backend": "placeholder",
+            "reason": "model_or_latents_missing",
+        }
+    try:
+        import torch
+        from core.schedulers import build_sampler
+        sampler_obj, schedule = build_sampler(
+            sampler,
+            num_train_timesteps=1000,
+            device=str(latents.device),
+        )
+        sampler_obj.set_timesteps(int(num_inference_steps), shift=float(shift))
+        timesteps = sampler_obj.timesteps
+        x = latents.float()
+        # CFG: stack unconditional + conditional.
+        use_cfg = float(guidance_scale) > 1.0 and text_embeds is not None
+        for t in timesteps:
+            t_batch = t.expand(x.shape[0]) if hasattr(t, "expand") else torch.full(
+                (x.shape[0],), int(t), device=x.device, dtype=torch.long,
+            )
+            if use_cfg:
+                x_in = torch.cat([x, x], dim=0)
+                t_in = torch.cat([t_batch, t_batch], dim=0)
+                if text_embeds is not None and hasattr(text_embeds, "dim"):
+                    if text_embeds.shape[0] == x.shape[0]:
+                        uncond = torch.zeros_like(text_embeds)
+                        cond_in = torch.cat([uncond, text_embeds], dim=0)
+                    else:
+                        cond_in = text_embeds.repeat(2, *([1] * (text_embeds.dim() - 1)))
+                else:
+                    cond_in = None
+                model_out = model(
+                    x_in, t_in,
+                    encoder_hidden_states=cond_in,
+                )
+                if isinstance(model_out, dict):
+                    out_cond, out_uncond = (
+                        model_out["sample"][x.shape[0]:],
+                        model_out["sample"][: x.shape[0]],
+                    )
+                else:
+                    out_cond, out_uncond = (
+                        model_out[x.shape[0]:], model_out[: x.shape[0]],
+                    )
+                model_out = out_uncond + float(guidance_scale) * (out_cond - out_uncond)
+            else:
+                model_out = model(
+                    x, t_batch,
+                    encoder_hidden_states=text_embeds,
+                )
+                if isinstance(model_out, dict):
+                    model_out = model_out.get("sample", model_out)
+            x = sampler_obj.step(model_out, t_batch, x)
+        return {
+            "latents": x,
+            "timesteps": [int(t) for t in timesteps.tolist()],
+            "num_inference_steps": int(num_inference_steps),
+            "sampler": sampler,
+            "shift": float(shift),
+            "guidance_scale": float(guidance_scale),
+            "backend": "diffusion_loop",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "latents": latents,
+            "num_inference_steps": int(num_inference_steps),
+            "sampler": sampler,
             "backend": "placeholder",
             "reason": str(exc),
         }

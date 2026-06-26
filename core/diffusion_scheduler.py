@@ -222,12 +222,18 @@ class BaseSampler(abc.ABC):
         self.timesteps: torch.Tensor = torch.tensor([], device=schedule.device)
 
     # ------------------------------------------------------------------
-    def set_timesteps(self, num_steps: int) -> None:
+    def set_timesteps(
+        self, num_steps: int, *, shift: float = 1.0,
+    ) -> None:
         """Configure the sampling timesteps.
 
         Args:
             num_steps: Number of denoising steps to perform.  Must be
                 ``> 0`` and ``<= schedule.num_timesteps``.
+            shift: Time-shift factor (Hunyuan/SD3/FLUX flow-matching
+                convention).  ``shift=1.0`` is the default (no shift);
+                ``shift=7.0`` mimics the HunyuanVideo configuration
+                and biases the schedule toward higher noise levels.
         """
         if num_steps <= 0:
             raise ValueError(f"num_steps must be > 0, got {num_steps}.")
@@ -236,12 +242,20 @@ class BaseSampler(abc.ABC):
                 f"num_steps {num_steps} exceeds num_timesteps "
                 f"{self.schedule.num_timesteps}."
             )
+        if shift <= 0.0:
+            raise ValueError(f"shift must be > 0, got {shift}.")
         # Evenly spaced timesteps, descending (from T-1 to 0).
         step_ratio = self.schedule.num_timesteps // num_steps
-        self.timesteps = torch.arange(
-            0, num_steps, device=self.schedule.device
-        ) * step_ratio
-        self.timesteps = self.timesteps.flip(0)  # descending order
+        base = torch.arange(
+            0, num_steps, device=self.schedule.device,
+        ).float() * step_ratio
+        if abs(shift - 1.0) > 1e-6:
+            # Flow-matching style rescale:
+            #   t' = shift * t / (1 + (shift - 1) * t / T)
+            t_max = float(self.schedule.num_timesteps)
+            base = shift * base / (1.0 + (shift - 1.0) * base / t_max)
+            base = base.round().clamp_(0, self.schedule.num_timesteps - 1)
+        self.timesteps = base.to(self.schedule.timesteps.dtype).flip(0)
 
     @abc.abstractmethod
     def step(
@@ -897,14 +911,23 @@ class DiffusionScheduler:
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
-    def set_timesteps(self, num_steps: int) -> None:
+    def set_timesteps(
+        self,
+        num_steps: int,
+        *,
+        shift: float = 1.0,
+    ) -> None:
         """Set the number of inference timesteps.
 
         Args:
             num_steps: Number of denoising steps.
+            shift: Time-shift factor forwarded to the underlying
+                :meth:`Sampler.set_timesteps` (Hunyuan/SD3/FLUX
+                flow-matching convention).  ``shift=7.0`` mimics the
+                HunyuanVideo default.
         """
         self.num_inference_steps = num_steps
-        self.sampler.set_timesteps(num_steps)
+        self.sampler.set_timesteps(num_steps, shift=shift)
 
     def set_guidance_scale(self, scale: float) -> None:
         """Update the guidance scale at runtime.

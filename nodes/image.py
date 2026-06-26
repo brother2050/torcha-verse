@@ -270,8 +270,77 @@ class ImageTxt2ImgNode(BaseNode):
             )
 
         from ._helpers import (
+            call_diffusion_loop_backend,
             call_diffusion_scheduler_backend, call_image_backend,
         )
+
+        # v0.8.0: if a ``model.image`` adapter is registered on the
+        # bus, drive a real ``num_inference_steps``-step denoising
+        # loop with the new :func:`call_diffusion_loop_backend`
+        # helper.  The loop consumes the adapter as the model and
+        # ``text_embeds`` (built by the bus adapter) as the
+        # conditioning tensor.  When no adapter is available, fall
+        # back to the metadata-only scheduler pass + image backend
+        # call (unchanged from F-10).
+        bus_image_model = None
+        text_embeds: Any = None
+        try:
+            if ctx.bus is not None and model:
+                bus_image_model = ctx.bus.resolve("model.image", model)
+                if bus_image_model is not None and hasattr(
+                    bus_image_model, "encode_text",
+                ):
+                    text_embeds = bus_image_model.encode_text(prompt)
+        except Exception:  # noqa: BLE001
+            bus_image_model = None
+
+        sampler_name = str(inputs.get("sampler", "euler"))
+        shift = float(inputs.get("shift", 1.0))
+        if bus_image_model is not None and hasattr(
+            bus_image_model, "forward",
+        ):
+            try:
+                import torch
+                latents_shape = (1, 4, height // 8, width // 8)
+                gen = torch.Generator(device="cpu").manual_seed(int(seed))
+                latents = torch.randn(
+                    latents_shape, generator=gen,
+                ).float()
+                loop = call_diffusion_loop_backend(
+                    ctx.bus, model,
+                    model=bus_image_model,
+                    latents=latents,
+                    text_embeds=text_embeds,
+                    num_inference_steps=int(steps),
+                    guidance_scale=float(
+                        inputs.get("guidance_scale", 7.5),
+                    ),
+                    sampler=sampler_name,
+                    shift=shift,
+                )
+                if isinstance(loop, dict) and loop.get(
+                    "backend",
+                ) == "diffusion_loop":
+                    latents_out = loop.get("latents", latents)
+                    if hasattr(latents_out, "detach"):
+                        loop["image_latents"] = latents_out.detach()
+                    return {
+                        "image": latents_out,
+                        "sampler": sampler_name,
+                        "shift": float(shift),
+                        "timesteps": loop.get("timesteps", []),
+                        "num_inference_steps": loop.get(
+                            "num_inference_steps", int(steps),
+                        ),
+                        "seed": int(seed),
+                        "width": int(width),
+                        "height": int(height),
+                        "prompt": prompt,
+                        "backend": "diffusion_loop",
+                    }
+            except Exception:  # noqa: BLE001
+                # Fall through to the legacy path.
+                pass
 
         # F-10: when the caller specifies an explicit scheduler, run
         # the real :class:`core.diffusion_scheduler.DiffusionScheduler`
