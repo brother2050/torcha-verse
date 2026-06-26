@@ -1,8 +1,10 @@
 # TorchaVerse 路线图
 
-> **更新日期**: 2026-06-26 · 当前: **v0.6.0 (refactor 收尾)**
-> HEAD: 16 commits R-3 ~ R-15 · 1053 测试全过 · 节点数 39 · **R-19 撤 shim + MD 重写**
-> 下次发布: **v0.6.1** (R-16 性能 + R-17 CLI 增强 + R-18 papers 懒化)
+> **更新日期**: 2026-06-26 · 当前: **v0.6.x (R-3~R-19 收尾 + F-0~F-14 真实填充)**
+> HEAD: R-3 ~ R-19 + F-0~F-14 · 1118 测试全过 · 节点数 39
+> **最新 commit**: a9202cb (F-0~F-14)
+> 下次发布: **v0.8.0** (ModelMixin + from_pretrained + 真采样循环)
+> 详细方案见: [`docs/V0.8_UPGRADE_PLAN.md`](V0.8_UPGRADE_PLAN.md)
 
 ## 定位
 
