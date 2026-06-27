@@ -1,6 +1,6 @@
 # Docker
 
-> **最近更新**: 2026-06-26
+> **最近更新**: 2026-06-27
 
 ## 镜像目标
 
@@ -15,7 +15,7 @@
 ## Quick start (CPU)
 
 ```bash
-docker build --target serving -t torcha-verse:0.6.0-serving .
+docker build --target serving -t torcha-verse:0.10.2-serving .
 docker compose up torcha-verse
 curl -fsS http://localhost:8000/health
 ```
@@ -25,7 +25,7 @@ curl -fsS http://localhost:8000/health
 ## GPU
 
 ```bash
-docker build --target gpu -t torcha-verse:0.6.0-gpu .
+docker build --target gpu -t torcha-verse:0.10.2-gpu .
 docker compose --profile gpu up gpu
 ```
 

@@ -2,7 +2,7 @@
 
 延后到 v1.0.0 之后或满足特定启动条件才会重启的任务清单。
 
-> **最近更新**: 2026-06-26
+> **最近更新**: 2026-06-27
 
 延后≠删除。每条都标明:**为什么延后 / 何时重启 / 关联占位**。
 
@@ -31,7 +31,7 @@
 3. CI 扫描器 `scripts/check/placeholders.py` 强制登记
 4. 用户触发时: warn 日志 + audit log + 不阻塞流
 
-**重启条件**: 任何 release 切换前,跑 `scripts/check/placeholders.py`
+**重启条件**: 任何 release 切换前,跑 `scripts.check.placeholders`
 扫一次,差集非空则 fail。
 
 ## D2 — device_manager TP/PP 真实实现

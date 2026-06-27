@@ -1,6 +1,6 @@
 # 硬编码约定 (Hardcoding Convention)
 
-> **最近更新**: 2026-06-26 · 9 个可插拔规则 · 4 级严重性
+> **最近更新**: 2026-06-27 · 9 个可插拔规则 · 4 级严重性
 
 ## 概述
 
@@ -14,7 +14,7 @@ API key 模式。所有命中以 violation 形式报告,可按严重性 / 路径
 
 ```bash
 # 子包路径(无 shim,v0.6.x 起)
-python scripts/check/hardcoding/_cli.py --path <PATH>
+python -m scripts.check.hardcoding --path <PATH>
 
 # 退出码: 0 = 无违规 / 1 = 有违规
 ```

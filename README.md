@@ -97,7 +97,7 @@ bus.register("model.text", "my-llm", MyLLM())
 ## 测试
 
 ```bash
-python -m pytest tests/ -q            # 1053 tests
+python -m pytest tests/ -q            # 1377 tests
 python -m pytest tests/test_v03_asset_store.py -q  # 子集
 ```
 

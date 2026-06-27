@@ -2,7 +2,7 @@
 
 部署 / 监控 / checkpoint / 模型下载 操作指南。
 
-> **最近更新**: 2026-06-26 · 1053 测试全过
+> **最近更新**: 2026-06-27 · 1377 测试全过
 
 ## 目录
 
@@ -10,9 +10,9 @@
 2. [配置中心与默认值](#配置中心与默认值)
 3. [Checkpoint 备份与恢复](#checkpoint-备份与恢复)
 4. [模型下载](#模型下载)
-5. [运行端到端 example](#运行端到端-example)
-6. [CLI 速查](#cli-速查)
-7. [健康检查与日志](#健康检查与日志)
+5. [CLI 速查](#cli-速查)
+6. [健康检查与日志](#健康检查与日志)
+7. [故障排查](#故障排查)
 
 ---
 
@@ -77,7 +77,9 @@ ckpt = cm.load("model-1", step=1000)  # 返回完整 snapshot dict
 ```python
 from models.source import fetch
 result = fetch("Qwen/Qwen2.5-0.5B-Instruct")
-print(result.cache_path)  # ~/.cache/torcha-verse/huggingface/Qwen/...
+print(result.location.path())  # ~/.cache/torcha-verse/huggingface/Qwen/Qwen2.5-0.5B-Instruct
+print(result.manifest.repo_id) # "Qwen/Qwen2.5-0.5B-Instruct"
+print(result.from_cache)       # True / False (是否走 cache 命中)
 ```
 
 镜像加速:
@@ -124,7 +126,7 @@ curl http://127.0.0.1:8000/health | jq .
 {
   "status": "healthy",
   "node_types": 39,
-  "version": "0.3.0"
+  "version": "0.10.2"
 }
 ```
 

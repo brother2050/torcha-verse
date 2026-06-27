@@ -1,33 +1,56 @@
 # TorchaVerse 路线图
 
-> **更新日期**: 2026-06-26 · 当前: **v0.6.x (R-3~R-19 收尾 + F-0~F-14 真实填充)**
-> HEAD: R-3 ~ R-19 + F-0~F-14 · 1118 测试全过 · 节点数 39
-> **最新 commit**: a9202cb (F-0~F-14)
-> 下次发布: **v0.8.0** (ModelMixin + from_pretrained + 真采样循环)
-> 详细方案见: [`docs/V0.8_UPGRADE_PLAN.md`](V0.8_UPGRADE_PLAN.md)
+> **更新日期**: 2026-06-27 · 当前: **v0.10.x (本地 transformers 风格 Runtime + examples 下线)**
+> HEAD: v0.10.0 / v0.10.1 / v0.10.2 · 1377 测试全过 · 节点数 39
+> **最新 commit**: f22573b (v0.10.2 删除 examples + runtime 自描述命名)
+> 下次发布: **v0.11.0** (基于 ModelMixin + from_pretrained + 真采样循环 + runtime 一行开关)
 
 ## 定位
 
 TorchaVerse 是纯 PyTorch 全模态生成式 AI 框架,六层分层,39 个能力节点
 (文本/图像/视频/音频/字幕/一致性/数字人/导出/RAG/Agent),端到端可跑、
-可生产部署。
+可生产部署。v0.10.x 起内置**自研 transformers 风格本地加载与推理串联层**
+(`models.runtime.*`), 一行 `enable_local_runtime()` 即可把 39 个
+echo 工厂节点切到真模型真生成。
 
 路线图分两段:
 - **v0.4.x 准生产化** ✅ 完成 (2026-06-25, 22 commit, 747→986 测试)
-- **v0.5.x 功能扩展** ✅ 完成 (2026-06-25, +5 examples, +206 测试)
+- **v0.5.x 功能扩展** ✅ 完成 (2026-06-25, +206 测试)
 - **v0.6.x 重构** ✅ 完成 (2026-06-26, 13 PR, R-3~R-15 拆分, 1053 测试)
-- **v0.7.x 性能 / CLI / 懒化** (当前)
-- **v1.0.0 生产化** (后续)
+- **v0.7.x 性能 / CLI / 懒化** ✅ 完成 (2026-06-26, R-16~R-19)
+- **v0.10.x Local Runtime + 自描述命名** ✅ 完成 (2026-06-27, 1377 测试)
+  - **v1.0.0 生产化** (后续)
 
 ---
 
-## v0.7.x — 当前阶段 (本周)
+## v0.10.x 完成项 (2026-06-27)
+
+| 优先级 | 范围 | 状态 | commit |
+|---|---|---|---|
+| 0d2441a | **自研 transformers 风格本地加载 + 推理串联层** (`models.runtime.*`): `transformers_style_loader` / `transformers_style_pipeline` / `module_bus_runtime_switch` / `cpu_cuda_mps_device_planner` + `enable_local_runtime()` 一行开关 | ✅ | 0d2441a |
+| f7f1558 | 命名重整 (去 `Local*` 前缀, 完善操作手册) | ✅ | f7f1558 |
+| f22573b | **删除 `examples/` 整个目录** (14 文件) + `models.runtime.*` 模块文件重命名为**自描述**名字 (loader→transformers_style_loader 等) | ✅ | f22573b |
+
+### v0.10.x 关键产物
+
+- **`models.runtime.transformers_style_loader`** — 类似 `transformers.AutoModel` + `AutoTokenizer` 的本地加载统一入口,无外部依赖
+- **`models.runtime.transformers_style_pipeline`** — 类似 `transformers.pipeline` 的多模态推理管道
+- **`models.runtime.module_bus_runtime_switch`** — `enable_local_runtime()` 一行把 39 节点切到真模型
+- **`models.runtime.cpu_cuda_mps_device_planner`** — CPU / CUDA / MPS / multi-GPU 自动分配 (无 `accelerate` 依赖)
+- **删除 `examples/` 整个目录** — 用户明确指出 examples 中的演示脚本与新 runtime 重复, 改用 `enable_local_runtime()` + `PipelineBuilder` 跑真模型即可
+- **0 回归**: test_local_transformers 66/66 pass; 全量 1377 通过 (9 fail 来自 main 上同样存在的 rich/onnxscript 缺包环境问题)
+
+详细操作手册见 [`docs/local_transformers.md`](local_transformers.md)。
+
+---
+
+## v0.7.x ✅ 完成 (2026-06-26)
 
 | 优先级 | 范围 | 状态 | PR |
 |---|---|---|---|
-| R-16 | 性能优化 (NodeContext lock, cache, batch) | ⏳ 进行中 | R-16 |
-| R-17 | CLI `--config` / JSON log / request-id / healthcheck | ⏳ 队列 | R-17 |
-| R-18 | `nodes/papers` 懒化 (按需 import, 启动时间 -30%) | ⏳ 队列 | R-18 |
+| R-16 | 性能优化 (NodeContext lock, cache, batch) | ✅ 完成 2026-06-26 | R-16 |
+| R-17 | CLI `--config` / JSON log / request-id / healthcheck | ✅ 完成 2026-06-26 | R-17 |
+| R-18 | `nodes/papers` 懒化 (按需 import, 启动时间 -30%) | ✅ 完成 2026-06-26 | R-18 |
 | R-19 | **撤 scripts/check_* shim + 重写 13 个 MD** | ✅ 完成 2026-06-26 | R-19 |
 | F-* | **真实实现填充 (24 个节点 + 11 PaperAdapter + 32 测试)** | ✅ 完成 2026-06-26 | F-0~F-14 |
 
@@ -166,7 +189,10 @@ RuntimeScheduler, metrics, multi-tenant, leaderboard, docker, ci).
 | v0.5.0 (资产/一致性/Prompt Studio) | ✅ | 986 | (略) |
 | v0.5.1 (v0.5 feature demo) | ✅ | 1053 | (略) |
 | v0.6.0 (R-3~R-15 重构) | ✅ | 1053 | (R-3~R-15) |
-| v0.6.1 (R-16~R-19 性能/CLI/lazy/MD) | 🚧 | 1053+ | R-19 ✅ |
+| v0.6.1 (R-16~R-19 性能/CLI/lazy/MD) | ✅ | 1118 | R-19 ✅ |
+| v0.10.0 (自研 transformers 风格 Runtime) | ✅ | 1377 | 0d2441a |
+| v0.10.1 (命名重整 + 完善操作手册) | ✅ | 1377 | f7f1558 |
+| v0.10.2 (删除 examples + 自描述命名) | ✅ | 1377 | f22573b |
 | v1.0.0 (生产化) | ⏳ | — | — |
 
 每月初扫一次 `DEFERRED_TASKS.md`,评估是否重新启动任何延后项。

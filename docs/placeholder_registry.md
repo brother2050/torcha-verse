@@ -2,14 +2,14 @@
 
 仓库内**所有** `pass` 与 `NotImplementedError` 的单一来源(Single Source of Truth)。
 
-> **最近更新**: 2026-06-26 · 合计 **35 个**已注册占位 (协议/抽象 + try/except 兜底 + if-branch noop + 其它)
+> **最近更新**: 2026-06-27 · 合计 **53 个**已注册占位 (协议/抽象 + try/except 兜底 + if-branch noop + 其它)
 >
 > 完整清单按文件行号分布于各子包:`models/source/` 4 个、`nodes/` 5 个、
 > `assets/` 7 个、`infrastructure/` 5 个、`serving/` 4 个、`papers/` 1 个、
 > `consistency/` 4 个、`plugins/` 1 个、`tools/` 3 个、`security/` 1 个。
 
-**CI 守卫**: `python scripts/check/hardcoding/_cli.py --path src/ --format json`
-之外的 placeholder 由 `scripts/check/placeholders.py` 扫描。
+**CI 守卫**: `python -m scripts.check.hardcoding --path src/ --format json`
+之外的 placeholder 由 `scripts.check.placeholders` (无 shim) 扫描。
 新增 `pass` / `NotImplementedError` 必须在此登记,否则 CI fail。
 
 ---
@@ -25,7 +25,7 @@
 
 ---
 
-## 2. 注册表(共 95 条)
+## 2. 注册表(共 53 条)
 
 ### 2.1 协议/抽象方法(`protocol`,12 条)
 
