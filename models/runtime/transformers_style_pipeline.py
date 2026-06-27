@@ -52,7 +52,7 @@ import torch
 
 from infrastructure.logger import get_logger
 
-from .loader import (
+from .transformers_style_loader import (
     ModelForCausalLM,
     ModelForMusic,
     ModelForTextToImage,
@@ -71,7 +71,7 @@ __all__ = [
 ]
 
 
-_logger = get_logger("models.runtime.pipeline")
+_logger = get_logger("models.runtime.transformers_style_pipeline")
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def pipeline(
             raise RuntimeError(
                 "pipeline(): either `model` (TaskHead) or `model_path` is required"
             )
-        from .loader import load_model_and_tokenizer
+        from .transformers_style_loader import load_model_and_tokenizer
         mdl, tok, fam = load_model_and_tokenizer(
             model_path,
             family=family,

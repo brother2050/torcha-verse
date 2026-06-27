@@ -1158,33 +1158,6 @@ exemptions:
     reason: "ConfigCenter run snapshot 协议文件名"
 
   # ----------------------------------------------------------------
-  # Group 16: examples/ demo 协议 (演示脚本, 非生产)
-  # ----------------------------------------------------------------
-  - file: "examples/agent_demo.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "demo_"
-    reason: "agent demo 变量名前缀, 演示性"
-
-  - file: "examples/rag_demo.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "demo_"
-    reason: "RAG demo 变量名前缀, 演示性"
-
-  - file: "examples/agent_demo.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "Hello, world!"
-    reason: "demo 提示词, 演示性"
-
-  - file: "examples/rag_demo.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "What is"
-    reason: "demo 提问, 演示性"
-
-  # ----------------------------------------------------------------
   # Group 17: numeric_literal 通用超参 (作者层默认)
   # ----------------------------------------------------------------
   # 把全项目 numeric 超参 (除 model structural 之外) 统一降级为 info,
@@ -1548,22 +1521,6 @@ exemptions:
     protocol_format: true
     content_contains: "SHA256"
     reason: "Civitai metadata hash dict key, 协议标识"
-  # examples/model_download.py -- P2++ demo
-  - file: "examples/model_download.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "Bearer"
-    reason: "HTTP Bearer auth scheme (demo print), 协议标识"
-  - file: "examples/model_download.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "huggingface"
-    reason: "source id 'huggingface' (demo print), 协议标识"
-  - file: "examples/model_download.py"
-    type: "string_literal"
-    protocol_format: true
-    content_contains: "demo_secret"
-    reason: "demo token value, 协议标识"
 
   # ---- D1 阶段三: per-rule opt-out 整组豁免 (协议/fixture/CLI/模板) ----
   # 以下 group 一次性对 4 个内置 rule 整组 opt-out,原因是
@@ -1582,10 +1539,6 @@ exemptions:
   - file: "serving/*.py"
     rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
     reason: "D1 阶段三: serving/ 整组 CLI / 协议 / web UI 字符串豁免"
-
-  - file: "examples/*.py"
-    rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]
-    reason: "D1 阶段三: examples/ 整组演示 / prompt 模板豁免"
 
   - file: "nodes/*.py"
     rules: ["string_literal", "numeric_literal", "path_literal", "list_literal"]

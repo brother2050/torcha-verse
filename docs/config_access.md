@@ -111,7 +111,7 @@ cc.get("sampling.default.top_k")            # 50
 
 每次启动可写一份:
 ```bash
-python examples/basic_text_gen.py --snapshot /tmp/snap.json
+python -m tools.config_snapshot --output /tmp/snap.json
 ```
 
 重放:

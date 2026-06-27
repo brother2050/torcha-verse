@@ -106,7 +106,7 @@ from core.checkpoint_loader import (
 )
 from ..text.clip_tokenizer import SimpleByteBPETokenizer
 from ..text.t5_tokenizer import SimpleSentencePieceTokenizer
-from .device_planner import DevicePlan, plan_device
+from .cpu_cuda_mps_device_planner import DevicePlan, plan_device
 
 __all__ = [
     "ModelFamily",
@@ -121,7 +121,7 @@ __all__ = [
 ]
 
 
-_logger = get_logger("models.runtime.loader")
+_logger = get_logger("models.runtime.transformers_style_loader")
 
 
 # ---------------------------------------------------------------------------

@@ -8,19 +8,20 @@
 
 本包正是填补这个缺口:
 
-* :mod:`models.runtime.loader` -- 类似
+* :mod:`models.runtime.transformers_style_loader` -- 类似
   ``transformers.AutoModel`` + ``AutoTokenizer`` 的本地加载统一入口
   (:class:`ModelHub` / :func:`load_model_and_tokenizer` /
   :class:`ModelFor*` 类)。
-* :mod:`models.runtime.pipeline` -- 类似 ``transformers.pipeline``
-  的轻量推理管道 (:class:`TextGenerationPipeline` /
+* :mod:`models.runtime.transformers_style_pipeline` -- 类似
+  ``transformers.pipeline`` 的轻量推理管道
+  (:class:`TextGenerationPipeline` /
   :class:`ImageGenerationPipeline` / :class:`AudioPipeline`)。
-* :mod:`models.runtime.runtime_config` -- 一行配置:
+* :mod:`models.runtime.module_bus_runtime_switch` -- 一行配置:
   :func:`enable_local_runtime` 把 "自研加载 + 真推理循环" 注入
   :class:`core.module_bus.ModuleBus`,让 39 个 L4 节点从默认的 echo
   工厂切到 **真模型真生成**。
-* :mod:`models.runtime.device_planner` -- CPU / GPU / MPS / multi-GPU
-  自动分配,无外部依赖 (比 ``accelerate`` 简单但够用)。
+* :mod:`models.runtime.cpu_cuda_mps_device_planner` -- CPU / GPU / MPS /
+  multi-GPU 自动分配,无外部依赖 (比 ``accelerate`` 简单但够用)。
 
 设计原则 (与 v0.8.0 + v0.9.0 路线图保持一致):
 
@@ -36,8 +37,6 @@
    HunyuanDiT、v1.0.0 的真 FLUX,无需改 pipeline 代码。
 4. **生产友好**:支持 ``device_map`` / ``torch_dtype`` / ``variant`` /
    ``key_renames`` / ``strict`` 5 维参数,与 diffusers 行为对齐。
-5. **测试 0 回归**:新模块的占位 / not-implemented 全部在
-   ``docs/placeholder_registry.md`` 登记。
 
 公共 API (按使用频率倒序):
 
@@ -50,20 +49,11 @@
 * :class:`ImageGenerationPipeline`
 * :class:`AudioPipeline`
 
-向后兼容 (v0.10.0 -> v0.10.1 命名重整):
-
-为了让名字更准确 (不重复 ``Local`` 前缀 / 避免 ``local_loader``
-嵌套在 ``models.runtime`` 下的语义重复),我们在 v0.10.1 把模块
-文件和公共类都重命名了。**v0.10.0 旧名仍然作为 alias 保留**,所以
-``from models.runtime import LocalModelHub`` /
-``from models.runtime import LocalTextGenerationPipeline`` 在
-v0.10.1+ 仍然能工作。
-
 详细使用示例见 :mod:`docs.local_transformers` (顶层 docs 入口)。
 """
 from __future__ import annotations
 
-from .loader import (
+from .transformers_style_loader import (
     ModelHub,
     ModelForCausalLM,
     ModelForTextToImage,
@@ -74,7 +64,7 @@ from .loader import (
     load_model_and_tokenizer,
     detect_model_family,
 )
-from .pipeline import (
+from .transformers_style_pipeline import (
     TextGenerationPipeline,
     ImageGenerationPipeline,
     AudioPipeline,
@@ -82,14 +72,14 @@ from .pipeline import (
     pipeline,
     list_supported_tasks,
 )
-from .runtime_config import (
+from .module_bus_runtime_switch import (
     RuntimeConfig,
     enable_local_runtime,
     disable_local_runtime,
     is_local_runtime_enabled,
     get_active_config,
 )
-from .device_planner import (
+from .cpu_cuda_mps_device_planner import (
     DevicePlan,
     plan_device,
     pick_default_device,
@@ -98,27 +88,9 @@ from .device_planner import (
     is_mps_available,
 )
 
-# ---------------------------------------------------------------------------
-# Backward-compatible aliases (v0.10.0 旧名, v0.10.1+ 仍可用)
-# ---------------------------------------------------------------------------
-# The old name ``Local*`` carried the "local" prefix because the
-# module was originally called ``local_loader.py`` /
-# ``local_pipeline.py`` -- that file name has been simplified to
-# ``loader.py`` / ``pipeline.py`` since "runtime" already implies
-# local.  The old class names are kept as aliases so v0.10.0 user
-# code continues to work unmodified.
-LocalModelHub = ModelHub
-LocalModelForCausalLM = ModelForCausalLM
-LocalModelForTextToImage = ModelForTextToImage
-LocalModelForTextToSpeech = ModelForTextToSpeech
-LocalModelForMusic = ModelForMusic
-LocalTextGenerationPipeline = TextGenerationPipeline
-LocalImageGenerationPipeline = ImageGenerationPipeline
-LocalAudioPipeline = AudioPipeline
-
 
 __all__ = [
-    # loader (canonical names)
+    # transformers_style_loader
     "ModelHub",
     "ModelForCausalLM",
     "ModelForTextToImage",
@@ -128,33 +100,24 @@ __all__ = [
     "TokenizerBundle",
     "load_model_and_tokenizer",
     "detect_model_family",
-    # pipeline (canonical names)
+    # transformers_style_pipeline
     "TextGenerationPipeline",
     "ImageGenerationPipeline",
     "AudioPipeline",
     "PipelineOutput",
     "pipeline",
     "list_supported_tasks",
-    # runtime_config
+    # module_bus_runtime_switch
     "RuntimeConfig",
     "enable_local_runtime",
     "disable_local_runtime",
     "is_local_runtime_enabled",
     "get_active_config",
-    # device_planner
+    # cpu_cuda_mps_device_planner
     "DevicePlan",
     "plan_device",
     "pick_default_device",
     "get_device_map",
     "is_cuda_available",
     "is_mps_available",
-    # backward-compat aliases (v0.10.0 -> v0.10.1)
-    "LocalModelHub",
-    "LocalModelForCausalLM",
-    "LocalModelForTextToImage",
-    "LocalModelForTextToSpeech",
-    "LocalModelForMusic",
-    "LocalTextGenerationPipeline",
-    "LocalImageGenerationPipeline",
-    "LocalAudioPipeline",
 ]

@@ -56,14 +56,12 @@ FROM base AS runtime
 # Install Python deps first so we can cache the layer when only the
 # project source has changed.
 COPY requirements.txt pyproject.toml README.md ./
-COPY examples ./examples
 COPY agents ./agents
 COPY assets ./assets
 COPY canvas ./canvas
 # Copy *source* directories so the editable install works in CI.  The
 # pyproject ``[tool.setuptools]`` packages are picked up at install
-# time; tests/examples are intentionally excluded from the wheel but
-# present in the image for ``python -m examples.*`` use.
+# time; tests are intentionally excluded from the wheel.
 COPY config ./config
 COPY consistency ./consistency
 COPY core ./core
@@ -121,7 +119,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt pyproject.toml README.md ./
-COPY examples agents assets canvas config consistency core infrastructure \
+COPY agents assets canvas config consistency core infrastructure \
      models nodes pipeline plugins rag security serving tools training evaluation ./
 
 RUN groupadd --system torcha && useradd --system --gid torcha --uid 10001 torcha \

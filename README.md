@@ -110,7 +110,6 @@ python -m pytest tests/test_v03_asset_store.py -q  # 子集
 | [docs/ROADMAP.md](docs/ROADMAP.md) | v0.4 ~ v0.6 路线图与当前进度 |
 | [docs/DEFERRED_TASKS.md](docs/DEFERRED_TASKS.md) | 延后任务与原因 |
 | [docs/open_items.md](docs/open_items.md) | 已知未处理项 |
-| [docs/examples_catalog.md](docs/examples_catalog.md) | 全部 18 个示例脚本 |
 | [docs/hardcoding_convention.md](docs/hardcoding_convention.md) | 硬编码扫描器 + 9 个可插拔规则 |
 | [docs/placeholder_registry.md](docs/placeholder_registry.md) | 95 个 placeholder 行号登记 |
 | [docs/config_access.md](docs/config_access.md) | 配置中心使用指南 |

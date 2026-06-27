@@ -1,9 +1,12 @@
-# Local Transformers Runtime 操作手册 (v0.10.1)
+# Local Transformers Runtime 操作手册 (v0.10.2)
 
 > **本手册是 `models/runtime/` 的"使用 + 排错 + 部署 + 性能调优"完整指南。**
 > 涵盖快速上手、API 参考、故障排查、性能调优、生产部署、迁移指南、FAQ
 > 等运维 / 开发所需的一切信息。
-> 状态: v0.10.1 命名重整, `Local*` 旧名仍以 alias 形式保留。
+> 状态: v0.10.2 命名重整 — 4 个模块文件以功能语义命名
+> (`transformers_style_loader` / `transformers_style_pipeline` /
+> `module_bus_runtime_switch` / `cpu_cuda_mps_device_planner`),
+> 类名去 `Local*` 前缀。
 
 ---
 
@@ -14,7 +17,7 @@
 3. [故障排查](#3-故障排查)
 4. [性能调优](#4-性能调优)
 5. [生产部署](#5-生产部署)
-6. [API 迁移指南 (v0.10.0 → v0.10.1)](#6-api-迁移指南-v0100--v0101)
+6. [命名约定 (v0.10.2)](#6-命名约定-v0102)
 7. [FAQ](#7-faq)
 
 ---
@@ -61,22 +64,11 @@ from nodes.base import NodeContext
 result = PipelineBuilder("demo").node("text_chat", id="t", prompt="hi").build().run(NodeContext())
 ```
 
-### 1.4 一行运行 13 个 example
+### 1.4 端到端验证
 
-```bash
-# 项目保留的 13 个 example (与 Local Transformers Runtime 完全兼容)
-python -m examples.basic_text_gen          # L4 text_chat 最小演示
-python -m examples.real_text_chat           # v0.4.0 P0 真 tiny Transformer
-python -m examples.image_gen               # L4 image_txt2img 真 UNet+VAE
-python -m examples.video_gen               # L4 视频生成
-python -m examples.audio_tts               # L4 TTS
-python -m examples.agent_demo              # ReAct agent
-python -m examples.rag_demo                # RAG 摄取+查询
-python -m examples.consistency_character   # 角色一致性
-python -m examples.dh_lipsync              # 数字人口型
-python -m examples.model_download          # 模型下载 (走 models.source)
-python -m examples.v05_feature_demo        # v0.5.x feature 演示
-```
+`enable_local_runtime()` 之后 39 个节点全部走真模型/真生成 — 想验证整条
+管线,直接用 `PipelineBuilder` 跑 39 节点任一即可 (见
+[`docs/architecture.md`](architecture.md) 节点清单)。
 
 ---
 
@@ -122,27 +114,19 @@ python -m examples.v05_feature_demo        # v0.5.x feature 演示
 | `ImageGenerationPipeline` | `pipeline("text-to-image")` / `diffusers.StableDiffusionPipeline` |
 | `AudioPipeline` | `pipeline("text-to-speech"|"text-to-audio"|"music-generation")` |
 
-### 2.4 命名 (v0.10.1)
+### 2.4 命名 (v0.10.2)
 
 **canonical (推荐) 名字** (无 `Local` 前缀, 不重复模块名):
 
 | 模块 | 公共类 / 函数 |
 |---|---|
-| `models.runtime.loader` | `ModelHub` / `ModelFor*` / `load_model_and_tokenizer` / `detect_model_family` |
-| `models.runtime.pipeline` | `TextGenerationPipeline` / `ImageGenerationPipeline` / `AudioPipeline` / `pipeline` |
-| `models.runtime.runtime_config` | `RuntimeConfig` / `enable_local_runtime` / `disable_local_runtime` |
-| `models.runtime.device_planner` | `DevicePlan` / `plan_device` / `pick_default_device` / `get_device_map` |
+| `models.runtime.transformers_style_loader` | `ModelHub` / `ModelFor*` / `load_model_and_tokenizer` / `detect_model_family` |
+| `models.runtime.transformers_style_pipeline` | `TextGenerationPipeline` / `ImageGenerationPipeline` / `AudioPipeline` / `pipeline` |
+| `models.runtime.module_bus_runtime_switch` | `RuntimeConfig` / `enable_local_runtime` / `disable_local_runtime` |
+| `models.runtime.cpu_cuda_mps_device_planner` | `DevicePlan` / `plan_device` / `pick_default_device` / `get_device_map` |
 
-**向后兼容 alias** (v0.10.0 旧名, v0.10.1+ 仍 work):
-
-```python
-# 这些写法都仍有效
-from models.runtime import LocalModelHub       # == ModelHub
-from models.runtime import LocalModelForCausalLM  # == ModelForCausalLM
-from models.runtime import LocalTextGenerationPipeline  # == TextGenerationPipeline
-from models.runtime import LocalImageGenerationPipeline  # == ImageGenerationPipeline
-from models.runtime import LocalAudioPipeline   # == AudioPipeline
-```
+**v0.10.2 起不再保留 `Local*` 前缀的旧名 alias** — 旧版本 (v0.10.0/v0.10.1) 用户
+迁移时请按上表一次性把 import 改成 canonical 名字 (`LocalModelHub` → `ModelHub` 等)。
 
 ---
 
@@ -549,59 +533,21 @@ ckpt.save(model, step=1000, family="hunyuan_dit")
 
 ---
 
-## 6. API 迁移指南 (v0.10.0 → v0.10.1)
+## 6. 命名约定 (v0.10.2)
 
-### 6.1 为什么要重命名?
+`models.runtime.*` 下 4 个模块文件以**功能语义**命名, 不再使用过于简
+短的 `loader.py` / `pipeline.py` / `runtime_config.py` / `device_planner.py`。
+这些文件名必须看进文件才能猜到内容, 项目规模一大就难维护。
 
-| v0.10.0 旧名 | v0.10.1 新名 | 原因 |
-|---|---|---|
-| `models.runtime.local_loader` | `models.runtime.loader` | `runtime` 本身已经隐含 local, `local_loader` 重复 |
-| `models.runtime.local_pipeline` | `models.runtime.pipeline` | 同上 |
-| `LocalModelHub` | `ModelHub` | 同上 |
-| `LocalModelForCausalLM` | `ModelForCausalLM` | 同上 |
-| `LocalTextGenerationPipeline` | `TextGenerationPipeline` | 同上 |
-| `LocalImageGenerationPipeline` | `ImageGenerationPipeline` | 同上 |
-| `LocalAudioPipeline` | `AudioPipeline` | 同上 |
+| 当前 (v0.10.2) 模块 | 公共 API |
+|---|---|
+| `models.runtime.transformers_style_loader` | `ModelHub` / `ModelFor*` / `load_model_and_tokenizer` / `detect_model_family` |
+| `models.runtime.transformers_style_pipeline` | `TextGenerationPipeline` / `ImageGenerationPipeline` / `AudioPipeline` / `pipeline` |
+| `models.runtime.module_bus_runtime_switch` | `RuntimeConfig` / `enable_local_runtime` / `disable_local_runtime` |
+| `models.runtime.cpu_cuda_mps_device_planner` | `DevicePlan` / `plan_device` / `pick_default_device` / `get_device_map` |
 
-### 6.2 你的代码需要改吗?
-
-**不需要！** 所有 `Local*` 旧名都作为 alias 保留, 你的 v0.10.0 代码继续 work。
-
-### 6.3 推荐怎么改 (Linter 自动改即可)
-
-```bash
-# 简单 sed (只改 import 即可, 内部 type hint / 实例化不需要改因为 alias)
-sed -i 's/LocalModelHub/ModelHub/g' your_file.py
-sed -i 's/LocalModelForCausalLM/ModelForCausalLM/g' your_file.py
-# 等等
-```
-
-### 6.4 完整 alias 表
-
-| v0.10.0 旧名 | v0.10.1 canonical | 状态 |
-|---|---|---|
-| `from models.runtime import LocalModelHub` | `from models.runtime import ModelHub` | alias, 仍 work |
-| `from models.runtime import LocalModelForCausalLM` | `from models.runtime import ModelForCausalLM` | alias, 仍 work |
-| `from models.runtime import LocalModelForTextToImage` | `from models.runtime import ModelForTextToImage` | alias, 仍 work |
-| `from models.runtime import LocalModelForTextToSpeech` | `from models.runtime import ModelForTextToSpeech` | alias, 仍 work |
-| `from models.runtime import LocalModelForMusic` | `from models.runtime import ModelForMusic` | alias, 仍 work |
-| `from models.runtime import LocalTextGenerationPipeline` | `from models.runtime import TextGenerationPipeline` | alias, 仍 work |
-| `from models.runtime import LocalImageGenerationPipeline` | `from models.runtime import ImageGenerationPipeline` | alias, 仍 work |
-| `from models.runtime import LocalAudioPipeline` | `from models.runtime import AudioPipeline` | alias, 仍 work |
-| `from models.runtime.local_loader import ...` | `from models.runtime.loader import ...` | 模块路径变, **必须改** |
-| `from models.runtime.local_pipeline import ...` | `from models.runtime.pipeline import ...` | 模块路径变, **必须改** |
-
-### 6.5 内部 type hint 也更新
-
-`LocalModelForCausalLM` / `ModelForCausalLM` 现在 `is` 同一个类对象:
-
-```python
-from models.runtime import LocalModelForCausalLM, ModelForCausalLM
-print(LocalModelForCausalLM is ModelForCausalLM)  # True
-print(LocalModelForCausalLM)  # <class '...ModelForCausalLM'>
-```
-
-所以 `isinstance(obj, LocalModelForCausalLM)` 和 `isinstance(obj, ModelForCausalLM)` 等价。
+类名同步去掉了 `Local*` 前缀 (`LocalModelHub` → `ModelHub` 等),
+`runtime` 本身已隐含 local, 重复前缀既冗余又对路径理解无帮助。
 
 ---
 
@@ -700,4 +646,3 @@ model, tok, fam = load_model_and_tokenizer(path, family="hunyuan_dit")
 - [`docs/architecture.md`](architecture.md) — 六层架构
 - [`docs/operations.md`](operations.md) — 部署 / 监控 / checkpoint
 - [`docs/placeholder_registry.md`](placeholder_registry.md) — 占位登记
-- [`docs/examples_catalog.md`](examples_catalog.md) — 13 个 example 详细说明

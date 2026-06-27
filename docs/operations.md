@@ -89,33 +89,7 @@ export HF_TOKEN="hf_xxx"
 
 Token 解析顺序: `token=` 参数 > `$HF_TOKEN` > `$HUGGING_FACE_HUB_TOKEN` > `~/.cache/huggingface/token`。
 
-完整 API 见 [`models_source.md`](models_source.md) / `examples/model_download.py`。
-
----
-
-## 运行端到端 example
-
-```bash
-# 全部默认离线 / echo
-python examples/basic_text_gen.py
-
-# 真模型前向 (CPU OK,~2-30s)
-python examples/real_text_chat.py --preset tiny --skip-pretrain
-python examples/image_gen.py
-python examples/video_gen.py
-python examples/audio_tts.py
-python examples/consistency_character.py
-python examples/dh_lipsync.py
-
-# agent / RAG / model download
-python examples/agent_demo.py
-python examples/rag_demo.py
-python examples/model_download.py           # FakeTransport
-python examples/model_download.py --real    # 真镜像
-python examples/v05_feature_demo.py         # v0.5 feature surface
-```
-
-详见 [`examples_catalog.md`](examples_catalog.md)。
+完整 API 见 [`models_source.md`](models_source.md)。
 
 ---
 

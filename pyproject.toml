@@ -66,7 +66,6 @@ markers = [
     "placeholder_registry: marks placeholder-registry scanner / parser tests",
     "hardcoding_severity: marks hardcoding-scanner severity tests (D1)",
     "hardcoding_rules: marks hardcoding-scanner pluggable-rule tests (D1 stage three)",
-    "examples: marks examples/*.py smoke tests (import + main() presence)",
     "error_helper: marks infrastructure/error_helper.py tests (D3 stage three)",
 ]
 
@@ -170,7 +169,6 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 exclude = [
     "tests/",
-    "examples/",
     "build/",
     "dist/",
 ]

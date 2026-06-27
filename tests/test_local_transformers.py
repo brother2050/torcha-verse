@@ -2,10 +2,10 @@
 
 覆盖 :mod:`models.runtime` 的四个子模块:
 
-* :mod:`models.runtime.device_planner` -- 设备规划器
-* :mod:`models.runtime.loader` -- 自研加载 API
-* :mod:`models.runtime.pipeline` -- 自研推理管道
-* :mod:`models.runtime.runtime_config` -- 一行运行时开关
+* :mod:`models.runtime.cpu_cuda_mps_device_planner` -- 设备规划器
+* :mod:`models.runtime.transformers_style_loader` -- 自研加载 API
+* :mod:`models.runtime.transformers_style_pipeline` -- 自研推理管道
+* :mod:`models.runtime.module_bus_runtime_switch` -- 一行运行时开关
 
 设计原则:
 
@@ -106,27 +106,27 @@ def _write_hunyuan_style_checkpoint(dir_path: str) -> Tuple[str, str]:
 # Section 1: device_planner tests
 # ===========================================================================
 class TestDevicePlanner:
-    """Tests for :mod:`models.runtime.device_planner`."""
+    """Tests for :mod:`models.runtime.cpu_cuda_mps_device_planner`."""
 
     def test_is_cuda_available_returns_bool(self) -> None:
-        from models.runtime.device_planner import is_cuda_available
+        from models.runtime.cpu_cuda_mps_device_planner import is_cuda_available
         result = is_cuda_available()
         assert isinstance(result, bool)
 
     def test_is_mps_available_returns_bool(self) -> None:
-        from models.runtime.device_planner import is_mps_available
+        from models.runtime.cpu_cuda_mps_device_planner import is_mps_available
         result = is_mps_available()
         assert isinstance(result, bool)
 
     def test_pick_default_device_returns_torch_device(self) -> None:
-        from models.runtime.device_planner import pick_default_device
+        from models.runtime.cpu_cuda_mps_device_planner import pick_default_device
         dev = pick_default_device()
         assert isinstance(dev, torch.device)
         # Must always succeed (CPU fallback is guaranteed).
         assert dev.type in {"cpu", "cuda", "mps"}
 
     def test_plan_device_none_uses_default(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device(None)
         assert plan.device is not None
         assert isinstance(plan.dtype, torch.dtype)
@@ -137,24 +137,24 @@ class TestDevicePlanner:
             assert plan.dtype == torch.float16
 
     def test_plan_device_string_cpu(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device("cpu")
         assert plan.device == torch.device("cpu")
         assert plan.dtype == torch.float32
 
     def test_plan_device_torch_device_input(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device(torch.device("cpu"))
         assert plan.device == torch.device("cpu")
 
     def test_plan_device_explicit_dtype_overrides(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device("cpu", torch_dtype=torch.float16)
         assert plan.device == torch.device("cpu")
         assert plan.dtype == torch.float16
 
     def test_plan_device_balanced_falls_back_to_single(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device("balanced")
         # Either multi-GPU device_map or single device fallback.
         if plan.device_map is not None:
@@ -163,19 +163,19 @@ class TestDevicePlanner:
             assert plan.device is not None
 
     def test_plan_device_mapping_passthrough(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device({"layer.0": "cuda:0", "layer.1": "cpu"})
         assert plan.device_map is not None
         assert plan.device_map == {"layer.0": "cuda:0", "layer.1": "cpu"}
 
     def test_plan_device_invalid_string_falls_back(self) -> None:
-        from models.runtime.device_planner import plan_device
+        from models.runtime.cpu_cuda_mps_device_planner import plan_device
         plan = plan_device("not-a-real-device")
         assert plan.device is not None
         assert plan.device.type == "cpu"
 
     def test_get_device_map_returns_dataclass(self) -> None:
-        from models.runtime.device_planner import (
+        from models.runtime.cpu_cuda_mps_device_planner import (
             DevicePlan, get_device_map,
         )
         plan = get_device_map(None)
@@ -183,7 +183,7 @@ class TestDevicePlanner:
         assert plan.notes  # non-empty list (at least one note)
 
     def test_shard_module_across_gpus_balanced(self) -> None:
-        from models.runtime.device_planner import _shard_module_across_gpus
+        from models.runtime.cpu_cuda_mps_device_planner import _shard_module_across_gpus
         m = nn.ModuleList([nn.Linear(1, 1) for _ in range(6)])
         plan = _shard_module_across_gpus(2, m)
         assert len(plan) == 6
@@ -192,7 +192,7 @@ class TestDevicePlanner:
         assert gpus.issubset({"cuda:0", "cuda:1"})
 
     def test_shard_module_across_gpus_raises_for_zero(self) -> None:
-        from models.runtime.device_planner import _shard_module_across_gpus
+        from models.runtime.cpu_cuda_mps_device_planner import _shard_module_across_gpus
         with pytest.raises(ValueError):
             _shard_module_across_gpus(0)
 
@@ -204,7 +204,7 @@ class TestDetectModelFamily:
     """Tests for :func:`detect_model_family`."""
 
     def test_detect_hunyuan_dit(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             detect_model_family, ModelFamily,
         )
         d = _tmpdir()
@@ -212,7 +212,7 @@ class TestDetectModelFamily:
         assert detect_model_family(path) == ModelFamily.HUNYUAN_DIT
 
     def test_detect_unknown_for_random_keys(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             detect_model_family, ModelFamily,
         )
         d = _tmpdir()
@@ -220,12 +220,12 @@ class TestDetectModelFamily:
         assert detect_model_family(path) == ModelFamily.UNKNOWN
 
     def test_detect_raises_for_missing_file(self) -> None:
-        from models.runtime.loader import detect_model_family
+        from models.runtime.transformers_style_loader import detect_model_family
         with pytest.raises(FileNotFoundError):
             detect_model_family("/nonexistent/path/that/does/not/exist")
 
     def test_detect_supports_directory_input(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             detect_model_family, ModelFamily,
         )
         d = _tmpdir()
@@ -237,13 +237,13 @@ class TestTokenizerBundle:
     """Tests for :class:`TokenizerBundle`."""
 
     def test_empty_bundle(self) -> None:
-        from models.runtime.loader import TokenizerBundle
+        from models.runtime.transformers_style_loader import TokenizerBundle
         b = TokenizerBundle()
         assert b.has_any() is False
         assert "empty" in repr(b)
 
     def test_bundle_with_clip(self) -> None:
-        from models.runtime.loader import TokenizerBundle
+        from models.runtime.transformers_style_loader import TokenizerBundle
         from models.text.clip_tokenizer import SimpleByteBPETokenizer
         b = TokenizerBundle(clip=SimpleByteBPETokenizer())
         assert b.has_any() is True
@@ -255,7 +255,7 @@ class TestKeymapDispatch:
     dispatch logic."""
 
     def test_keymap_for_hunyuan_dit_expanded(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             _keymap_for, _default_num_blocks, ModelFamily,
         )
         n = _default_num_blocks(ModelFamily.HUNYUAN_DIT)
@@ -265,20 +265,20 @@ class TestKeymapDispatch:
         assert "blocks.{i}.attn.qkv.weight" not in km
 
     def test_keymap_for_unknown_is_none(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             _keymap_for, ModelFamily,
         )
         assert _keymap_for(ModelFamily.UNKNOWN) is None
 
     def test_keymap_for_tiny_transformer_is_none(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             _keymap_for, ModelFamily,
         )
         # TinyTransformer has no upstream-style keymap.
         assert _keymap_for(ModelFamily.TINY_TRANSFORMER) is None
 
     def test_default_num_blocks_per_family(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             _default_num_blocks, ModelFamily,
         )
         # Sanity values; the loader uses these to expand per-block
@@ -295,13 +295,13 @@ class TestResolveCheckpointFile:
     """Tests for the internal :func:`_resolve_checkpoint_file`."""
 
     def test_resolve_direct_file(self) -> None:
-        from models.runtime.loader import _resolve_checkpoint_file
+        from models.runtime.transformers_style_loader import _resolve_checkpoint_file
         d = _tmpdir()
         p = _write_fake_checkpoint(d)
         assert _resolve_checkpoint_file(Path(p)) == Path(p)
 
     def test_resolve_directory_picks_first(self) -> None:
-        from models.runtime.loader import _resolve_checkpoint_file
+        from models.runtime.transformers_style_loader import _resolve_checkpoint_file
         d = _tmpdir()
         _write_fake_checkpoint(d, name="a.safetensors")
         _write_fake_checkpoint(d, name="b.safetensors")
@@ -310,22 +310,22 @@ class TestResolveCheckpointFile:
         assert resolved.name in {"a.safetensors", "b.safetensors"}
 
     def test_resolve_missing_path_returns_none(self) -> None:
-        from models.runtime.loader import _resolve_checkpoint_file
+        from models.runtime.transformers_style_loader import _resolve_checkpoint_file
         assert _resolve_checkpoint_file(Path("/nonexistent/abc/xyz")) is None
 
     def test_resolve_non_safetensors_file_returns_none(self) -> None:
-        from models.runtime.loader import _resolve_checkpoint_file
+        from models.runtime.transformers_style_loader import _resolve_checkpoint_file
         d = _tmpdir()
         p = os.path.join(d, "config.json")
         Path(p).write_text("{}", encoding="utf-8")
         assert _resolve_checkpoint_file(Path(p)) is None
 
 
-class TestLocalModelHub:
+class TestModelHub:
     """Tests for :class:`ModelHub` (no real download)."""
 
     def test_init_creates_cache_dir(self) -> None:
-        from models.runtime.loader import ModelHub
+        from models.runtime.transformers_style_loader import ModelHub
         with tempfile.TemporaryDirectory() as d:
             cache = os.path.join(d, "fresh_cache")
             hub = ModelHub(cache_dir=cache)
@@ -333,7 +333,7 @@ class TestLocalModelHub:
             assert hub.load_cache_size() == 0
 
     def test_init_respects_env_var(self) -> None:
-        from models.runtime.loader import ModelHub
+        from models.runtime.transformers_style_loader import ModelHub
         with tempfile.TemporaryDirectory() as d:
             os.environ["TORCHA_VERSE_CACHE"] = d
             try:
@@ -343,13 +343,13 @@ class TestLocalModelHub:
                 del os.environ["TORCHA_VERSE_CACHE"]
 
     def test_clear_load_cache(self) -> None:
-        from models.runtime.loader import ModelHub
+        from models.runtime.transformers_style_loader import ModelHub
         hub = ModelHub()
         hub.clear_load_cache()
         assert hub.load_cache_size() == 0
 
     def test_load_unknown_path_raises(self) -> None:
-        from models.runtime.loader import ModelHub
+        from models.runtime.transformers_style_loader import ModelHub
         hub = ModelHub()
         with pytest.raises(FileNotFoundError):
             hub.load("/nonexistent/path")
@@ -357,7 +357,7 @@ class TestLocalModelHub:
     def test_load_unknown_family_uses_modelmixin_fallback(self) -> None:
         """An unknown-family checkpoint with a generic shape should
         still load via :class:`ModelMixin.from_pretrained`."""
-        from models.runtime.loader import ModelHub, ModelFamily
+        from models.runtime.transformers_style_loader import ModelHub, ModelFamily
         from models.base import ModelMixin
         from torch import nn
 
@@ -386,7 +386,7 @@ class TestTaskHeads:
     """Tests for the four task-head wrappers."""
 
     def test_local_model_for_causal_lm_wraps_model(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
@@ -403,7 +403,7 @@ class TestTaskHeads:
     def test_local_model_for_text_to_image_falls_back_to_random(self) -> None:
         """When the diffusion loop is unavailable the wrapper returns
         a 'random latents' dict so the contract is honoured."""
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             ModelForTextToImage, ModelFamily,
         )
         from models.base import ModelMixin
@@ -423,7 +423,7 @@ class TestTaskHeads:
         assert ("text_embeds" in out) or ("num_inference_steps" in out)
 
     def test_local_model_for_tts_falls_back_to_zero_mel(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             ModelForTextToSpeech, ModelFamily,
         )
         from models.base import ModelMixin
@@ -437,7 +437,7 @@ class TestTaskHeads:
         assert out["sample_rate"] == 16000
 
     def test_local_model_for_music_falls_back_to_zero_codes(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             ModelForMusic, ModelFamily,
         )
         from models.base import ModelMixin
@@ -451,7 +451,7 @@ class TestTaskHeads:
         assert out["duration_s"] == 2.0
 
     def test_chat_format_concatenates_messages(self) -> None:
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_loader import (
             ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
@@ -475,17 +475,17 @@ class TestLoadModelAndTokenizer:
     """Top-level :func:`load_model_and_tokenizer` entry point."""
 
     def test_requires_path_or_repo_id(self) -> None:
-        from models.runtime.loader import load_model_and_tokenizer
+        from models.runtime.transformers_style_loader import load_model_and_tokenizer
         with pytest.raises(ValueError):
             load_model_and_tokenizer()
 
     def test_repo_id_requires_download(self) -> None:
-        from models.runtime.loader import load_model_and_tokenizer
+        from models.runtime.transformers_style_loader import load_model_and_tokenizer
         with pytest.raises(ValueError):
             load_model_and_tokenizer(repo_id="someone/somewhere")
 
     def test_load_from_nonexistent_path_raises(self) -> None:
-        from models.runtime.loader import load_model_and_tokenizer
+        from models.runtime.transformers_style_loader import load_model_and_tokenizer
         with pytest.raises(FileNotFoundError):
             load_model_and_tokenizer("/nonexistent/path/abc")
 
@@ -497,13 +497,13 @@ class TestPipelineOutput:
     """Tests for :class:`PipelineOutput`."""
 
     def test_empty(self) -> None:
-        from models.runtime.pipeline import PipelineOutput
+        from models.runtime.transformers_style_pipeline import PipelineOutput
         out = PipelineOutput()
         assert len(out) == 0
         assert out.to_dict() == []
 
     def test_with_records(self) -> None:
-        from models.runtime.pipeline import PipelineOutput
+        from models.runtime.transformers_style_pipeline import PipelineOutput
         out = PipelineOutput(records=[{"a": 1}, {"a": 2}])
         assert len(out) == 2
         assert out[0]["a"] == 1
@@ -513,12 +513,12 @@ class TestPipelineOutput:
         assert d == [{"a": 1}, {"a": 2}]
 
 
-class TestLocalTextGenerationPipeline:
+class TestTextGenerationPipeline:
     """Tests for :class:`TextGenerationPipeline`."""
 
     def test_call_with_single_string(self) -> None:
-        from models.runtime.pipeline import TextGenerationPipeline
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_pipeline import TextGenerationPipeline
+        from models.runtime.transformers_style_loader import (
             ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
@@ -536,8 +536,8 @@ class TestLocalTextGenerationPipeline:
         assert rec["family"] == ModelFamily.TINY_TRANSFORMER.value
 
     def test_call_with_list_of_strings(self) -> None:
-        from models.runtime.pipeline import TextGenerationPipeline
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_pipeline import TextGenerationPipeline
+        from models.runtime.transformers_style_loader import (
             ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
@@ -553,12 +553,12 @@ class TestLocalTextGenerationPipeline:
             assert "generated_text" in rec
 
 
-class TestLocalImageGenerationPipeline:
+class TestImageGenerationPipeline:
     """Tests for :class:`ImageGenerationPipeline`."""
 
     def test_call_with_single_prompt(self) -> None:
-        from models.runtime.pipeline import ImageGenerationPipeline
-        from models.runtime.loader import ModelForTextToImage
+        from models.runtime.transformers_style_pipeline import ImageGenerationPipeline
+        from models.runtime.transformers_style_loader import ModelForTextToImage
         from models.base import ModelMixin
         head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
         pipe = ImageGenerationPipeline(head)
@@ -569,8 +569,8 @@ class TestLocalImageGenerationPipeline:
         assert "latents" in rec or "note" in rec
 
     def test_call_with_list_of_prompts(self) -> None:
-        from models.runtime.pipeline import ImageGenerationPipeline
-        from models.runtime.loader import ModelForTextToImage
+        from models.runtime.transformers_style_pipeline import ImageGenerationPipeline
+        from models.runtime.transformers_style_loader import ModelForTextToImage
         from models.base import ModelMixin
         head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
         pipe = ImageGenerationPipeline(head)
@@ -585,8 +585,8 @@ class TestAudioPipeline:
     """Tests for :class:`AudioPipeline`."""
 
     def test_call_dispatches_tts(self) -> None:
-        from models.runtime.pipeline import AudioPipeline
-        from models.runtime.loader import ModelForTextToSpeech
+        from models.runtime.transformers_style_pipeline import AudioPipeline
+        from models.runtime.transformers_style_loader import ModelForTextToSpeech
         from models.base import ModelMixin
         head = ModelForTextToSpeech(ModelMixin(), family="musicgen")
         pipe = AudioPipeline(head)
@@ -598,8 +598,8 @@ class TestAudioPipeline:
         assert rec["sample_rate"] == 16000
 
     def test_call_dispatches_music(self) -> None:
-        from models.runtime.pipeline import AudioPipeline
-        from models.runtime.loader import ModelForMusic
+        from models.runtime.transformers_style_pipeline import AudioPipeline
+        from models.runtime.transformers_style_loader import ModelForMusic
         from models.base import ModelMixin
         head = ModelForMusic(ModelMixin(), family="musicgen")
         pipe = AudioPipeline(head)
@@ -615,7 +615,7 @@ class TestPipelineFactory:
     """Tests for the top-level :func:`pipeline` factory."""
 
     def test_list_supported_tasks(self) -> None:
-        from models.runtime.pipeline import list_supported_tasks
+        from models.runtime.transformers_style_pipeline import list_supported_tasks
         tasks = list_supported_tasks()
         assert "text-generation" in tasks
         assert "text-to-image" in tasks
@@ -623,20 +623,20 @@ class TestPipelineFactory:
         assert "music-generation" in tasks
 
     def test_unsupported_task_raises(self) -> None:
-        from models.runtime.pipeline import pipeline
+        from models.runtime.transformers_style_pipeline import pipeline
         with pytest.raises(ValueError):
             pipeline("not-a-real-task")
 
     def test_no_model_or_path_raises(self) -> None:
-        from models.runtime.pipeline import pipeline
+        from models.runtime.transformers_style_pipeline import pipeline
         with pytest.raises(RuntimeError):
             pipeline("text-generation")
 
     def test_text_pipeline_inline_load(self) -> None:
         """``pipeline("text-generation", model=...)`` with a
         pre-built TaskHead skips the model load entirely."""
-        from models.runtime.pipeline import pipeline
-        from models.runtime.loader import (
+        from models.runtime.transformers_style_pipeline import pipeline
+        from models.runtime.transformers_style_loader import (
             ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
@@ -650,8 +650,8 @@ class TestPipelineFactory:
         assert len(out) == 1
 
     def test_image_pipeline_inline_load(self) -> None:
-        from models.runtime.pipeline import pipeline
-        from models.runtime.loader import ModelForTextToImage
+        from models.runtime.transformers_style_pipeline import pipeline
+        from models.runtime.transformers_style_loader import ModelForTextToImage
         from models.base import ModelMixin
         head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
         pipe = pipeline("text-to-image", model=head)
@@ -659,8 +659,8 @@ class TestPipelineFactory:
         assert len(out) == 1
 
     def test_audio_pipeline_inline_load(self) -> None:
-        from models.runtime.pipeline import pipeline
-        from models.runtime.loader import ModelForTextToSpeech
+        from models.runtime.transformers_style_pipeline import pipeline
+        from models.runtime.transformers_style_loader import ModelForTextToSpeech
         from models.base import ModelMixin
         head = ModelForTextToSpeech(ModelMixin(), family="musicgen")
         pipe = pipeline("text-to-speech", model=head)
@@ -676,7 +676,7 @@ class TestRuntimeConfig:
     :func:`enable_local_runtime` / :func:`disable_local_runtime` pair."""
 
     def test_default_config(self) -> None:
-        from models.runtime.runtime_config import (
+        from models.runtime.module_bus_runtime_switch import (
             RuntimeConfig, is_local_runtime_enabled, get_active_config,
         )
         # Ensure we're starting from a clean state.
@@ -742,7 +742,7 @@ class TestRuntimeConfig:
         from models.runtime import (
             enable_local_runtime, disable_local_runtime, get_active_config,
         )
-        from models.runtime.runtime_config import RuntimeConfig
+        from models.runtime.module_bus_runtime_switch import RuntimeConfig
         custom = RuntimeConfig(
             prefer_local_text=True,
             prefer_local_image=False,
@@ -757,7 +757,7 @@ class TestRuntimeConfig:
         disable_local_runtime()
 
     def test_describe_includes_bits(self) -> None:
-        from models.runtime.runtime_config import RuntimeConfig
+        from models.runtime.module_bus_runtime_switch import RuntimeConfig
         cfg = RuntimeConfig(
             prefer_local_text=True,
             prefer_local_image=True,
@@ -807,31 +807,6 @@ class TestEndToEnd:
         assert hasattr(rt, "ModelFamily")
         assert hasattr(rt, "TokenizerBundle")
         assert hasattr(rt, "DevicePlan")
-        # Backward-compat aliases (v0.10.0 -> v0.10.1) must remain reachable
-        for old_name in (
-            "LocalModelHub",
-            "LocalModelForCausalLM",
-            "LocalModelForTextToImage",
-            "LocalModelForTextToSpeech",
-            "LocalModelForMusic",
-            "LocalTextGenerationPipeline",
-            "LocalImageGenerationPipeline",
-            "LocalAudioPipeline",
-        ):
-            assert hasattr(rt, old_name), f"missing alias: {old_name}"
-        # Aliases must be identity-equal to the canonical names.
-        from models.runtime import (
-            ModelHub, ModelForCausalLM, TextGenerationPipeline,
-            ImageGenerationPipeline, AudioPipeline,
-            LocalModelHub, LocalModelForCausalLM,
-            LocalTextGenerationPipeline, LocalImageGenerationPipeline,
-            LocalAudioPipeline,
-        )
-        assert LocalModelHub is ModelHub
-        assert LocalModelForCausalLM is ModelForCausalLM
-        assert LocalTextGenerationPipeline is TextGenerationPipeline
-        assert LocalImageGenerationPipeline is ImageGenerationPipeline
-        assert LocalAudioPipeline is AudioPipeline
 
     def test_end_to_end_text_pipeline(self) -> None:
         """One-call smoke: build → pipeline → generate."""
@@ -894,8 +869,8 @@ class TestEndToEnd:
         already cover end-to-end usage).
         """
         import importlib
-        loader = importlib.import_module("models.runtime.loader")
-        pipeline = importlib.import_module("models.runtime.pipeline")
+        loader = importlib.import_module("models.runtime.transformers_style_loader")
+        pipeline = importlib.import_module("models.runtime.transformers_style_pipeline")
         # Spot-check that the renamed public symbols are reachable.
         assert hasattr(loader, "ModelHub")
         assert hasattr(loader, "ModelForCausalLM")

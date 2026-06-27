@@ -47,7 +47,7 @@ __all__ = [
 ]
 
 
-_logger = get_logger("models.runtime.runtime_config")
+_logger = get_logger("models.runtime.module_bus_runtime_switch")
 
 
 # ---------------------------------------------------------------------------
