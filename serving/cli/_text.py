@@ -66,10 +66,25 @@ def generate(prompt: str, model: str, max_tokens: int, temperature: float, outpu
     text_out = result.get("text", "")
     if output == "-":
         console.print(f"[bold green]>>>[/bold green] {text_out}")
+        # v0.10.5: surface the v0.10.4 quality diagnostics so
+        # the user knows when the project micro-transformer
+        # emitted mostly noise (random-weight artefact).  The
+        # warning is never raised for a properly-loaded
+        # user checkpoint.
+        if result.get("quality_warning"):
+            console.print(
+                f"[yellow][garble: {result.get('garble_level', '?')}]"
+                f" {result['quality_warning']}[/yellow]"
+            )
     else:
         with open(output, "w", encoding="utf-8") as fh:
             fh.write(text_out)
         console.print(f"[green]Text saved to[/green] [bold]{output}[/bold]")
+        if result.get("quality_warning"):
+            console.print(
+                f"[yellow][garble: {result.get('garble_level', '?')}]"
+                f" {result['quality_warning']}[/yellow]"
+            )
 
 
 @text.command()
@@ -132,10 +147,20 @@ def chat(
     text_out = result.get("text", "")
     if output == "-":
         console.print(f"[bold green]>>>[/bold green] {text_out}")
+        if result.get("quality_warning"):
+            console.print(
+                f"[yellow][garble: {result.get('garble_level', '?')}]"
+                f" {result['quality_warning']}[/yellow]"
+            )
     else:
         with open(output, "w", encoding="utf-8") as fh:
             fh.write(text_out)
         console.print(f"[green]Chat saved to[/green] [bold]{output}[/bold]")
+        if result.get("quality_warning"):
+            console.print(
+                f"[yellow][garble: {result.get('garble_level', '?')}]"
+                f" {result['quality_warning']}[/yellow]"
+            )
 
 
 __all__ = ["text", "generate", "chat"]

@@ -296,18 +296,42 @@ class ByteTokenizer:
                 (PAD / BOS / EOS / MASK) are dropped from the output.
 
         Returns:
-            The decoded string.  Invalid bytes are replaced with
-            U+FFFD (the standard UTF-8 replacement character).
+            The decoded string.  Invalid bytes (out-of-range ids,
+            i.e. model samples that fall outside the byte vocab)
+            are emitted as U+FFFD (the standard UTF-8 replacement
+            character).  We **append** the U+FFFD UTF-8 sequence
+            (0xEF 0xBF 0xBD) into the output byte stream rather
+            than *skipping* the out-of-range id -- the previous
+            "skip and let errors='replace' fill the gap" behaviour
+            left the surrounding multi-byte UTF-8 sequence
+            truncated (e.g. dropping one byte of a 3-byte CJK
+            character produces a single U+FFFD instead of a
+            graceful replacement), which is the source of the
+            "garbled half-character" output users see when the
+            project micro-transformer samples ids outside
+            ``[3, 259)`` (random-weight models do this often).
+
+            After assembling the byte buffer we run a final
+            ``errors='replace'`` pass on the ``bytes->str`` decode
+            to mop up any *legitimate* partial sequences (e.g. a
+            leading 0xC0..0xDF byte whose 0x80..0xBF continuation
+            was emitted but then truncated by ``max_new_tokens``).
         """
         out_bytes = bytearray()
         for raw in ids:
             i = int(raw)
             if skip_special and i in (_PAD_ID, _BOS_ID, _EOS_ID, _MASK_ID):
                 continue
-            if i < _BYTE_OFFSET or i >= _BYTE_OFFSET + _NUM_BYTES:
-                # Unknown id (e.g. from a mismatched vocab).
-                continue
-            out_bytes.append(i - _BYTE_OFFSET)
+            if _BYTE_OFFSET <= i < _BYTE_OFFSET + _NUM_BYTES:
+                # In-range id: emit the corresponding byte.
+                out_bytes.append(i - _BYTE_OFFSET)
+            else:
+                # Out-of-range id (e.g. the model sampled id
+                # ``>= vocab_size`` because the head dimension
+                # is larger than 256).  Emit a full U+FFFD
+                # UTF-8 sequence so the surrounding text is
+                # never truncated mid-multi-byte-character.
+                out_bytes.extend(b"\xef\xbf\xbd")
         return out_bytes.decode("utf-8", errors="replace")
 
     # ------------------------------------------------------------------

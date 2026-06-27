@@ -32,6 +32,7 @@ echo 工厂节点切到真模型真生成。
 | f22573b | **删除 `examples/` 整个目录** (14 文件) + `models.runtime.*` 模块文件重命名为**自描述**名字 (loader→transformers_style_loader 等) | ✅ | f22573b |
 | (pending) | **CLI `--model` 端到端可用** + QWEN2 家族识别 + echo factory 显式标注 (v0.10.3) | ✅ | (pending) |
 | (pending) | **echo 实现改用本地 py 真模型** + 默认 fallback 走 `LocalTorch*Provider` + mock- 前缀路由 echo 保留 e2e_consistency 兼容 (v0.10.4) | ✅ | (pending) |
+| (pending) | **乱码处理**: ByteTokenizer 越界 id 完整 U+FFFD 替代 skip + 控制字符清洗 + quality_warning 字段 (v0.10.5) | ✅ | (pending) |
 
 ### v0.10.x 关键产物
 
@@ -40,7 +41,83 @@ echo 工厂节点切到真模型真生成。
 - **`models.runtime.module_bus_runtime_switch`** — `enable_local_runtime()` 一行把 39 节点切到真模型
 - **`models.runtime.cpu_cuda_mps_device_planner`** — CPU / CUDA / MPS / multi-GPU 自动分配 (无 `accelerate` 依赖)
 - **删除 `examples/` 整个目录** — 用户明确指出 examples 中的演示脚本与新 runtime 重复, 改用 `enable_local_runtime()` + `PipelineBuilder` 跑真模型即可
-- **0 回归**: test_local_transformers 66/66 pass; 全量 1377 通过 (9 fail 来自 main 上同样存在的 rich/onnxscript 缺包环境问题)
+
+### v0.10.5 完成 (2026-06-27)
+
+**问题**: 用户报生成输出含乱码 (例: `"user: how are you?��3Ɩ..."`),
+半截 CJK 字符、FFFD 替换不整齐、随机 control bytes.
+
+**根因**:
+- `ByteTokenizer.decode` 对越界 id (>= vocab_size) 采取 *skip*
+  策略 (line 307-309).  当模型 (随机权重) 采样到越界 id 时, 跳过
+  它会让周围多字节 UTF-8 序列**被截断** (e.g. 一个 3 字节 CJK 字符
+  第 1 字节写入, 第 2/3 字节被 skip, UTF-8 decoder 用
+  `errors="replace"` 替换成单个 U+FFFD, 字符彻底破坏)
+- 越界 id 占比高时 (vocab_size=260, 越界 id 数 = 256+) 输出
+  大量乱码
+- 没诊断字段, 用户不知道输出是 noise
+
+**修复 (5 个文件)**:
+
+1. **`ByteTokenizer.decode` 越界 id 改用完整 U+FFFD 替代 skip**
+   (`models/providers/tiny_transformer.py:290`):
+   - 越界 id → 输出 `b"\xef\xbf\xbd"` (U+FFFD UTF-8 编码, 3 字节)
+   - 周围 CJK 字符**不被截断** (新测试 `test_cjk_around_vuln_id_not_truncated`)
+   - decode 后端用 `errors="replace"` 兜底
+
+2. **新增 `models/providers/_text_sanitiser.py`** (~150 行):
+   - `sanitise_generation(text) -> str`: 过滤 ASCII control
+     chars (除 `\n\t\r` + 0x7F) + 截断连续 8+ FFFD 串 +
+     归一化 `\r\n` + 切尾空白
+   - `quality_metrics(text) -> dict`: printable_ratio / fffd_ratio /
+     control_ratio / length
+   - `garble_assessment(text) -> (level, reason)`: "ok" / "warn" /
+     "garbled" 三档; garbled reason 提示加载真 checkpoint
+
+3. **`LocalTorchTextProvider.generate` 末尾接入 sanitiser**
+   (`models/providers/local_text.py:493`):
+   - raw 输出保存到 `self._last_raw` (调试用)
+   - 调 `garble_assessment` + `sanitise_generation`
+   - 异常时 fall back 到 raw, 不破坏 generate 流程
+
+4. **`PipelineService.text_completion` / `.text_chat` 后处理**
+   (`serving/service/_service_text.py`):
+   - `_attach_text_quality(result)` 调 `garble_assessment`
+   - `result["garble_level"]` 必填 (ok / warn / garbled)
+   - `result["quality_warning"]` 仅在非 ok 时存在, 含修复指引
+   - **`text` 字段**保持 sanitised (用户看到的干净版)
+
+5. **CLI 端显示 quality_warning** (`serving/cli/_text.py`):
+   - `console.print("[yellow][garble: LEVEL] REASON[/yellow]")`
+   - stdout (`-`) 和文件 (`--output`) 两种路径都覆盖
+
+**测试**: 新增 `tests/test_v105_garble_handling.py` (26 tests)
+- `ByteTokenizer.decode` 6 个 (in-range / out-of-range / CJK 周围
+  越界 / idempotent / 空 / 全 special)
+- `sanitise_generation` 8 个 (空 / control chars / 长 FFFD /
+  短 FFFD / 换行 / 切尾 / 幂等)
+- `quality_metrics` 5 个 (空 / 全 printable / 全 FFFD / 混合 /
+  control chars)
+- `garble_assessment` 4 个 (干净 / 严重 / FFFD / reason)
+- `PipelineService` 3 个 (text_completion / text_chat / 无 control chars)
+
+**0 回归**:
+- test_v105_garble_handling: 26/26 pass
+- test_v104_echo_to_real: 15/15 pass
+- test_v103_user_model_resolution: 18/18 pass
+- test_local_transformers: 66/66 pass
+- test_e2e_consistency: 5/5 pass
+- 全量: 1464 passed (vs 1439 before, +25), 7 failed (rich/onnxscript
+  环境缺包, 与 main 一致)
+
+**用户行为变化**:
+- 之前: `>>> user: how are you?��3Ɩ...` (整段乱码, 半个 CJK 截断)
+- 之后:
+  - `>>> user: how are you?,����؏&=...` (sanitised, FFFD 整齐)
+  - `[garble: warn] model output contains fffd_ratio=0.48 U+FFFD
+     replacement characters; some bytes fell outside the byte
+     vocabulary. Consider loading a real checkpoint.`
+  - 用户立刻知道: 1) 输出是 noise, 2) 怎么修 (加载真 checkpoint)
 
 详细操作手册见 [`docs/local_transformers.md`](local_transformers.md)。
 

@@ -490,7 +490,28 @@ class LocalTorchTextProvider(LLMProvider):
                 output = self._model.generate(input_ids, **kw)
 
         out_ids = output[0].tolist()
-        return self._tokenizer.decode(out_ids, skip_special=True)
+        raw = self._tokenizer.decode(out_ids, skip_special=True)
+        # v0.10.5: sanitise the raw byte-level output.  The
+        # ByteTokenizer's ``decode`` already emits full U+FFFD
+        # sequences for out-of-vocab ids (no more half-character
+        # truncation), but the *raw* result can still be polluted
+        # by ASCII control characters leaked from id samples in
+        # ``[0, 32)`` and by long FFFD runs at the tail of the
+        # sampling loop.  We keep the raw string as
+        # ``self._last_raw`` for diagnostics and return the
+        # sanitised version as the user-visible result.
+        self._last_raw = raw
+        try:
+            from models.providers._text_sanitiser import (
+                sanitise_generation,
+                garble_assessment,
+            )
+            level, reason = garble_assessment(raw)
+            self._last_garble_level = level
+            self._last_garble_reason = reason
+            return sanitise_generation(raw)
+        except Exception:  # noqa: BLE001 - never break generate
+            return raw
 
     # ------------------------------------------------------------------
     # Chat-shaped helpers (used by the v0.4.0 P0 demo + tests)
