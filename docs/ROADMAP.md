@@ -30,6 +30,8 @@ echo 工厂节点切到真模型真生成。
 | 0d2441a | **自研 transformers 风格本地加载 + 推理串联层** (`models.runtime.*`): `transformers_style_loader` / `transformers_style_pipeline` / `module_bus_runtime_switch` / `cpu_cuda_mps_device_planner` + `enable_local_runtime()` 一行开关 | ✅ | 0d2441a |
 | f7f1558 | 命名重整 (去 `Local*` 前缀, 完善操作手册) | ✅ | f7f1558 |
 | f22573b | **删除 `examples/` 整个目录** (14 文件) + `models.runtime.*` 模块文件重命名为**自描述**名字 (loader→transformers_style_loader 等) | ✅ | f22573b |
+| (pending) | **CLI `--model` 端到端可用** + QWEN2 家族识别 + echo factory 显式标注 (v0.10.3) | ✅ | (pending) |
+| (pending) | **echo 实现改用本地 py 真模型** + 默认 fallback 走 `LocalTorch*Provider` + mock- 前缀路由 echo 保留 e2e_consistency 兼容 (v0.10.4) | ✅ | (pending) |
 
 ### v0.10.x 关键产物
 

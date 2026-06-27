@@ -86,13 +86,22 @@ class PipelineService:
         self._rag_retriever = None
 
         # LLM provider: the same instance is shared by the ReAct agent
-        # used by ``agent_run``.  Eagerly constructed as an
-        # :class:`EchoProvider` (deterministic, no model weights
-        # required) -- operators can override it at runtime by setting
-        # ``service.llm_provider = ...`` before serving traffic.
-        from models.interfaces.llm_provider import EchoProvider
+        # used by ``agent_run``.  Eagerly constructed as a
+        # :class:`ChatTemplateProvider` wrapping the project-owned
+        # :class:`LocalTorchTextProvider` (micro-transformer with
+        # a randomly-initialised but trainable PyTorch forward
+        # path).  Operators can override it at runtime by setting
+        # ``service.llm_provider = ...`` before serving traffic --
+        # e.g. to plug a user-downloaded Qwen2.5 checkpoint in
+        # via ``ChatTemplateProvider(TransformerLM.from_pretrained(...))``
+        # (v0.11.0 item) or any other LLMProvider-compatible backend.
+        from models.interfaces.llm_provider import ChatTemplateProvider
+        from models.providers.local_text import LocalTorchTextProvider
 
-        self._llm_provider: Any = EchoProvider()
+        self._llm_provider: Any = ChatTemplateProvider(
+            LocalTorchTextProvider.from_random(),
+            name="torcha-verse-micro-transformer",
+        )
 
         # Cache for idempotent generation results.
         cache_cfg = self._cfg.get("serving.cache", {})
