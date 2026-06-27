@@ -18,16 +18,16 @@ out = call_diffusion_loop_backend(...)
 
 本模块提供:
 
-* :class:`LocalTextGenerationPipeline` -- 类似
+* :class:`TextGenerationPipeline` -- 类似
   ``transformers.pipeline("text-generation")``
-* :class:`LocalImageGenerationPipeline` -- 类似
+* :class:`ImageGenerationPipeline` -- 类似
   ``diffusers.StableDiffusionPipeline.__call__``
-* :class:`LocalAudioPipeline` -- 类似
+* :class:`AudioPipeline` -- 类似
   ``transformers.pipeline("text-to-audio"|"text-to-speech")``
 * :func:`pipeline` -- 一行构造管道,自动选 family
 
 每条管道都接收一个 **TaskHead** (从
-:mod:`models.runtime.local_loader` 来),以及一个可选的 ``backend``
+:mod:`models.runtime.loader` 来),以及一个可选的 ``backend``
 工厂 (用于把节点注册到 :class:`core.module_bus.ModuleBus`)。
 
 零外部依赖
@@ -52,26 +52,26 @@ import torch
 
 from infrastructure.logger import get_logger
 
-from .local_loader import (
-    LocalModelForCausalLM,
-    LocalModelForMusic,
-    LocalModelForTextToImage,
-    LocalModelForTextToSpeech,
+from .loader import (
+    ModelForCausalLM,
+    ModelForMusic,
+    ModelForTextToImage,
+    ModelForTextToSpeech,
     ModelFamily,
     TokenizerBundle,
 )
 
 __all__ = [
-    "LocalTextGenerationPipeline",
-    "LocalImageGenerationPipeline",
-    "LocalAudioPipeline",
+    "TextGenerationPipeline",
+    "ImageGenerationPipeline",
+    "AudioPipeline",
     "PipelineOutput",
     "pipeline",
     "list_supported_tasks",
 ]
 
 
-_logger = get_logger("models.runtime.local_pipeline")
+_logger = get_logger("models.runtime.pipeline")
 
 
 # ---------------------------------------------------------------------------
@@ -108,13 +108,13 @@ class PipelineOutput:
 
 
 # ---------------------------------------------------------------------------
-# LocalTextGenerationPipeline
+# TextGenerationPipeline
 # ---------------------------------------------------------------------------
-class LocalTextGenerationPipeline:
+class TextGenerationPipeline:
     """A ``transformers.pipeline("text-generation")`` analogue.
 
     Args:
-        task_head: A :class:`LocalModelForCausalLM` (or any object
+        task_head: A :class:`ModelForCausalLM` (or any object
             exposing ``.generate(prompt, **kwargs)``).
         device: Optional device override.  ``None`` keeps the model's
             current device.
@@ -123,12 +123,12 @@ class LocalTextGenerationPipeline:
 
     def __init__(
         self,
-        task_head: LocalModelForCausalLM,
+        task_head: ModelForCausalLM,
         *,
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
-        self.task_head: LocalModelForCausalLM = task_head
+        self.task_head: ModelForCausalLM = task_head
         self._device = device
         self._dtype = dtype
 
@@ -153,7 +153,7 @@ class LocalTextGenerationPipeline:
                 ``do_sample=False``).
             top_k: Top-k truncation (0 disables).
             top_p: Top-p / nucleus truncation (1.0 disables).
-            **kwargs: Forwarded to :meth:`LocalModelForCausalLM.generate`.
+            **kwargs: Forwarded to :meth:`ModelForCausalLM.generate`.
 
         Returns:
             A :class:`PipelineOutput` with one record per input.
@@ -182,31 +182,31 @@ class LocalTextGenerationPipeline:
 
     def __repr__(self) -> str:
         return (
-            f"LocalTextGenerationPipeline(family={self.task_head.family.value!r}, "
+            f"TextGenerationPipeline(family={self.task_head.family.value!r}, "
             f"model={type(self.task_head.model).__name__})"
         )
 
 
 # ---------------------------------------------------------------------------
-# LocalImageGenerationPipeline
+# ImageGenerationPipeline
 # ---------------------------------------------------------------------------
-class LocalImageGenerationPipeline:
+class ImageGenerationPipeline:
     """A ``diffusers.StableDiffusionPipeline.__call__`` analogue.
 
     Args:
-        task_head: A :class:`LocalModelForTextToImage`.
+        task_head: A :class:`ModelForTextToImage`.
         device: Optional device override.
         dtype: Optional dtype override.
     """
 
     def __init__(
         self,
-        task_head: LocalModelForTextToImage,
+        task_head: ModelForTextToImage,
         *,
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
-        self.task_head: LocalModelForTextToImage = task_head
+        self.task_head: ModelForTextToImage = task_head
         self._device = device
         self._dtype = dtype
 
@@ -258,15 +258,15 @@ class LocalImageGenerationPipeline:
 
     def __repr__(self) -> str:
         return (
-            f"LocalImageGenerationPipeline(family={self.task_head.family.value!r}, "
+            f"ImageGenerationPipeline(family={self.task_head.family.value!r}, "
             f"model={type(self.task_head.model).__name__})"
         )
 
 
 # ---------------------------------------------------------------------------
-# LocalAudioPipeline
+# AudioPipeline
 # ---------------------------------------------------------------------------
-class LocalAudioPipeline:
+class AudioPipeline:
     """A ``transformers.pipeline("text-to-audio")`` analogue.
 
     The pipeline accepts a TTS / music task head and dispatches
@@ -276,7 +276,7 @@ class LocalAudioPipeline:
 
     def __init__(
         self,
-        task_head: Union[LocalModelForTextToSpeech, LocalModelForMusic],
+        task_head: Union[ModelForTextToSpeech, ModelForMusic],
         *,
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
@@ -298,7 +298,7 @@ class LocalAudioPipeline:
             prompts = [prompts]
         records: List[Dict[str, Any]] = []
         for prompt in prompts:
-            if isinstance(self.task_head, LocalModelForMusic):
+            if isinstance(self.task_head, ModelForMusic):
                 out = self.task_head(
                     prompt,
                     duration_s=float(duration_s),
@@ -325,7 +325,7 @@ class LocalAudioPipeline:
 
     def __repr__(self) -> str:
         return (
-            f"LocalAudioPipeline(family={self.task_head.family.value!r}, "
+            f"AudioPipeline(family={self.task_head.family.value!r}, "
             f"model={type(self.task_head.model).__name__})"
         )
 
@@ -362,9 +362,9 @@ def pipeline(
     device: Union[None, str, torch.device] = None,
     **kwargs: Any,
 ) -> Union[
-    LocalTextGenerationPipeline,
-    LocalImageGenerationPipeline,
-    LocalAudioPipeline,
+    TextGenerationPipeline,
+    ImageGenerationPipeline,
+    AudioPipeline,
 ]:
     """Construct a local inference pipeline.
 
@@ -375,7 +375,7 @@ def pipeline(
        function will call
        :func:`models.runtime.load_model_and_tokenizer` for you.
     2. **Pre-loaded** (two calls): construct a TaskHead
-       (e.g. :class:`LocalModelForCausalLM`) and pass it via
+       (e.g. :class:`ModelForCausalLM`) and pass it via
        ``model=``.
 
     Args:
@@ -395,10 +395,10 @@ def pipeline(
     Returns:
         A pipeline instance.  Concrete type depends on ``task``:
 
-        * text-generation → :class:`LocalTextGenerationPipeline`
-        * text-to-image  → :class:`LocalImageGenerationPipeline`
+        * text-generation → :class:`TextGenerationPipeline`
+        * text-to-image  → :class:`ImageGenerationPipeline`
         * text-to-speech / music-generation / text-to-audio
-          → :class:`LocalAudioPipeline`
+          → :class:`AudioPipeline`
 
     Raises:
         ValueError: When ``task`` is not supported.
@@ -417,7 +417,7 @@ def pipeline(
             raise RuntimeError(
                 "pipeline(): either `model` (TaskHead) or `model_path` is required"
             )
-        from .local_loader import load_model_and_tokenizer
+        from .loader import load_model_and_tokenizer
         mdl, tok, fam = load_model_and_tokenizer(
             model_path,
             family=family,
@@ -426,23 +426,23 @@ def pipeline(
             **kwargs,
         )
         if kind == "text":
-            model = LocalModelForCausalLM(mdl, tok, fam)
+            model = ModelForCausalLM(mdl, tok, fam)
         elif kind == "image":
-            model = LocalModelForTextToImage(mdl, tok, fam)
+            model = ModelForTextToImage(mdl, tok, fam)
         else:
             if fam == ModelFamily.MUSICGEN:
-                model = LocalModelForMusic(mdl, tok, fam)
+                model = ModelForMusic(mdl, tok, fam)
             else:
-                model = LocalModelForTextToSpeech(mdl, tok, fam)
+                model = ModelForTextToSpeech(mdl, tok, fam)
 
     if kind == "text":
-        return LocalTextGenerationPipeline(
+        return TextGenerationPipeline(
             model, device=device, dtype=torch_dtype,
         )
     if kind == "image":
-        return LocalImageGenerationPipeline(
+        return ImageGenerationPipeline(
             model, device=device, dtype=torch_dtype,
         )
-    return LocalAudioPipeline(
+    return AudioPipeline(
         model, device=device, dtype=torch_dtype,
     )

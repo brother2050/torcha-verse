@@ -34,10 +34,10 @@ latents = call_diffusion_loop_backend(...)
 
 * :func:`load_model_and_tokenizer` -- 一行加载,自动识别 model family
   + 自动 key 改名 + 自动 device / dtype 推断
-* :class:`LocalModelHub` -- 类似 ``transformers.Hub`` 的本地 hub,
+* :class:`ModelHub` -- 类似 ``transformers.Hub`` 的本地 hub,
   内置 ``download=True`` 选项
-* :class:`LocalModelForCausalLM` / ``LocalModelForTextToImage`` /
-  ``LocalModelForTextToSpeech`` / ``LocalModelForMusic`` -- 4 个
+* :class:`ModelForCausalLM` / ``ModelForTextToImage`` /
+  ``ModelForTextToSpeech`` / ``ModelForMusic`` -- 4 个
   TaskHeads,内含 ``generate()`` / ``__call__()`` / ``encode_text()``
 * :func:`detect_model_family` -- 根据 safetensors key 前缀自动
   判断 (HunyuanDiT / FLUX / SD3 / Wan2 / MusicGen / TinyTransformer)
@@ -110,18 +110,18 @@ from .device_planner import DevicePlan, plan_device
 
 __all__ = [
     "ModelFamily",
-    "LocalModelHub",
-    "LocalModelForCausalLM",
-    "LocalModelForTextToImage",
-    "LocalModelForTextToSpeech",
-    "LocalModelForMusic",
+    "ModelHub",
+    "ModelForCausalLM",
+    "ModelForTextToImage",
+    "ModelForTextToSpeech",
+    "ModelForMusic",
     "load_model_and_tokenizer",
     "detect_model_family",
     "TokenizerBundle",
 ]
 
 
-_logger = get_logger("models.runtime.local_loader")
+_logger = get_logger("models.runtime.loader")
 
 
 # ---------------------------------------------------------------------------
@@ -456,9 +456,9 @@ def _resolve_tokenizer_files(
 
 
 # ---------------------------------------------------------------------------
-# LocalModelHub
+# ModelHub
 # ---------------------------------------------------------------------------
-class LocalModelHub:
+class ModelHub:
     """A minimal "transformers.Hub" analogue for local files.
 
     The hub owns:
@@ -579,7 +579,7 @@ class LocalModelHub:
 
         # No cache path: the user must supply local files.
         raise RuntimeError(
-            f"LocalModelHub.download: no cache available; supply a local path or "
+            f"ModelHub.download: no cache available; supply a local path or "
             f"enable the source cache (use_existing_cache=True)."
         )
 
@@ -943,16 +943,16 @@ class _TinyTransformerWrapper(ModelMixin):
 # ---------------------------------------------------------------------------
 # Top-level convenience: load_model_and_tokenizer
 # ---------------------------------------------------------------------------
-_HUB_SINGLETON: Optional[LocalModelHub] = None
+_HUB_SINGLETON: Optional[ModelHub] = None
 _HUB_LOCK: threading.RLock = threading.RLock()
 
 
-def get_default_hub() -> LocalModelHub:
-    """Return the process-wide :class:`LocalModelHub` singleton."""
+def get_default_hub() -> ModelHub:
+    """Return the process-wide :class:`ModelHub` singleton."""
     global _HUB_SINGLETON
     with _HUB_LOCK:
         if _HUB_SINGLETON is None:
-            _HUB_SINGLETON = LocalModelHub()
+            _HUB_SINGLETON = ModelHub()
         return _HUB_SINGLETON
 
 
@@ -971,7 +971,7 @@ def load_model_and_tokenizer(
     download: bool = False,
     expected_sha256s: Optional[Mapping[str, str]] = None,
     config: Optional[Dict[str, Any]] = None,
-    hub: Optional[LocalModelHub] = None,
+    hub: Optional[ModelHub] = None,
     **kwargs: Any,
 ) -> Tuple[ModelMixin, TokenizerBundle, ModelFamily]:
     """One-call "transformers.AutoModel + AutoTokenizer" API.
@@ -982,7 +982,7 @@ def load_model_and_tokenizer(
     The function:
 
     1. (Optional) downloads the model to a local cache via
-       :meth:`LocalModelHub.download` (HF id) or a direct URL.
+       :meth:`ModelHub.download` (HF id) or a direct URL.
     2. Resolves the model family (auto-detect or user override).
     3. Picks the correct upstream -> local key-rename table.
     4. Loads the weights via
@@ -1041,9 +1041,9 @@ def load_model_and_tokenizer(
 
 
 # ---------------------------------------------------------------------------
-# Task heads: LocalModelForCausalLM / LocalModelForTextToImage / ...
+# Task heads: ModelForCausalLM / ModelForTextToImage / ...
 # ---------------------------------------------------------------------------
-class LocalModelForCausalLM:
+class ModelForCausalLM:
     """A thin wrapper that exposes a ``generate()`` and ``chat()``
     method on top of any :class:`ModelMixin` that has a working
     ``generate`` (e.g. the :class:`_TinyTransformerWrapper`).
@@ -1202,13 +1202,13 @@ class LocalModelForCausalLM:
 
     def __repr__(self) -> str:
         return (
-            f"LocalModelForCausalLM(family={self.family.value!r}, "
+            f"ModelForCausalLM(family={self.family.value!r}, "
             f"model={type(self.model).__name__}, "
             f"params={self.model.num_parameters_human() if hasattr(self.model, 'num_parameters_human') else 'n/a'})"
         )
 
 
-class LocalModelForTextToImage:
+class ModelForTextToImage:
     """Wrapper around a HunyuanDiT / FLUX / SD3 :class:`ModelMixin`
     that exposes a ``__call__(prompt)`` method for image generation.
 
@@ -1312,12 +1312,12 @@ class LocalModelForTextToImage:
 
     def __repr__(self) -> str:
         return (
-            f"LocalModelForTextToImage(family={self.family.value!r}, "
+            f"ModelForTextToImage(family={self.family.value!r}, "
             f"model={type(self.model).__name__})"
         )
 
 
-class LocalModelForTextToSpeech:
+class ModelForTextToSpeech:
     """Wrapper for the audio / TTS path.
 
     Mirrors ``transformers.AutoModelForTextToSpeech``.  Concrete
@@ -1394,15 +1394,15 @@ class LocalModelForTextToSpeech:
 
     def __repr__(self) -> str:
         return (
-            f"LocalModelForTextToSpeech(family={self.family.value!r}, "
+            f"ModelForTextToSpeech(family={self.family.value!r}, "
             f"model={type(self.model).__name__})"
         )
 
 
-class LocalModelForMusic:
+class ModelForMusic:
     """Wrapper for the MusicGen-style text-to-music path.
 
-    Like :class:`LocalModelForTextToSpeech`, this is mostly a
+    Like :class:`ModelForTextToSpeech`, this is mostly a
     type-level shim; the actual codec is the project-owned
     :class:`models.audio.music.MusicDiT` + HiFiGAN stack.
     """
@@ -1482,6 +1482,6 @@ class LocalModelForMusic:
 
     def __repr__(self) -> str:
         return (
-            f"LocalModelForMusic(family={self.family.value!r}, "
+            f"ModelForMusic(family={self.family.value!r}, "
             f"model={type(self.model).__name__})"
         )

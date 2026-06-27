@@ -3,8 +3,8 @@
 覆盖 :mod:`models.runtime` 的四个子模块:
 
 * :mod:`models.runtime.device_planner` -- 设备规划器
-* :mod:`models.runtime.local_loader` -- 自研加载 API
-* :mod:`models.runtime.local_pipeline` -- 自研推理管道
+* :mod:`models.runtime.loader` -- 自研加载 API
+* :mod:`models.runtime.pipeline` -- 自研推理管道
 * :mod:`models.runtime.runtime_config` -- 一行运行时开关
 
 设计原则:
@@ -198,13 +198,13 @@ class TestDevicePlanner:
 
 
 # ===========================================================================
-# Section 2: local_loader tests
+# Section 2: loader tests
 # ===========================================================================
 class TestDetectModelFamily:
     """Tests for :func:`detect_model_family`."""
 
     def test_detect_hunyuan_dit(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             detect_model_family, ModelFamily,
         )
         d = _tmpdir()
@@ -212,7 +212,7 @@ class TestDetectModelFamily:
         assert detect_model_family(path) == ModelFamily.HUNYUAN_DIT
 
     def test_detect_unknown_for_random_keys(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             detect_model_family, ModelFamily,
         )
         d = _tmpdir()
@@ -220,12 +220,12 @@ class TestDetectModelFamily:
         assert detect_model_family(path) == ModelFamily.UNKNOWN
 
     def test_detect_raises_for_missing_file(self) -> None:
-        from models.runtime.local_loader import detect_model_family
+        from models.runtime.loader import detect_model_family
         with pytest.raises(FileNotFoundError):
             detect_model_family("/nonexistent/path/that/does/not/exist")
 
     def test_detect_supports_directory_input(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             detect_model_family, ModelFamily,
         )
         d = _tmpdir()
@@ -237,13 +237,13 @@ class TestTokenizerBundle:
     """Tests for :class:`TokenizerBundle`."""
 
     def test_empty_bundle(self) -> None:
-        from models.runtime.local_loader import TokenizerBundle
+        from models.runtime.loader import TokenizerBundle
         b = TokenizerBundle()
         assert b.has_any() is False
         assert "empty" in repr(b)
 
     def test_bundle_with_clip(self) -> None:
-        from models.runtime.local_loader import TokenizerBundle
+        from models.runtime.loader import TokenizerBundle
         from models.text.clip_tokenizer import SimpleByteBPETokenizer
         b = TokenizerBundle(clip=SimpleByteBPETokenizer())
         assert b.has_any() is True
@@ -255,7 +255,7 @@ class TestKeymapDispatch:
     dispatch logic."""
 
     def test_keymap_for_hunyuan_dit_expanded(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             _keymap_for, _default_num_blocks, ModelFamily,
         )
         n = _default_num_blocks(ModelFamily.HUNYUAN_DIT)
@@ -265,20 +265,20 @@ class TestKeymapDispatch:
         assert "blocks.{i}.attn.qkv.weight" not in km
 
     def test_keymap_for_unknown_is_none(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             _keymap_for, ModelFamily,
         )
         assert _keymap_for(ModelFamily.UNKNOWN) is None
 
     def test_keymap_for_tiny_transformer_is_none(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             _keymap_for, ModelFamily,
         )
         # TinyTransformer has no upstream-style keymap.
         assert _keymap_for(ModelFamily.TINY_TRANSFORMER) is None
 
     def test_default_num_blocks_per_family(self) -> None:
-        from models.runtime.local_loader import (
+        from models.runtime.loader import (
             _default_num_blocks, ModelFamily,
         )
         # Sanity values; the loader uses these to expand per-block
@@ -295,13 +295,13 @@ class TestResolveCheckpointFile:
     """Tests for the internal :func:`_resolve_checkpoint_file`."""
 
     def test_resolve_direct_file(self) -> None:
-        from models.runtime.local_loader import _resolve_checkpoint_file
+        from models.runtime.loader import _resolve_checkpoint_file
         d = _tmpdir()
         p = _write_fake_checkpoint(d)
         assert _resolve_checkpoint_file(Path(p)) == Path(p)
 
     def test_resolve_directory_picks_first(self) -> None:
-        from models.runtime.local_loader import _resolve_checkpoint_file
+        from models.runtime.loader import _resolve_checkpoint_file
         d = _tmpdir()
         _write_fake_checkpoint(d, name="a.safetensors")
         _write_fake_checkpoint(d, name="b.safetensors")
@@ -310,11 +310,11 @@ class TestResolveCheckpointFile:
         assert resolved.name in {"a.safetensors", "b.safetensors"}
 
     def test_resolve_missing_path_returns_none(self) -> None:
-        from models.runtime.local_loader import _resolve_checkpoint_file
+        from models.runtime.loader import _resolve_checkpoint_file
         assert _resolve_checkpoint_file(Path("/nonexistent/abc/xyz")) is None
 
     def test_resolve_non_safetensors_file_returns_none(self) -> None:
-        from models.runtime.local_loader import _resolve_checkpoint_file
+        from models.runtime.loader import _resolve_checkpoint_file
         d = _tmpdir()
         p = os.path.join(d, "config.json")
         Path(p).write_text("{}", encoding="utf-8")
@@ -322,42 +322,42 @@ class TestResolveCheckpointFile:
 
 
 class TestLocalModelHub:
-    """Tests for :class:`LocalModelHub` (no real download)."""
+    """Tests for :class:`ModelHub` (no real download)."""
 
     def test_init_creates_cache_dir(self) -> None:
-        from models.runtime.local_loader import LocalModelHub
+        from models.runtime.loader import ModelHub
         with tempfile.TemporaryDirectory() as d:
             cache = os.path.join(d, "fresh_cache")
-            hub = LocalModelHub(cache_dir=cache)
+            hub = ModelHub(cache_dir=cache)
             assert Path(cache).is_dir()
             assert hub.load_cache_size() == 0
 
     def test_init_respects_env_var(self) -> None:
-        from models.runtime.local_loader import LocalModelHub
+        from models.runtime.loader import ModelHub
         with tempfile.TemporaryDirectory() as d:
             os.environ["TORCHA_VERSE_CACHE"] = d
             try:
-                hub = LocalModelHub()
+                hub = ModelHub()
                 assert str(hub.cache_dir) == d
             finally:
                 del os.environ["TORCHA_VERSE_CACHE"]
 
     def test_clear_load_cache(self) -> None:
-        from models.runtime.local_loader import LocalModelHub
-        hub = LocalModelHub()
+        from models.runtime.loader import ModelHub
+        hub = ModelHub()
         hub.clear_load_cache()
         assert hub.load_cache_size() == 0
 
     def test_load_unknown_path_raises(self) -> None:
-        from models.runtime.local_loader import LocalModelHub
-        hub = LocalModelHub()
+        from models.runtime.loader import ModelHub
+        hub = ModelHub()
         with pytest.raises(FileNotFoundError):
             hub.load("/nonexistent/path")
 
     def test_load_unknown_family_uses_modelmixin_fallback(self) -> None:
         """An unknown-family checkpoint with a generic shape should
         still load via :class:`ModelMixin.from_pretrained`."""
-        from models.runtime.local_loader import LocalModelHub, ModelFamily
+        from models.runtime.loader import ModelHub, ModelFamily
         from models.base import ModelMixin
         from torch import nn
 
@@ -370,7 +370,7 @@ class TestLocalModelHub:
         ckpt = _write_fake_checkpoint(d, name="toy.safetensors")
         # Use a custom subclass via hub.load with a ModelMixin
         # fallback by passing family=ModelFamily.UNKNOWN.
-        hub = LocalModelHub()
+        hub = ModelHub()
         mdl, tok, fam = hub.load(
             ckpt, family=ModelFamily.UNKNOWN, strict=False,
         )
@@ -386,14 +386,14 @@ class TestTaskHeads:
     """Tests for the four task-head wrappers."""
 
     def test_local_model_for_causal_lm_wraps_model(self) -> None:
-        from models.runtime.local_loader import (
-            LocalModelForCausalLM, ModelFamily, TokenizerBundle,
+        from models.runtime.loader import (
+            ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
             TINY_CONFIG, build_tiny_transformer,
         )
         mdl, tok = build_tiny_transformer(TINY_CONFIG)
-        head = LocalModelForCausalLM(mdl, TokenizerBundle(byte=tok),
+        head = ModelForCausalLM(mdl, TokenizerBundle(byte=tok),
                                      family=ModelFamily.TINY_TRANSFORMER)
         assert head.family == ModelFamily.TINY_TRANSFORMER
         # generate() returns a string.
@@ -403,13 +403,13 @@ class TestTaskHeads:
     def test_local_model_for_text_to_image_falls_back_to_random(self) -> None:
         """When the diffusion loop is unavailable the wrapper returns
         a 'random latents' dict so the contract is honoured."""
-        from models.runtime.local_loader import (
-            LocalModelForTextToImage, ModelFamily,
+        from models.runtime.loader import (
+            ModelForTextToImage, ModelFamily,
         )
         from models.base import ModelMixin
         # A minimal stand-in ModelMixin that has no forward / encode_text,
         # so the wrapper falls back to the random-latents path.
-        head = LocalModelForTextToImage(
+        head = ModelForTextToImage(
             ModelMixin(), family=ModelFamily.HUNYUAN_DIT,
         )
         out = head("a tiny cat", height=64, width=64, num_inference_steps=2)
@@ -423,11 +423,11 @@ class TestTaskHeads:
         assert ("text_embeds" in out) or ("num_inference_steps" in out)
 
     def test_local_model_for_tts_falls_back_to_zero_mel(self) -> None:
-        from models.runtime.local_loader import (
-            LocalModelForTextToSpeech, ModelFamily,
+        from models.runtime.loader import (
+            ModelForTextToSpeech, ModelFamily,
         )
         from models.base import ModelMixin
-        head = LocalModelForTextToSpeech(
+        head = ModelForTextToSpeech(
             ModelMixin(), family=ModelFamily.MUSICGEN,
         )
         out = head("hello world", sample_rate=16000)
@@ -437,11 +437,11 @@ class TestTaskHeads:
         assert out["sample_rate"] == 16000
 
     def test_local_model_for_music_falls_back_to_zero_codes(self) -> None:
-        from models.runtime.local_loader import (
-            LocalModelForMusic, ModelFamily,
+        from models.runtime.loader import (
+            ModelForMusic, ModelFamily,
         )
         from models.base import ModelMixin
-        head = LocalModelForMusic(
+        head = ModelForMusic(
             ModelMixin(), family=ModelFamily.MUSICGEN,
         )
         out = head("a funky beat", duration_s=2.0, sample_rate=22050)
@@ -451,14 +451,14 @@ class TestTaskHeads:
         assert out["duration_s"] == 2.0
 
     def test_chat_format_concatenates_messages(self) -> None:
-        from models.runtime.local_loader import (
-            LocalModelForCausalLM, ModelFamily, TokenizerBundle,
+        from models.runtime.loader import (
+            ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
             TINY_CONFIG, build_tiny_transformer,
         )
         mdl, tok = build_tiny_transformer(TINY_CONFIG)
-        head = LocalModelForCausalLM(mdl, TokenizerBundle(byte=tok),
+        head = ModelForCausalLM(mdl, TokenizerBundle(byte=tok),
                                      family=ModelFamily.TINY_TRANSFORMER)
         out = head.chat(
             [
@@ -475,17 +475,17 @@ class TestLoadModelAndTokenizer:
     """Top-level :func:`load_model_and_tokenizer` entry point."""
 
     def test_requires_path_or_repo_id(self) -> None:
-        from models.runtime.local_loader import load_model_and_tokenizer
+        from models.runtime.loader import load_model_and_tokenizer
         with pytest.raises(ValueError):
             load_model_and_tokenizer()
 
     def test_repo_id_requires_download(self) -> None:
-        from models.runtime.local_loader import load_model_and_tokenizer
+        from models.runtime.loader import load_model_and_tokenizer
         with pytest.raises(ValueError):
             load_model_and_tokenizer(repo_id="someone/somewhere")
 
     def test_load_from_nonexistent_path_raises(self) -> None:
-        from models.runtime.local_loader import load_model_and_tokenizer
+        from models.runtime.loader import load_model_and_tokenizer
         with pytest.raises(FileNotFoundError):
             load_model_and_tokenizer("/nonexistent/path/abc")
 
@@ -497,13 +497,13 @@ class TestPipelineOutput:
     """Tests for :class:`PipelineOutput`."""
 
     def test_empty(self) -> None:
-        from models.runtime.local_pipeline import PipelineOutput
+        from models.runtime.pipeline import PipelineOutput
         out = PipelineOutput()
         assert len(out) == 0
         assert out.to_dict() == []
 
     def test_with_records(self) -> None:
-        from models.runtime.local_pipeline import PipelineOutput
+        from models.runtime.pipeline import PipelineOutput
         out = PipelineOutput(records=[{"a": 1}, {"a": 2}])
         assert len(out) == 2
         assert out[0]["a"] == 1
@@ -514,20 +514,20 @@ class TestPipelineOutput:
 
 
 class TestLocalTextGenerationPipeline:
-    """Tests for :class:`LocalTextGenerationPipeline`."""
+    """Tests for :class:`TextGenerationPipeline`."""
 
     def test_call_with_single_string(self) -> None:
-        from models.runtime.local_pipeline import LocalTextGenerationPipeline
-        from models.runtime.local_loader import (
-            LocalModelForCausalLM, ModelFamily, TokenizerBundle,
+        from models.runtime.pipeline import TextGenerationPipeline
+        from models.runtime.loader import (
+            ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
             TINY_CONFIG, build_tiny_transformer,
         )
         mdl, tok = build_tiny_transformer(TINY_CONFIG)
-        head = LocalModelForCausalLM(mdl, TokenizerBundle(byte=tok),
+        head = ModelForCausalLM(mdl, TokenizerBundle(byte=tok),
                                      family=ModelFamily.TINY_TRANSFORMER)
-        pipe = LocalTextGenerationPipeline(head)
+        pipe = TextGenerationPipeline(head)
         out = pipe("hello", max_new_tokens=8)
         assert len(out) == 1
         rec = out[0]
@@ -536,17 +536,17 @@ class TestLocalTextGenerationPipeline:
         assert rec["family"] == ModelFamily.TINY_TRANSFORMER.value
 
     def test_call_with_list_of_strings(self) -> None:
-        from models.runtime.local_pipeline import LocalTextGenerationPipeline
-        from models.runtime.local_loader import (
-            LocalModelForCausalLM, ModelFamily, TokenizerBundle,
+        from models.runtime.pipeline import TextGenerationPipeline
+        from models.runtime.loader import (
+            ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
             TINY_CONFIG, build_tiny_transformer,
         )
         mdl, tok = build_tiny_transformer(TINY_CONFIG)
-        head = LocalModelForCausalLM(mdl, TokenizerBundle(byte=tok),
+        head = ModelForCausalLM(mdl, TokenizerBundle(byte=tok),
                                      family=ModelFamily.TINY_TRANSFORMER)
-        pipe = LocalTextGenerationPipeline(head)
+        pipe = TextGenerationPipeline(head)
         out = pipe(["a", "b", "c"], max_new_tokens=4)
         assert len(out) == 3
         for rec in out:
@@ -554,14 +554,14 @@ class TestLocalTextGenerationPipeline:
 
 
 class TestLocalImageGenerationPipeline:
-    """Tests for :class:`LocalImageGenerationPipeline`."""
+    """Tests for :class:`ImageGenerationPipeline`."""
 
     def test_call_with_single_prompt(self) -> None:
-        from models.runtime.local_pipeline import LocalImageGenerationPipeline
-        from models.runtime.local_loader import LocalModelForTextToImage
+        from models.runtime.pipeline import ImageGenerationPipeline
+        from models.runtime.loader import ModelForTextToImage
         from models.base import ModelMixin
-        head = LocalModelForTextToImage(ModelMixin(), family="hunyuan_dit")
-        pipe = LocalImageGenerationPipeline(head)
+        head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
+        pipe = ImageGenerationPipeline(head)
         out = pipe("a tiny cat", height=64, width=64, num_inference_steps=2)
         assert len(out) == 1
         rec = out[0]
@@ -569,11 +569,11 @@ class TestLocalImageGenerationPipeline:
         assert "latents" in rec or "note" in rec
 
     def test_call_with_list_of_prompts(self) -> None:
-        from models.runtime.local_pipeline import LocalImageGenerationPipeline
-        from models.runtime.local_loader import LocalModelForTextToImage
+        from models.runtime.pipeline import ImageGenerationPipeline
+        from models.runtime.loader import ModelForTextToImage
         from models.base import ModelMixin
-        head = LocalModelForTextToImage(ModelMixin(), family="hunyuan_dit")
-        pipe = LocalImageGenerationPipeline(head)
+        head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
+        pipe = ImageGenerationPipeline(head)
         out = pipe(
             ["a cat", "a dog", "a bird"],
             height=64, width=64, num_inference_steps=2,
@@ -581,15 +581,15 @@ class TestLocalImageGenerationPipeline:
         assert len(out) == 3
 
 
-class TestLocalAudioPipeline:
-    """Tests for :class:`LocalAudioPipeline`."""
+class TestAudioPipeline:
+    """Tests for :class:`AudioPipeline`."""
 
     def test_call_dispatches_tts(self) -> None:
-        from models.runtime.local_pipeline import LocalAudioPipeline
-        from models.runtime.local_loader import LocalModelForTextToSpeech
+        from models.runtime.pipeline import AudioPipeline
+        from models.runtime.loader import ModelForTextToSpeech
         from models.base import ModelMixin
-        head = LocalModelForTextToSpeech(ModelMixin(), family="musicgen")
-        pipe = LocalAudioPipeline(head)
+        head = ModelForTextToSpeech(ModelMixin(), family="musicgen")
+        pipe = AudioPipeline(head)
         out = pipe("hello", sample_rate=16000)
         assert len(out) == 1
         rec = out[0]
@@ -598,11 +598,11 @@ class TestLocalAudioPipeline:
         assert rec["sample_rate"] == 16000
 
     def test_call_dispatches_music(self) -> None:
-        from models.runtime.local_pipeline import LocalAudioPipeline
-        from models.runtime.local_loader import LocalModelForMusic
+        from models.runtime.pipeline import AudioPipeline
+        from models.runtime.loader import ModelForMusic
         from models.base import ModelMixin
-        head = LocalModelForMusic(ModelMixin(), family="musicgen")
-        pipe = LocalAudioPipeline(head)
+        head = ModelForMusic(ModelMixin(), family="musicgen")
+        pipe = AudioPipeline(head)
         out = pipe("a funky beat", duration_s=2.0, sample_rate=22050)
         assert len(out) == 1
         rec = out[0]
@@ -615,7 +615,7 @@ class TestPipelineFactory:
     """Tests for the top-level :func:`pipeline` factory."""
 
     def test_list_supported_tasks(self) -> None:
-        from models.runtime.local_pipeline import list_supported_tasks
+        from models.runtime.pipeline import list_supported_tasks
         tasks = list_supported_tasks()
         assert "text-generation" in tasks
         assert "text-to-image" in tasks
@@ -623,46 +623,46 @@ class TestPipelineFactory:
         assert "music-generation" in tasks
 
     def test_unsupported_task_raises(self) -> None:
-        from models.runtime.local_pipeline import pipeline
+        from models.runtime.pipeline import pipeline
         with pytest.raises(ValueError):
             pipeline("not-a-real-task")
 
     def test_no_model_or_path_raises(self) -> None:
-        from models.runtime.local_pipeline import pipeline
+        from models.runtime.pipeline import pipeline
         with pytest.raises(RuntimeError):
             pipeline("text-generation")
 
     def test_text_pipeline_inline_load(self) -> None:
         """``pipeline("text-generation", model=...)`` with a
         pre-built TaskHead skips the model load entirely."""
-        from models.runtime.local_pipeline import pipeline
-        from models.runtime.local_loader import (
-            LocalModelForCausalLM, ModelFamily, TokenizerBundle,
+        from models.runtime.pipeline import pipeline
+        from models.runtime.loader import (
+            ModelForCausalLM, ModelFamily, TokenizerBundle,
         )
         from models.providers.tiny_transformer import (
             TINY_CONFIG, build_tiny_transformer,
         )
         mdl, tok = build_tiny_transformer(TINY_CONFIG)
-        head = LocalModelForCausalLM(mdl, TokenizerBundle(byte=tok),
+        head = ModelForCausalLM(mdl, TokenizerBundle(byte=tok),
                                      family=ModelFamily.TINY_TRANSFORMER)
         pipe = pipeline("text-generation", model=head)
         out = pipe("hello", max_new_tokens=4)
         assert len(out) == 1
 
     def test_image_pipeline_inline_load(self) -> None:
-        from models.runtime.local_pipeline import pipeline
-        from models.runtime.local_loader import LocalModelForTextToImage
+        from models.runtime.pipeline import pipeline
+        from models.runtime.loader import ModelForTextToImage
         from models.base import ModelMixin
-        head = LocalModelForTextToImage(ModelMixin(), family="hunyuan_dit")
+        head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
         pipe = pipeline("text-to-image", model=head)
         out = pipe("a tiny cat", height=64, width=64, num_inference_steps=2)
         assert len(out) == 1
 
     def test_audio_pipeline_inline_load(self) -> None:
-        from models.runtime.local_pipeline import pipeline
-        from models.runtime.local_loader import LocalModelForTextToSpeech
+        from models.runtime.pipeline import pipeline
+        from models.runtime.loader import ModelForTextToSpeech
         from models.base import ModelMixin
-        head = LocalModelForTextToSpeech(ModelMixin(), family="musicgen")
+        head = ModelForTextToSpeech(ModelMixin(), family="musicgen")
         pipe = pipeline("text-to-speech", model=head)
         out = pipe("hi", sample_rate=16000)
         assert len(out) == 1
@@ -796,22 +796,48 @@ class TestEndToEnd:
 
     def test_import_runtime_package(self) -> None:
         import models.runtime as rt
+        # Canonical (v0.10.1) names
         assert hasattr(rt, "load_model_and_tokenizer")
         assert hasattr(rt, "pipeline")
-        assert hasattr(rt, "LocalModelHub")
-        assert hasattr(rt, "LocalTextGenerationPipeline")
-        assert hasattr(rt, "LocalImageGenerationPipeline")
-        assert hasattr(rt, "LocalAudioPipeline")
+        assert hasattr(rt, "ModelHub")
+        assert hasattr(rt, "TextGenerationPipeline")
+        assert hasattr(rt, "ImageGenerationPipeline")
+        assert hasattr(rt, "AudioPipeline")
         assert hasattr(rt, "enable_local_runtime")
         assert hasattr(rt, "ModelFamily")
         assert hasattr(rt, "TokenizerBundle")
         assert hasattr(rt, "DevicePlan")
+        # Backward-compat aliases (v0.10.0 -> v0.10.1) must remain reachable
+        for old_name in (
+            "LocalModelHub",
+            "LocalModelForCausalLM",
+            "LocalModelForTextToImage",
+            "LocalModelForTextToSpeech",
+            "LocalModelForMusic",
+            "LocalTextGenerationPipeline",
+            "LocalImageGenerationPipeline",
+            "LocalAudioPipeline",
+        ):
+            assert hasattr(rt, old_name), f"missing alias: {old_name}"
+        # Aliases must be identity-equal to the canonical names.
+        from models.runtime import (
+            ModelHub, ModelForCausalLM, TextGenerationPipeline,
+            ImageGenerationPipeline, AudioPipeline,
+            LocalModelHub, LocalModelForCausalLM,
+            LocalTextGenerationPipeline, LocalImageGenerationPipeline,
+            LocalAudioPipeline,
+        )
+        assert LocalModelHub is ModelHub
+        assert LocalModelForCausalLM is ModelForCausalLM
+        assert LocalTextGenerationPipeline is TextGenerationPipeline
+        assert LocalImageGenerationPipeline is ImageGenerationPipeline
+        assert LocalAudioPipeline is AudioPipeline
 
     def test_end_to_end_text_pipeline(self) -> None:
         """One-call smoke: build → pipeline → generate."""
         from models.runtime import (
-            LocalModelForCausalLM,
-            LocalTextGenerationPipeline,
+            ModelForCausalLM,
+            TextGenerationPipeline,
             TokenizerBundle,
             ModelFamily,
         )
@@ -819,11 +845,11 @@ class TestEndToEnd:
             TINY_CONFIG, build_tiny_transformer,
         )
         mdl, tok = build_tiny_transformer(TINY_CONFIG)
-        head = LocalModelForCausalLM(
+        head = ModelForCausalLM(
             mdl, TokenizerBundle(byte=tok),
             family=ModelFamily.TINY_TRANSFORMER,
         )
-        pipe = LocalTextGenerationPipeline(head)
+        pipe = TextGenerationPipeline(head)
         out = pipe(
             ["the quick brown fox", "lorem ipsum"],
             max_new_tokens=8,
@@ -833,12 +859,12 @@ class TestEndToEnd:
 
     def test_end_to_end_image_pipeline(self) -> None:
         from models.runtime import (
-            LocalModelForTextToImage,
-            LocalImageGenerationPipeline,
+            ModelForTextToImage,
+            ImageGenerationPipeline,
         )
         from models.base import ModelMixin
-        head = LocalModelForTextToImage(ModelMixin(), family="hunyuan_dit")
-        pipe = LocalImageGenerationPipeline(head)
+        head = ModelForTextToImage(ModelMixin(), family="hunyuan_dit")
+        pipe = ImageGenerationPipeline(head)
         out = pipe("a serene mountain", height=64, width=64,
                    num_inference_steps=2)
         assert len(out) == 1
@@ -849,26 +875,33 @@ class TestEndToEnd:
 
     def test_end_to_end_audio_pipeline(self) -> None:
         from models.runtime import (
-            LocalModelForTextToSpeech,
-            LocalAudioPipeline,
+            ModelForTextToSpeech,
+            AudioPipeline,
         )
         from models.base import ModelMixin
-        head = LocalModelForTextToSpeech(ModelMixin(), family="musicgen")
-        pipe = LocalAudioPipeline(head)
+        head = ModelForTextToSpeech(ModelMixin(), family="musicgen")
+        pipe = AudioPipeline(head)
         out = pipe("hello world", sample_rate=22050)
         assert len(out) == 1
         rec = out[0]
         assert "mel" in rec or "codes" in rec
 
-    def test_example_module_imports(self) -> None:
-        """The demo example must import cleanly without errors."""
-        # Don't run main(); just import the module and assert the
-        # top-level helpers exist.
+    def test_loader_and_pipeline_module_imports(self) -> None:
+        """The two main runtime modules must import cleanly without
+        side effects.  This is the v0.10.1 equivalent of the old
+        ``test_example_module_imports`` (the demo example was
+        removed in v0.10.1 since the 13 project-owned examples
+        already cover end-to-end usage).
+        """
         import importlib
-        mod = importlib.import_module("examples.local_transformers_demo")
-        assert hasattr(mod, "demo_text_generation")
-        assert hasattr(mod, "demo_image_generation")
-        assert hasattr(mod, "demo_text_to_speech")
-        assert hasattr(mod, "demo_inject_runtime")
-        assert hasattr(mod, "demo_family_detection")
-        assert callable(mod.main)
+        loader = importlib.import_module("models.runtime.loader")
+        pipeline = importlib.import_module("models.runtime.pipeline")
+        # Spot-check that the renamed public symbols are reachable.
+        assert hasattr(loader, "ModelHub")
+        assert hasattr(loader, "ModelForCausalLM")
+        assert hasattr(loader, "load_model_and_tokenizer")
+        assert hasattr(loader, "detect_model_family")
+        assert hasattr(pipeline, "TextGenerationPipeline")
+        assert hasattr(pipeline, "ImageGenerationPipeline")
+        assert hasattr(pipeline, "AudioPipeline")
+        assert hasattr(pipeline, "pipeline")

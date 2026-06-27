@@ -1,4 +1,4 @@
-"""Local runtime: 自研的 "transformers 风格" 本地模型加载与推理串联层 (v0.10.0)。
+"""自研的 "transformers 风格" 本地模型加载与推理串联层 (v0.10.0)。
 
 项目自 v0.4.x 以来一直保持 **零依赖** 的核心:不依赖
 ``transformers`` / ``tokenizers`` / ``diffusers`` / ``huggingface_hub``。
@@ -8,14 +8,15 @@
 
 本包正是填补这个缺口:
 
-* :mod:`models.runtime.local_loader` -- 类似
+* :mod:`models.runtime.loader` -- 类似
   ``transformers.AutoModel`` + ``AutoTokenizer`` 的本地加载统一入口
-  (LocalModelHub / load_model_and_tokenizer / LocalModelFor* 类)。
-* :mod:`models.runtime.local_pipeline` -- 类似 ``transformers.pipeline``
-  的轻量推理管道 (LocalTextGenerationPipeline /
-  LocalImageGenerationPipeline / LocalAudioPipeline)。
+  (:class:`ModelHub` / :func:`load_model_and_tokenizer` /
+  :class:`ModelFor*` 类)。
+* :mod:`models.runtime.pipeline` -- 类似 ``transformers.pipeline``
+  的轻量推理管道 (:class:`TextGenerationPipeline` /
+  :class:`ImageGenerationPipeline` / :class:`AudioPipeline`)。
 * :mod:`models.runtime.runtime_config` -- 一行配置:
-  :func:`enable_local_runtime()` 把 "自研加载 + 真推理循环" 注入
+  :func:`enable_local_runtime` 把 "自研加载 + 真推理循环" 注入
   :class:`core.module_bus.ModuleBus`,让 39 个 L4 节点从默认的 echo
   工厂切到 **真模型真生成**。
 * :mod:`models.runtime.device_planner` -- CPU / GPU / MPS / multi-GPU
@@ -44,34 +45,42 @@
 * :func:`pipeline`                  -- 类似 ``transformers.pipeline``
   的多模态推理管道工厂
 * :func:`enable_local_runtime`      -- 注入 39 节点 (一行)
-* :class:`LocalModelHub`            -- 类似 ``transformers.Hub`` 的本地 hub
-* :class:`LocalTextGenerationPipeline`
-* :class:`LocalImageGenerationPipeline`
-* :class:`LocalAudioPipeline`
+* :class:`ModelHub`                 -- 类似 ``transformers.Hub`` 的本地 hub
+* :class:`TextGenerationPipeline`
+* :class:`ImageGenerationPipeline`
+* :class:`AudioPipeline`
 
-完整使用示例见 :mod:`examples.local_transformers_demo` 与
-:mod:`docs.local_transformers`。
+向后兼容 (v0.10.0 -> v0.10.1 命名重整):
+
+为了让名字更准确 (不重复 ``Local`` 前缀 / 避免 ``local_loader``
+嵌套在 ``models.runtime`` 下的语义重复),我们在 v0.10.1 把模块
+文件和公共类都重命名了。**v0.10.0 旧名仍然作为 alias 保留**,所以
+``from models.runtime import LocalModelHub`` /
+``from models.runtime import LocalTextGenerationPipeline`` 在
+v0.10.1+ 仍然能工作。
+
+详细使用示例见 :mod:`docs.local_transformers` (顶层 docs 入口)。
 """
 from __future__ import annotations
 
-from .local_loader import (
-    LocalModelHub,
-    LocalModelForCausalLM,
-    LocalModelForTextToImage,
-    LocalModelForTextToSpeech,
-    LocalModelForMusic,
+from .loader import (
+    ModelHub,
+    ModelForCausalLM,
+    ModelForTextToImage,
+    ModelForTextToSpeech,
+    ModelForMusic,
     ModelFamily,
     TokenizerBundle,
     load_model_and_tokenizer,
     detect_model_family,
 )
-from .local_pipeline import (
-    LocalTextGenerationPipeline,
-    LocalImageGenerationPipeline,
-    LocalAudioPipeline,
+from .pipeline import (
+    TextGenerationPipeline,
+    ImageGenerationPipeline,
+    AudioPipeline,
+    PipelineOutput,
     pipeline,
     list_supported_tasks,
-    PipelineOutput,
 )
 from .runtime_config import (
     RuntimeConfig,
@@ -89,29 +98,63 @@ from .device_planner import (
     is_mps_available,
 )
 
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases (v0.10.0 旧名, v0.10.1+ 仍可用)
+# ---------------------------------------------------------------------------
+# The old name ``Local*`` carried the "local" prefix because the
+# module was originally called ``local_loader.py`` /
+# ``local_pipeline.py`` -- that file name has been simplified to
+# ``loader.py`` / ``pipeline.py`` since "runtime" already implies
+# local.  The old class names are kept as aliases so v0.10.0 user
+# code continues to work unmodified.
+LocalModelHub = ModelHub
+LocalModelForCausalLM = ModelForCausalLM
+LocalModelForTextToImage = ModelForTextToImage
+LocalModelForTextToSpeech = ModelForTextToSpeech
+LocalModelForMusic = ModelForMusic
+LocalTextGenerationPipeline = TextGenerationPipeline
+LocalImageGenerationPipeline = ImageGenerationPipeline
+LocalAudioPipeline = AudioPipeline
+
+
 __all__ = [
-    # local_loader
-    "LocalModelHub",
-    "LocalModelForCausalLM",
-    "LocalModelForTextToImage",
-    "LocalModelForTextToSpeech",
-    "LocalModelForMusic",
+    # loader (canonical names)
+    "ModelHub",
+    "ModelForCausalLM",
+    "ModelForTextToImage",
+    "ModelForTextToSpeech",
+    "ModelForMusic",
     "ModelFamily",
+    "TokenizerBundle",
     "load_model_and_tokenizer",
     "detect_model_family",
-    # local_pipeline
-    "LocalTextGenerationPipeline",
-    "LocalImageGenerationPipeline",
-    "LocalAudioPipeline",
+    # pipeline (canonical names)
+    "TextGenerationPipeline",
+    "ImageGenerationPipeline",
+    "AudioPipeline",
+    "PipelineOutput",
     "pipeline",
+    "list_supported_tasks",
     # runtime_config
     "RuntimeConfig",
     "enable_local_runtime",
     "disable_local_runtime",
     "is_local_runtime_enabled",
+    "get_active_config",
     # device_planner
     "DevicePlan",
     "plan_device",
     "pick_default_device",
     "get_device_map",
+    "is_cuda_available",
+    "is_mps_available",
+    # backward-compat aliases (v0.10.0 -> v0.10.1)
+    "LocalModelHub",
+    "LocalModelForCausalLM",
+    "LocalModelForTextToImage",
+    "LocalModelForTextToSpeech",
+    "LocalModelForMusic",
+    "LocalTextGenerationPipeline",
+    "LocalImageGenerationPipeline",
+    "LocalAudioPipeline",
 ]
