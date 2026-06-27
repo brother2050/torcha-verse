@@ -52,7 +52,12 @@ def text() -> None:
 def generate(prompt: str, model: str, max_tokens: int, temperature: float, output: str) -> None:
     """Run a single text completion."""
     _print_engine_info("text_completion", model)
-    result = _get_service().text_completion(
+    # v0.10.3: forward --model to the local runtime so the
+    # factory tries the user-downloaded checkpoint first.
+    # ``"default"`` is the legacy alias for "use whatever the
+    # runtime decides" and is mapped to ``None`` here.
+    rt_model_id = None if model in ("default", "", None) else model
+    result = _get_service(model_id=rt_model_id).text_completion(
         prompt=prompt, model=model, max_tokens=max_tokens, temperature=temperature,
     )
     if "error" in result:
@@ -113,7 +118,9 @@ def chat(
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_message),
     ]
-    result = _get_service().text_chat(
+    result = _get_service(model_id=(
+        None if model in ("default", "", None) else model
+    )).text_chat(
         messages=messages,
         model=model,
         max_tokens=max_tokens,

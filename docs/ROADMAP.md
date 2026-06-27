@@ -18,7 +18,7 @@ echo 工厂节点切到真模型真生成。
 - **v0.5.x 功能扩展** ✅ 完成 (2026-06-25, +206 测试)
 - **v0.6.x 重构** ✅ 完成 (2026-06-26, 13 PR, R-3~R-15 拆分, 1053 测试)
 - **v0.7.x 性能 / CLI / 懒化** ✅ 完成 (2026-06-26, R-16~R-19)
-- **v0.10.x Local Runtime + 自描述命名** ✅ 完成 (2026-06-27, 1377 测试)
+- **v0.10.x Local Runtime + 自描述命名** ✅ 完成 (2026-06-27, 1377 → 1424 测试)
   - **v1.0.0 生产化** (后续)
 
 ---
@@ -41,6 +41,64 @@ echo 工厂节点切到真模型真生成。
 - **0 回归**: test_local_transformers 66/66 pass; 全量 1377 通过 (9 fail 来自 main 上同样存在的 rich/onnxscript 缺包环境问题)
 
 详细操作手册见 [`docs/local_transformers.md`](local_transformers.md)。
+
+### v0.10.3 修复 (2026-06-27)
+
+**问题**: 用户 `torcha text generate --model Qwen/Qwen2.5-0.5B-Instruct`
+时只回显 prompt (`>>> how are you?`), 下载的 Qwen 模型文件未被使用。
+
+**根因**:
+1. `PipelineService` 默认 `_llm_provider = EchoProvider()`, 39 节点
+   走 echo 工厂回显 prompt
+2. CLI 启动时**没有**调 `enable_local_runtime()`, 所以 echo 是默认行为
+3. echo 工厂输出 `[echo-text] how are you?` 但前缀被终端渲染掉
+4. 项目 runtime 0 依赖设计 → 不支持 Qwen2 (LLaMA-derivative) 架构,
+   即便能加载权重也没 forward 路径
+
+**修复**:
+1. `ModelFamily.QWEN2` / `ModelFamily.LLAMA` 枚举 + `_FAMILY_KEY_SIGNATURES`
+   签名 (LLaMA-derivative: `model.embed_tokens` / `model.layers.X.self_attn.q_proj`
+   / `model.norm` / `lm_head`) + `_FAMILY_PREFERENCE` 平局优先 QWEN2
+2. `RuntimeConfig.model_id` / `cache_root` 新字段 + `enable_local_runtime(
+   model_id=, cache_root=)` kwarg
+3. `_make_text_factory` 在 `model_id` 设置时尝试从
+   `~/.cache/torcha-verse/<source>/<model_id>` 解析 + 调
+   `load_model_and_tokenizer` + 包成 `LocalTorchTextProvider.from_wrapped_model`,
+   失败时**清晰**回退 micro-transformer + 打印具体原因 (cache 缺失 / 架构未实现)
+4. `_resolve_user_model_path` 把 `org/name` 解析成本地 cache 路径
+   (优先 huggingface 布局, fallback civitai / local / modelscope)
+5. `_instantiate_model` 在 `family == QWEN2 / LLAMA` 时**清晰**抛
+   `NotImplementedError` (指引 v0.11.0 LLaMA-derivative 实现), 避免
+   静默乱码
+6. `_text_echo_factory.generate` 输出 `[echo-text: no model registered
+   for 'NAME']` 显式标识 + 透传 `_echo_model_name` kwarg
+7. `serving/cli/_runtime._get_service(model_id=, device=)` 在
+   `PipelineService` 首次构造时**自动**调 `enable_local_runtime()`
+8. `serving/cli/_text.generate` / `.chat` 把 `--model` 透传给
+   `_get_service(model_id=...)`, `default` / 空值映射成 `None`
+
+**测试**: 新增 `tests/test_v103_user_model_resolution.py` (18 tests)
+- `ModelFamily.QWEN2` / `LLAMA` 枚举 + 顺序
+- `detect_model_family` 识别 QWEN2 签名 + QWEN2 平局优先 LLAMA
+- `RuntimeConfig.model_id` / `cache_root` 字段 + kwarg 透传
+- `_resolve_user_model_path` 3 个 cache 行为 (本地 / 缺失 / huggingface 布局)
+- echo 工厂 model name 透传 + 标识
+- cache 缺失时 `_make_text_factory` 警告 + micro-transformer fallback
+
+**用户行为变化**:
+- 跑 `torcha text generate --model Qwen/Qwen2.5-0.5B-Instruct "hi"`:
+  - 看到 `local runtime enabled` 启动日志
+  - cache 有 Qwen → `load_model_and_tokenizer` 识别为 QWEN2 → 抛
+    `NotImplementedError` (v0.11.0 项) → 打印清晰警告 → 回退 micro-transformer
+  - cache 没 Qwen → 打印 `not found in cache under ~/.cache/torcha-verse` →
+    提示 `from models.source import fetch; fetch('Qwen/Qwen2.5-0.5B-Instruct')` →
+    回退 micro-transformer
+  - 不再看到 `[echo-text]` 静默回显
+- 跑 `torcha text generate "hi"` (无 `--model`):
+  - 默认 `enable_local_runtime()`, 走 micro-transformer
+  - 输出 `hi 后续乱码` (随机权重, 预期行为) — **不是 echo, 是真模型推理**
+- 跑 `torcha text generate` 且 `--model` 是无 cache 的随机字符串:
+  - 看到 `[echo-text: no model registered for 'NAME']` 显式标识
 
 ---
 

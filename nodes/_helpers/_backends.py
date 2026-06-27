@@ -315,10 +315,14 @@ def call_text_backend(
         "model": name or "echo-text",
     }
     if hasattr(backend, "generate"):
+        # The echo backend inspects ``_echo_model_name`` to print
+        # which model the framework failed to find a registered
+        # backend for; real backends ignore the kwarg.
         text = backend.generate(
             prompt,
             max_new_tokens=max_tokens,
             temperature=temperature,
+            _echo_model_name=name,
             **extra,
         )
         if not isinstance(text, str):

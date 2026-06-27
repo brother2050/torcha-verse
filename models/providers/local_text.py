@@ -212,6 +212,67 @@ class LocalTorchTextProvider(LLMProvider):
         model, tok = build_tiny_transformer(cfg)
         return cls(model=model, tokenizer=tok, config=cfg, device=device)
 
+    @classmethod
+    def from_wrapped_model(
+        cls,
+        bundle,
+        *,
+        device: Union[str, torch.device] = "cpu",
+    ) -> "LocalTorchTextProvider":
+        """Build a provider on top of a :func:`load_model_and_tokenizer`
+        bundle (real user-selected weights).
+
+        The ``bundle`` is a 3-tuple ``(model, tokenizer, family)`` as
+        returned by :func:`models.runtime.load_model_and_tokenizer`.
+        The factory passes the upstream model + tokenizer through
+        directly.  When the upstream model exposes
+        :meth:`generate(prompt, **kwargs) -> str` (the case for
+        :class:`ModelMixin`-backed architectures) we call it
+        verbatim; otherwise we use the standard
+        tokenize-→forward-→decode path with a uniform sampling
+        loop.
+
+        The returned provider is **stateless w.r.t. the
+        architecture**: callers should set ``self._architecture``
+        if they need to know which one is loaded.
+        """
+        if isinstance(bundle, tuple) and len(bundle) == 3:
+            model, tokenizer, family = bundle
+        elif isinstance(bundle, tuple) and len(bundle) == 2:
+            model, tokenizer = bundle
+            family = None
+        else:
+            model, tokenizer = bundle, None
+        # Pass through the existing constructor when the bundle
+        # already matches the micro-transformer shape.  Otherwise
+        # we attach the model + tokenizer manually and mark the
+        # provider as "user-loaded" so the generate/embed paths
+        # route to the real weights.
+        if (
+            isinstance(tokenizer, ByteTokenizer)
+            and hasattr(model, "config")
+            and isinstance(getattr(model, "config", None), TinyTransformerConfig)
+        ):
+            return cls(
+                model=model, tokenizer=tokenizer,
+                config=getattr(model, "config"),
+                device=device,
+            )
+        # Generic user-loaded path.
+        instance = cls.__new__(cls)
+        instance._model = model.to(device)
+        instance._model.eval()
+        instance._tokenizer = tokenizer
+        instance._config = getattr(model, "config", None)
+        instance._device = (
+            torch.device(device) if not isinstance(device, torch.device) else device
+        )
+        instance._lock = threading.RLock()
+        instance._logger = _logger
+        instance._user_loaded = True
+        instance._family = family
+        return instance
+
     # ------------------------------------------------------------------
     # LLMProvider interface
     # ------------------------------------------------------------------
@@ -319,6 +380,85 @@ class LocalTorchTextProvider(LLMProvider):
             the model stops at the first match and the stop token
             itself is dropped from the output.
         """
+        # User-loaded path: defer to whatever the upstream model
+        # exposes.  ``ModelMixin`` provides ``generate(prompt, **kw)``
+        # returning a string, which is the preferred surface; we
+        # only fall back to the bytes / token-id path when the
+        # model has a ``generate`` that expects a tensor.
+        if getattr(self, "_user_loaded", False):
+            with self._lock:
+                with torch.no_grad():
+                    if isinstance(prompt, str) and hasattr(
+                        self._model, "generate"
+                    ):
+                        try:
+                            out = self._model.generate(
+                                prompt,
+                                max_new_tokens=max_new_tokens,
+                                temperature=temperature,
+                                top_k=top_k,
+                                top_p=top_p,
+                                do_sample=do_sample,
+                                **kwargs,
+                            )
+                            if isinstance(out, str):
+                                return out
+                        except TypeError:
+                            # The model.generate signature is
+                            # tensor-shaped; fall through to the
+                            # standard path below using the
+                            # attached tokenizer.
+                            pass
+                    # Fallback: tokenize via the bundle's
+                    # ``TokenizerBundle`` (project-aware) then
+                    # forward to ``self._model.generate``.
+                    if self._tokenizer is None:
+                        raise RuntimeError(
+                            "LocalTorchTextProvider.generate: user-loaded "
+                            "model has no tokenizer attached; cannot decode."
+                        )
+                    if isinstance(prompt, str):
+                        if hasattr(self._tokenizer, "encode"):
+                            ids = self._tokenizer.encode(
+                                prompt, add_bos=True, add_eos=False,
+                            )
+                        else:
+                            # ``TokenizerBundle`` from
+                            # :mod:`models.runtime` falls back
+                            # to byte-level encoding when no
+                            # vocab is present.
+                            ids = [b + 3 for b in prompt.encode(
+                                "utf-8", errors="ignore",
+                            )[: 254]]
+                            ids = [1] + ids + [2]
+                    else:
+                        ids = list(prompt)
+                    if not ids:
+                        ids = [1]
+                    input_ids = torch.tensor(
+                        [ids], dtype=torch.long, device=self._device,
+                    )
+                    output = self._model.generate(
+                        input_ids,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                        do_sample=do_sample,
+                        **kwargs,
+                    )
+                    out_ids = (
+                        output[0].tolist()
+                        if hasattr(output, "shape")
+                        else list(output[0])
+                    )
+                    if hasattr(self._tokenizer, "decode"):
+                        return self._tokenizer.decode(out_ids, skip_special=True)
+                    return "".join(
+                        chr(i) for i in out_ids
+                        if 32 <= i < 0x110000
+                    )[: 256]
+
         # Encode + ensure tensor shape (1, T).
         if isinstance(prompt, str):
             ids = self._tokenizer.encode(prompt, add_bos=True, add_eos=False)

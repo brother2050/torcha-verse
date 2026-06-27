@@ -67,7 +67,11 @@ logger = get_logger("cli")
 _service: Optional[PipelineService] = None
 
 
-def _get_service() -> PipelineService:
+def _get_service(
+    *,
+    model_id: Optional[str] = None,
+    device: Optional[str] = None,
+) -> PipelineService:
     """Return a lazily-created :class:`PipelineService` singleton.
 
     R-17: when the user passed ``--config DIR`` on the root
@@ -75,6 +79,15 @@ def _get_service() -> PipelineService:
     forwarded to the :class:`ConfigCenter` on first construction.
     The service is cached for the lifetime of the CLI process so
     the override applies consistently across sub-commands.
+
+    v0.10.3: on first construction we also enable the local
+    runtime (:func:`models.runtime.enable_local_runtime`) so the
+    39 L4 nodes route to the project micro-transformer instead of
+    the empty echo factory.  If the caller passed ``--model
+    <id>`` we forward it as the user-selected model identifier;
+    the runtime tries to resolve the matching cache entry first
+    and falls back to the micro-transformer with a clear warning
+    when the architecture is not yet implemented.
     """
     global _service
     if _service is None:
@@ -102,6 +115,23 @@ def _get_service() -> PipelineService:
                     "Could not honour --config %s; falling back to defaults.",
                     config_dir,
                 )
+        # v0.10.3 — enable the local runtime by default so the
+        # CLI is usable out of the box.  When ``model_id`` was
+        # passed, the factory will try to resolve the
+        # user-downloaded checkpoint from the cache; the
+        # micro-transformer remains a transparent fallback.
+        try:
+            from models.runtime import enable_local_runtime
+            enable_local_runtime(
+                model_id=model_id,
+                device=device,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "enable_local_runtime() failed (%s); "
+                "falling back to echo defaults.",
+                exc,
+            )
         _service = PipelineService()
     return _service
 

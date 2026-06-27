@@ -140,6 +140,8 @@ class ModelFamily(str, Enum):
     SD3 = "sd3"
     WAN2 = "wan2"
     MUSICGEN = "musicgen"
+    QWEN2 = "qwen2"
+    LLAMA = "llama"
     TINY_TRANSFORMER = "tiny_transformer"
     UNKNOWN = "unknown"
 
@@ -247,6 +249,31 @@ _FAMILY_KEY_SIGNATURES: Tuple[Tuple[ModelFamily, Tuple[str, ...]], ...] = (
         ),
     ),
     (
+        # Qwen2 / Qwen2.5 (LLaMA-derivative): standard HuggingFace
+        # causal-LM layout.  Identified by `model.embed_tokens.weight`
+        # + `model.layers.<i>.self_attn.q_proj.weight` + `lm_head.weight`.
+        # Qwen2.5-0.5B / 1.5B / 7B / 14B / 32B / 72B all share the same
+        # naming convention, so the same signature is reused for the
+        # whole family.  LLaMA-2 / LLaMA-3 share the same key prefix
+        # pattern, hence a separate ``LLAMA`` entry below.
+        ModelFamily.QWEN2,
+        (
+            "model.embed_tokens",
+            "model.layers",
+            "model.norm.weight",
+            "lm_head.weight",
+        ),
+    ),
+    (
+        ModelFamily.LLAMA,
+        (
+            "model.embed_tokens",
+            "model.layers",
+            "model.norm.weight",
+            "lm_head.weight",
+        ),
+    ),
+    (
         ModelFamily.TINY_TRANSFORMER,
         (
             "token_embedding",
@@ -308,8 +335,32 @@ def detect_model_family(
             scores.append((family, score))
     if not scores:
         return ModelFamily.UNKNOWN
-    scores.sort(key=lambda x: x[1], reverse=True)
+    # Highest score wins.  Ties are broken by ``_FAMILY_PREFERENCE``
+    # so the more specific / more likely target comes first (e.g.
+    # QWEN2 over LLAMA when both signatures match equally).
+    scores.sort(
+        key=lambda x: (
+            x[1],
+            _FAMILY_PREFERENCE.get(x[0], 0),
+        ),
+        reverse=True,
+    )
     return scores[0][0]
+
+
+# Order used to break ties in :func:`detect_model_family` when two
+# families have the same signature score.  Higher = preferred.
+_FAMILY_PREFERENCE: Dict["ModelFamily", int] = {
+    ModelFamily.HUNYUAN_DIT: 10,
+    ModelFamily.FLUX: 10,
+    ModelFamily.SD3: 10,
+    ModelFamily.WAN2: 10,
+    ModelFamily.MUSICGEN: 10,
+    ModelFamily.QWEN2: 5,
+    ModelFamily.LLAMA: 4,
+    ModelFamily.TINY_TRANSFORMER: 0,
+    ModelFamily.UNKNOWN: 0,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +406,14 @@ _FAMILY_TO_KEYMAP: Dict[ModelFamily, Optional[Dict[str, str]]] = {
     ModelFamily.SD3: SD3_KEY_MAP,
     ModelFamily.WAN2: WAN2_KEY_MAP,
     ModelFamily.MUSICGEN: MUSICGEN_KEY_MAP,
+    # LLaMA-derivative causal LM families.  These need a real
+    # LLaMA / Qwen2 architecture in :mod:`models.text` (or a
+    # vendored implementation) to load the weights into.  For
+    # now, the key map is ``None`` and :func:`load_model_and_tokenizer`
+    # will raise a clear ``NotImplementedError`` with a migration
+    # pointer (see ``docs/local_transformers.md`` § Qwen2 / LLaMA).
+    ModelFamily.QWEN2: None,
+    ModelFamily.LLAMA: None,
     ModelFamily.TINY_TRANSFORMER: None,
     ModelFamily.UNKNOWN: None,
 }
@@ -838,6 +897,24 @@ def _instantiate_model(
                 "Tiny Transformer runtime unavailable; "
                 "ensure models.providers.tiny_transformer is on the path."
             ) from exc
+
+    # LLaMA-derivative causal LM families (Qwen2 / Qwen2.5 /
+    # LLaMA-2 / LLaMA-3).  These need a project-owned architecture
+    # implementation in :mod:`models.text.llama` (or similar) plus
+    # a BPE / SentencePiece tokenizer.  Until that lands we raise
+    # a clear ``NotImplementedError`` so callers can fall back to
+    # the project micro-transformer instead of silently producing
+    # garbage from a mis-shaped state dict.
+    if family in (ModelFamily.QWEN2, ModelFamily.LLAMA):
+        raise NotImplementedError(
+            f"{family.value} architecture is not yet implemented in the "
+            f"project runtime.  The weights were located at {ckpt_path}, "
+            f"but the LLaMA-derivative forward path is a v0.11.0 item "
+            f"(see docs/ROADMAP.md and docs/local_transformers.md § Qwen2). "
+            f"Workaround: use --model with a project-owned architecture "
+            f"(e.g. the project micro-transformer via `torcha runtime enable` "
+            f"without an explicit --model)."
+        )
 
     # UNKNOWN or future families: best-effort via ModelMixin with
     # the detected keymap (or no keymap when the family is

@@ -90,6 +90,19 @@ class RuntimeConfig:
     device: Union[None, str, Any] = None
     max_memory_per_backend_gb: Optional[float] = None
     use_real_diffusion_loop: bool = True
+    # User-selected model identifier.  When non-empty, the text
+    # factory tries to resolve the weights from
+    # ``~/.cache/torcha-verse/<source>/<model_id>`` via
+    # :func:`models.runtime.transformers_style_loader.load_model_and_tokenizer`
+    # before falling back to the project micro-transformer.  Use the
+    # ``"org/name"`` form for HuggingFace repos (e.g.
+    # ``"Qwen/Qwen2.5-0.5B-Instruct"``) or a local path for
+    # already-downloaded checkpoints.
+    model_id: Optional[str] = None
+    # Cache root used to resolve ``model_id``.  Defaults to
+    # ``~/.cache/torcha-verse`` (matches the layout produced by
+    # :mod:`models.source.fetch`).
+    cache_root: Optional[str] = None
     tags: List[str] = field(default_factory=list)
 
     def describe(self) -> str:
@@ -131,6 +144,8 @@ def enable_local_runtime(
     torch_dtype: Optional[Any] = None,
     device: Union[None, str, Any] = None,
     use_real_diffusion_loop: Optional[bool] = None,
+    model_id: Optional[str] = None,
+    cache_root: Optional[str] = None,
 ) -> RuntimeConfig:
     """One-line "turn on" for the local runtime.
 
@@ -170,6 +185,10 @@ def enable_local_runtime(
         config.device = device
     if use_real_diffusion_loop is not None:
         config.use_real_diffusion_loop = bool(use_real_diffusion_loop)
+    if model_id is not None:
+        config.model_id = str(model_id) if model_id else None
+    if cache_root is not None:
+        config.cache_root = str(cache_root) if cache_root else None
 
     with _LOCK:
         # Idempotent re-entry: if the caller didn't supply a config
@@ -307,8 +326,82 @@ def _register_backends(config: RuntimeConfig) -> None:
 
 
 def _make_text_factory(config: RuntimeConfig) -> Callable[[], Any]:
-    """Return a zero-arg factory for the text backend."""
+    """Return a zero-arg factory for the text backend.
+
+    Resolution order:
+
+    1. If ``config.model_id`` is set, try to load a real user-selected
+       checkpoint via :func:`load_model_and_tokenizer` -- this is the
+       "use my downloaded Qwen" path.  The model is wrapped in
+       :class:`LocalTorchTextProvider` so the rest of the runtime
+       sees the same ``generate(prompt, **kw) -> str`` interface.
+       A ``NotImplementedError`` from :func:`load_model_and_tokenizer`
+       (e.g. when the architecture is not yet implemented, such as
+       Qwen2.5-0.5B without a LLaMA-derivative architecture in
+       :mod:`models.text`) is logged and we fall through to the
+       project micro-transformer.
+    2. Fall back to the project micro-transformer
+       (:class:`LocalTorchTextProvider.from_random`) so the
+       framework always has a working backend.
+    """
+    cache_root = config.cache_root or _default_cache_root()
+
     def factory() -> Any:
+        # 1) Try the user-selected checkpoint.
+        if config.model_id:
+            try:
+                from models.runtime.transformers_style_loader import (
+                    load_model_and_tokenizer,
+                )
+                from models.providers.local_text import (
+                    LocalTorchTextProvider,
+                )
+                local_path = _resolve_user_model_path(
+                    config.model_id, cache_root,
+                )
+                if local_path is None:
+                    _logger.warning(
+                        "user model %s not found in cache under %s. "
+                        "Falling back to project micro-transformer. "
+                        "Use `from models.source import fetch; "
+                        "fetch('%s')` to download first.",
+                        config.model_id, cache_root, config.model_id,
+                    )
+                else:
+                    bundle = load_model_and_tokenizer(local_path)
+                    provider = LocalTorchTextProvider.from_wrapped_model(
+                        bundle, device=config.device or "cpu",
+                    )
+                    _logger.info(
+                        "text backend: loaded user model %s (family=%s)",
+                        config.model_id, bundle.family.value,
+                    )
+                    return provider
+            except NotImplementedError as exc:
+                # Real weights were located, but the architecture is
+                # not yet implemented in the project (e.g. Qwen2
+                # before the LLaMA-derivative architecture lands).
+                _logger.warning(
+                    "user model %s detected but architecture not "
+                    "supported: %s. Falling back to project micro-"
+                    "transformer (random weights, output is noise).",
+                    config.model_id, exc,
+                )
+            except FileNotFoundError as exc:
+                _logger.warning(
+                    "user model %s not found in cache (%s). "
+                    "Falling back to project micro-transformer. "
+                    "Use `from models.source import fetch; "
+                    "fetch('%s')` to download.",
+                    config.model_id, exc, config.model_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "loading user model %s failed: %s. "
+                    "Falling back to project micro-transformer.",
+                    config.model_id, exc,
+                )
+        # 2) Project micro-transformer fallback.
         try:
             from models.providers.local_text import (
                 LocalTorchTextProvider,
@@ -316,9 +409,48 @@ def _make_text_factory(config: RuntimeConfig) -> Callable[[], Any]:
             return LocalTorchTextProvider.from_random(
                 device=config.device or "cpu",
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("micro-transformer fallback failed: %s", exc)
             return None
     return factory
+
+
+def _default_cache_root() -> str:
+    """Return the project cache root (matches
+    :mod:`models.source.fetch`'s default)."""
+    import os
+    return os.path.expanduser("~/.cache/torcha-verse")
+
+
+def _resolve_user_model_path(
+    model_id: str, cache_root: str,
+) -> "Path | None":
+    """Map a HuggingFace-style ``"org/name"`` to the local cache path.
+
+    ``models.source.fetch`` writes the safetensors + tokenizer files
+    under ``<cache_root>/<source>/<org>/<name>/``.  For HF repos the
+    ``<source>`` is ``"huggingface"`` so the resulting path is
+    ``<cache_root>/huggingface/<org>/<name>``.
+
+    Returns ``None`` when no matching directory exists.  The user is
+    expected to run :func:`models.source.fetch` first; the CLI prints
+    a follow-up hint when the lookup misses.
+    """
+    from pathlib import Path
+    if Path(model_id).is_dir():
+        # Local path; use as-is.
+        return Path(model_id)
+    cache_root_path = Path(cache_root).expanduser()
+    # Try the conventional huggingface layout first.
+    candidate = cache_root_path / "huggingface" / model_id
+    if candidate.is_dir():
+        return candidate
+    # Fall back to other sources (civitai / local).
+    for source in ("huggingface", "civitai", "local", "modelscope"):
+        alt = cache_root_path / source / model_id
+        if alt.is_dir():
+            return alt
+    return None
 
 
 def _make_image_factory(config: RuntimeConfig) -> Callable[[], Any]:

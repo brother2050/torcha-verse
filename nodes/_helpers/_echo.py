@@ -41,8 +41,22 @@ def _text_echo_factory() -> Any:
         """
 
         def generate(self, prompt: str, **kw: Any) -> str:
-            """Return a short echo response."""
-            prefix = "[echo-text]"
+            """Return a clearly-labelled echo response.
+
+            The prefix is intentionally prominent so callers
+            reading the output can immediately tell whether a
+            real model answered or whether the framework fell
+            back to the no-model default.  When ``name`` is
+            supplied (the ``--model`` flag from the CLI) it is
+            included in the label so users can see exactly
+            which model the framework *did not* find a backend
+            for.
+            """
+            prefix = "[echo-text: no model registered"
+            name = kw.get("_echo_model_name")
+            if name:
+                prefix += f" for {name!r}"
+            prefix += "]"
             return f"{prefix} {prompt[: 80]}".strip()
 
         def chat(self, messages: Any, **kw: Any) -> Dict[str, Any]:
